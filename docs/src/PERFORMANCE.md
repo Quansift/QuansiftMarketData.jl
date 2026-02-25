@@ -4,7 +4,7 @@ This guide covers the performance optimizations available in TiingoJulia, partic
 
 ## 🚀 Performance Improvements Overview
 
-The latest version of TiingoJulia includes significant performance improvements for historical data updates:
+TiingoJulia includes significant performance improvements for historical data updates:
 
 ### Key Optimizations
 
@@ -27,7 +27,7 @@ Based on testing with typical workloads:
 
 ### Basic Usage
 
-The `update_historical()` function now uses the optimized parallel version by default:
+The `update_historical()` function uses the optimized parallel implementation by default:
 
 ```julia
 using TiingoJulia

@@ -22,6 +22,10 @@ module Postgres
                              retry_delay::Int=5)::PostgreSQLConnection
         last_error = nothing
 
+        if max_retries < 1
+            throw(ArgumentError("max_retries must be >= 1"))
+        end
+
         for attempt in 1:max_retries
             try
                 # Add timeout to connection string if not already present

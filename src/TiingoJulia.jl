@@ -16,15 +16,20 @@ using LoggingExtras
 using TimeSeries
 
 # Logger configuration
-const CONSOLE_LOGGER = ConsoleLogger(stderr, Logging.Info)
 const NULL_LOGGER = LoggingExtras.NullLogger()
 
+build_console_logger() = ConsoleLogger(stderr, Logging.Info)
+
 function __init__()
-    logger_type = get(ENV, "TIINGO_LOGGER", "null")
+    logger_type = lowercase(get(ENV, "TIINGO_LOGGER", "console"))
     if logger_type == "console"
-        global_logger(CONSOLE_LOGGER)
+        global_logger(build_console_logger())
     elseif logger_type == "tee"
-        global_logger(LoggingExtras.TeeLogger(NULL_LOGGER, CONSOLE_LOGGER))
+        global_logger(LoggingExtras.TeeLogger(NULL_LOGGER, build_console_logger()))
+    elseif logger_type == "file"
+        DB.setup_logging()
+    elseif logger_type == "tee-file"
+        DB.setup_logging(tee_console=true)
     else
         global_logger(NULL_LOGGER)
     end
@@ -75,10 +80,13 @@ module DB
     const LOG_FILE = Config.DB.LOG_FILE
 
     # Set up logging to file
-    function setup_logging()
+    function setup_logging(; tee_console::Bool=false)
         io = open(LOG_FILE, "a")
         TIINGO_LOG_FILE_HANDLE[] = io
         logger = SimpleLogger(io)
+        if tee_console
+            logger = LoggingExtras.TeeLogger(logger, TiingoJulia.build_console_logger())
+        end
         global_logger(logger)
     end
 

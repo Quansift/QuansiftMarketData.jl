@@ -13,6 +13,8 @@ using ..API: get_ticker_data, get_api_key
         zip_file_path::String = Config.DB.ZIP_FILE_PATH,
         csv_file::String = Config.DB.DEFAULT_CSV_FILE
     )
+        zip_existed = isfile(zip_file_path)
+        csv_existed = isfile(csv_file)
         try
             # Step 1: Download and unzip
             @info "Starting ticker download and processing..."
@@ -36,7 +38,12 @@ using ..API: get_ticker_data, get_api_key
             @error "Error in download_tickers_duckdb" exception=(e, catch_backtrace())
             rethrow(e)
         finally
-            cleanup_files(zip_file_path, csv_file)
+            cleanup_files(
+                zip_file_path,
+                csv_file;
+                delete_zip = !zip_existed,
+                delete_csv = !csv_existed
+            )
         end
     end
 
@@ -124,9 +131,14 @@ using ..API: get_ticker_data, get_api_key
 
     Helper function to clean up temporary files.
     """
-    function cleanup_files(zip_file_path::String, csv_file::String)
-        for file in [zip_file_path, csv_file]
-            if isfile(file)
+    function cleanup_files(
+        zip_file_path::String,
+        csv_file::String;
+        delete_zip::Bool = true,
+        delete_csv::Bool = true
+    )
+        for (file, should_delete) in ((zip_file_path, delete_zip), (csv_file, delete_csv))
+            if should_delete && isfile(file)
                 rm(file)
                 @info "Cleaned up temporary file: $file"
             end
@@ -316,7 +328,7 @@ using ..API: get_ticker_data, get_api_key
 
             # Use Channel for job queue to limit concurrency
             jobs = Channel{Int}(max_concurrent)
-            results = Channel{Tuple{String, Bool, Union{Exception, Nothing}}}(nrow(batch))
+            results = Channel{Tuple{String, Bool, Bool, Union{Exception, Nothing}}}(nrow(batch))
             write_queue = Channel{Tuple{String, Union{DataFrame, Nothing}, Bool, Union{Exception, Nothing}}}(nrow(batch))
 
             # Spawn workers
@@ -327,12 +339,12 @@ using ..API: get_ticker_data, get_api_key
                         if data !== nothing
                             try
                                 Operations.upsert_stock_data_bulk(conn, data, ticker)
-                                put!(results, (ticker, true, nothing))
+                                put!(results, (ticker, true, true, nothing))
                             catch e
-                                put!(results, (ticker, false, e))
+                                put!(results, (ticker, false, false, e))
                             end
                         else
-                            put!(results, (ticker, success, error))
+                            put!(results, (ticker, success, false, error))
                         end
                     end
                     close(results)
@@ -410,10 +422,11 @@ using ..API: get_ticker_data, get_api_key
             batch_updated = String[]
             batch_missing = String[]
 
-            for (ticker, success, error) in results
-                if success
+            for (ticker, success, data_written, error) in results
+                if data_written
                     push!(batch_updated, ticker)
-                else
+                end
+                if !success
                     push!(batch_missing, ticker)
                     if !isnothing(error)
                         @warn "Failed to update ticker: $ticker" exception=error

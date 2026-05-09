@@ -5,6 +5,7 @@ module Config
     const TOML_PKG_ID = Base.PkgId(Base.UUID("fa267f1f-6049-4f14-aa54-33bafae1ed76"), "TOML")
 
     const CONFIG_FILE_TOML = "config.toml"
+    const CONFIG_EXAMPLE_TOML = "config.example.toml"
     const CONFIG_FILE_JSON = "config.json"
 
     function parse_env_int(name::String, default::Int)::Int
@@ -79,12 +80,26 @@ module Config
             return pwd_json
         end
 
+        package_example = joinpath(dirname(@__DIR__), CONFIG_EXAMPLE_TOML)
+        if isfile(package_example)
+            @warn "Config file not found; using example config" path=package_example
+            return package_example
+        end
+
+        pwd_example = joinpath(pwd(), CONFIG_EXAMPLE_TOML)
+        if isfile(pwd_example)
+            @warn "Config file not found; using example config" path=pwd_example
+            return pwd_example
+        end
+
         error(
             "Config file not found. Checked: " *
             joinpath(dirname(@__DIR__), CONFIG_FILE_TOML) * ", " *
             joinpath(pwd(), CONFIG_FILE_TOML) * ", " *
             joinpath(dirname(@__DIR__), CONFIG_FILE_JSON) * ", " *
-            joinpath(pwd(), CONFIG_FILE_JSON)
+            joinpath(pwd(), CONFIG_FILE_JSON) * ", " *
+            joinpath(dirname(@__DIR__), CONFIG_EXAMPLE_TOML) * ", " *
+            joinpath(pwd(), CONFIG_EXAMPLE_TOML)
         )
     end
 

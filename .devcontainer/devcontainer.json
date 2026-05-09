@@ -1,6 +1,6 @@
 {
     "build": {
-        "dockerfile": "../Dockerfile"
+        "dockerfile": "../docker/Dockerfile"
     },
     "extensions": ["julialang.language-julia", "ms-vscode.vscode-json"],
     "mounts": [
@@ -11,7 +11,7 @@
     "remoteUser": "root",
     "settings": {
         "julia.environmentPath": "/workspace",
-        "julia.executablePath": "/opt/julia/bin/julia",
+        "julia.executablePath": "/usr/local/bin/julia",
         "julia.lint.caller": true,
         "julia.lint.checkdocs": true,
         "julia.lint.constif": true,

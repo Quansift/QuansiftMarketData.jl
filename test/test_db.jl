@@ -18,6 +18,7 @@ using TiingoJulia:
     connect_postgres,
     close_postgres,
     optimize_database
+using TiingoJulia.DB.Postgres: connection_options_map, normalize_postgres_connection_string, postgres_env_vars
 
 # Define mock function for fetch_single_ticker_data that works without Mocking
 function mock_fetch_single_ticker_data(row, latest_dates_dict, latest_market_date, api_key)
@@ -191,7 +192,7 @@ WHERE exchange IN ('NYSE', 'NASDAQ', 'NYSE ARCA', 'AMEX', 'ASX')
     end
 
     # Clean up test database
-    rm(test_db_path)
+    rm(test_db_path; force=true)
 end
 
 @testset "PostgreSQL Export Operations" begin
@@ -203,6 +204,37 @@ end
         @test pg_conn isa PostgreSQLConnection
         close_postgres(pg_conn)
     end
+end
+
+@testset "PostgreSQL Connection Helpers" begin
+    normalized_uri = normalize_postgres_connection_string(
+        "postgresql://alice:secret@db.example.com:5432/tiingo?sslmode=require";
+        timeout_seconds=15,
+    )
+    normalized_uri_options = connection_options_map(normalized_uri)
+
+    @test normalized_uri_options["host"] == "db.example.com"
+    @test normalized_uri_options["port"] == "5432"
+    @test normalized_uri_options["dbname"] == "tiingo"
+    @test normalized_uri_options["user"] == "alice"
+    @test normalized_uri_options["password"] == "secret"
+    @test normalized_uri_options["sslmode"] == "require"
+    @test normalized_uri_options["connect_timeout"] == "15"
+
+    normalized_kv = normalize_postgres_connection_string(
+        "host=localhost dbname=tiingo user=alice connect_timeout=7";
+        timeout_seconds=15,
+    )
+    normalized_kv_options = connection_options_map(normalized_kv)
+    @test normalized_kv_options["connect_timeout"] == "7"
+
+    env_vars = postgres_env_vars(normalized_uri_options)
+    @test env_vars["PGHOST"] == "db.example.com"
+    @test env_vars["PGPORT"] == "5432"
+    @test env_vars["PGDATABASE"] == "tiingo"
+    @test env_vars["PGUSER"] == "alice"
+    @test env_vars["PGPASSWORD"] == "secret"
+    @test env_vars["PGSSLMODE"] == "require"
 end
 
 @testset "Parallel Processing Features" begin
@@ -251,5 +283,5 @@ end
 
     # Clean up test database
     close_duckdb(conn)
-    rm(test_db_path_parallel)
+    rm(test_db_path_parallel; force=true)
 end

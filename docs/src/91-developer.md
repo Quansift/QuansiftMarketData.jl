@@ -148,6 +148,7 @@ To create a new release, you can follow these simple steps:
     - Add a new section on top of it named "Unreleased"
     - Add a new link in the bottom for version "x.y.z"
     - Change the "[unreleased]" link to use the latest version - end of line, `vx.y.z ... HEAD`.
+- Keep general docs version-neutral (avoid hardcoding the current package version in docs pages). Only include version numbers in release/changelog/"what changed" style documentation.
 - Create a commit "Release vx.y.z", push, create a PR, wait for it to pass, merge the PR.
 - Go back to main screen and click on the latest commit (link: <https://github.com/10kpw/TiingoJulia/commit/main>)
 - At the bottom, write `@JuliaRegistrator register`

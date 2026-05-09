@@ -110,6 +110,10 @@ function fetch_api_data(
 )
     last_error = nothing
 
+    if max_retries < 1
+        throw(ArgumentError("max_retries must be >= 1"))
+    end
+
     for attempt in 1:max_retries
         @info "API request attempt $attempt for URL: $url"
         response = nothing

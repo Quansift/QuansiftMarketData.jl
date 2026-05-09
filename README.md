@@ -58,6 +58,7 @@ Use `config.example.toml` as a template if you want a custom config file per dep
 
 All supported variables are documented in `.env.example`.
 Set overrides before running `using TiingoJulia`.
+For a real-environment validation pass before launch, use [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl) with [`PRODUCTION.md`](PRODUCTION.md).
 
 ### 3. Basic Usage
 
@@ -111,6 +112,7 @@ If you use TiingoJulia.jl in your work, please cite using the reference given in
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
+For deployment guidance, see [PRODUCTION.md](PRODUCTION.md).
 
 ## Contributing
 
@@ -322,8 +324,14 @@ ORDER BY ticker, date
 df = DBInterface.execute(conn, query) |> DataFrame
 
 # Export to PostgreSQL
-pg_conn = connect_postgres("postgresql://user:pass@localhost/financial_db")
-export_to_postgres(conn, pg_conn, ["historical_data", "us_tickers_filtered"])
+pg_connection_string = ENV["TIINGO_PG_CONNECTION"]
+pg_conn = connect_postgres(pg_connection_string)
+export_to_postgres(
+    conn,
+    pg_conn,
+    ["historical_data", "us_tickers_filtered"];
+    pg_connection_string=pg_connection_string,
+)
 
 # Clean up connections
 close_duckdb(conn)
@@ -383,10 +391,13 @@ end
 TIINGO_API_KEY=your_actual_api_key_here
 
 # Optional: Logging configuration
-TIINGO_LOGGER=console    # Options: "null", "console", "tee"
+TIINGO_LOGGER=console    # Default: "console". Options: "null", "console", "tee", "file", "tee-file"
+
+# Optional: PostgreSQL export connection
+TIINGO_PG_CONNECTION=postgresql://user:password@host:5432/database?sslmode=require
 
 # Optional: Database configuration
-DEFAULT_DB_PATH=/path/to/your/preferred/database.duckdb
+TIINGO_DB_PATH=/path/to/your/preferred/database.duckdb
 ```
 
 #### Database File Organization

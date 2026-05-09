@@ -11,30 +11,23 @@ using TiingoJulia.API
 
 @testset "API Tests" begin
     @testset "get_api_key" begin
-        # Test that the function returns a non-empty string when API key is available
-        # First check if we have an API key set
-        if haskey(ENV, "TIINGO_API_KEY") && !isempty(ENV["TIINGO_API_KEY"])
-            @test !isempty(get_api_key())
-        else
-            # If no API key is set, test that it throws an error
-            @test_throws ErrorException get_api_key()
-        end
-
-        # Test that the function throws an error when the key is not set,
-        # without depending on any repo-local .env file.
         original_key = get(ENV, "TIINGO_API_KEY", nothing)
+        temp_env_path = tempname()
         missing_env_path = tempname()
 
-        if !isnothing(original_key)
-            delete!(ENV, "TIINGO_API_KEY")
-        end
+        write(temp_env_path, "TIINGO_API_KEY=test-key-from-temp-env\n")
+        pop!(ENV, "TIINGO_API_KEY", nothing)
 
         try
+            @test get_api_key(env_path=temp_env_path, reload_env=true) == "test-key-from-temp-env"
+            pop!(ENV, "TIINGO_API_KEY", nothing)
             @test_throws ErrorException get_api_key(env_path=missing_env_path, reload_env=true)
         finally
-            # Restore the original API key
+            rm(temp_env_path; force=true)
             if !isnothing(original_key)
                 ENV["TIINGO_API_KEY"] = original_key
+            else
+                pop!(ENV, "TIINGO_API_KEY", nothing)
             end
         end
     end

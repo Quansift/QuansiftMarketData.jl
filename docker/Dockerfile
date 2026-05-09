@@ -1,28 +1,24 @@
-FROM ubuntu:24.04
+FROM julia:1.12.1-bookworm
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    build-essential \
-    libatomic1 \
-    libgmp-dev \
-    libmpfr-dev \
-    libblas-dev \
-    liblapack-dev \
-    libopenblas-dev \
-    libfftw3-dev \
-    libgfortran5 \
-    && rm -rf /var/lib/apt/lists/*
+ENV JULIA_PROJECT=/app \
+    JULIA_DEPOT_PATH=/usr/local/julia \
+    TIINGO_LOGGER=console
 
-# Install juliaup and Julia
-ENV JULIA_VERSION=1.12.1
-ENV JULIAUP_INSTALL_DIR=/opt/juliaup
-ENV PATH="${JULIAUP_INSTALL_DIR}/bin:$PATH"
+WORKDIR /app
 
-RUN curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel ${JULIA_VERSION} && \
-    ln -s /root/.juliaup/bin/julia /usr/local/bin/julia && \
-    ln -s /root/.juliaup/bin/juliaup /usr/local/bin/juliaup
+COPY Project.toml Manifest.toml ./
+RUN julia -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
-# Set up default working directory
-WORKDIR /workspace
+COPY src ./src
+COPY scripts ./scripts
+COPY README.md LICENSE config.toml config.example.toml .env.example ./
+
+RUN julia -e 'using Pkg; Pkg.precompile(); using TiingoJulia'
+
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app /usr/local/julia
+
+USER appuser
+
+ENTRYPOINT ["julia", "--project=/app"]
+CMD ["-e", "using TiingoJulia; println(\"TiingoJulia image ready\")"]

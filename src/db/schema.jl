@@ -6,7 +6,7 @@ module Schema
     using Logging
 
     using ..Config
-    using ..Core: DuckDBConnection, validate_identifier
+    using ..Core: DuckDBConnection, DatabaseQueryError, validate_identifier
 
     """
         create_tables(conn::DuckDBConnection)
@@ -53,13 +53,19 @@ module Schema
             """)
         ]
 
+        failures = DatabaseQueryError[]
         for (table_name, query) in tables
             try
                 DBInterface.execute(conn, query)
                 @info "Created table if not exists: $table_name"
             catch e
                 @error "Failed to create table: $table_name" exception=(e, catch_backtrace())
+                push!(failures, DatabaseQueryError("Failed to create table '$table_name': $e", query))
             end
+        end
+
+        if !isempty(failures)
+            throw(first(failures))
         end
     end
 

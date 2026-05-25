@@ -8,6 +8,7 @@ description: PROACTIVELY track and document project design decisions without bei
 ## Purpose
 
 This skill manages the project's design documentation (`.claude/docs/DESIGN.md`). It automatically tracks:
+
 - Architecture decisions
 - Implementation plans
 - Library choices and their rationale
@@ -45,6 +46,7 @@ This skill manages the project's design documentation (`.claude/docs/DESIGN.md`)
 ## Output Format
 
 When recording, confirm in Japanese:
+
 - What was recorded
 - Which section was updated
 - Brief summary of the change

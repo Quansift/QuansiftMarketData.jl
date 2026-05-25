@@ -107,7 +107,6 @@ Output format:
 | Analysis | `read-only` | Design review, debugging, trade-off analysis |
 | Implementation | `workspace-write` | Implementation, fixes, refactoring |
 
-
 ## Codex Plugin for Claude Code (codex-plugin-cc)
 
 The `openai/codex-plugin-cc` plugin provides structured Codex workflows directly as Claude Code slash commands.
@@ -125,7 +124,7 @@ The `openai/codex-plugin-cc` plugin provides structured Codex workflows directly
 | Planning & design | `codex exec --sandbox read-only` | Ad-hoc queries with prompt control |
 | Complex implementation | `codex exec --sandbox workspace-write` | Full sandbox control |
 
-> Plugin source: https://github.com/openai/codex-plugin-cc
+> Plugin source: <https://github.com/openai/codex-plugin-cc>
 
 ### Plugin Commands
 

@@ -211,6 +211,7 @@ This persists across sessions — new sessions load CLAUDE.md and see what happe
 The checkpoint is automatically analyzed to find reusable patterns:
 
 **What it looks for:**
+
 - Sequences of commits forming logical workflows
 - File change patterns (e.g., test + implementation together)
 - CLI consultation sequences (research → design → implement)

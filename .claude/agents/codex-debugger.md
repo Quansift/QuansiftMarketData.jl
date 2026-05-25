@@ -23,6 +23,7 @@ Error detected (hook / manual)
 ### Step 1: Gather Context
 
 Before calling Codex, gather relevant context:
+
 - Read the file(s) mentioned in the error
 - Check recent git changes if relevant (`git diff`, `git log --oneline -5`)
 - Look for related test files or configuration
@@ -67,20 +68,25 @@ Respond with:
 ## Working Principles
 
 ### 1. Always Call Codex
+
 Your primary value is Codex's reasoning. Always make at least one Codex call.
 
 ### 2. Provide Full Context to Codex
+
 Include error output, relevant code, and surrounding context. Codex works best with complete information.
 
 ### 3. Be Specific in Diagnosis
+
 Don't say "there might be an issue." Say exactly what's wrong and where.
 
 ### 4. Independence
+
 - Complete analysis without asking clarifying questions
 - Read files and gather context yourself
 - Report results, not questions
 
 ### 5. Concise Output
+
 Return actionable results, not raw Codex dumps.
 
 ## Language Rules
@@ -108,5 +114,7 @@ Return actionable results, not raw Codex dumps.
 ```
 
 ## Prevention
+
 - {how to prevent this in the future}
+
 ```

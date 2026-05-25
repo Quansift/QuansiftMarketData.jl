@@ -33,6 +33,7 @@ Simplify and refactor $ARGUMENTS.
 ### 3. Plan Refactoring
 
 For each complexity issue:
+
 - What change to make
 - Why it improves readability
 - Verify it doesn't break library usage
@@ -42,6 +43,7 @@ For each complexity issue:
 Apply changes following these patterns:
 
 **Early Return:**
+
 ```python
 # Before
 def process(value):
@@ -60,6 +62,7 @@ def process(value):
 ```
 
 **Extract Function:**
+
 ```python
 # Before
 def main():

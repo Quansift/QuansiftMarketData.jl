@@ -144,11 +144,13 @@ When the `openai/codex-plugin-cc` plugin is installed, use these structured work
 ### D. Plugin vs Direct CLI Decision
 
 Use **Plugin** when:
+
 - You need structured review (code review, adversarial review)
 - You want background execution with job tracking
 - You want to delegate and monitor a task
 
 Use **Direct CLI** (`codex exec`) when:
+
 - You need custom prompt format with specific output structure
 - You need sandbox mode control (read-only vs workspace-write)
 - You are calling from a subagent pattern

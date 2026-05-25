@@ -17,6 +17,7 @@ uv run python script.py 2>&1 | tee error_output.txt
 ```
 
 If the error is **not reproducible**, investigate:
+
 - Environment differences (versions, OS, config)
 - Timing / race conditions
 - Data-dependent behavior
@@ -113,11 +114,13 @@ uv run ty check src/
 ## Fix Task Granularity
 
 ### Too Coarse (Bad)
+
 ```
 - Fix the authentication bug
 ```
 
 ### Too Fine (Bad)
+
 ```
 - Add None check on line 42
 - Change return type on line 43
@@ -125,6 +128,7 @@ uv run ty check src/
 ```
 
 ### Just Right (Good)
+
 ```
 - Write failing test for auth token expiry edge case
 - Fix token validation to handle expired tokens gracefully
@@ -135,26 +139,31 @@ uv run ty check src/
 ## Common Bug Categories
 
 ### 1. State Mutation Bugs
+
 - **Symptom**: Intermittent failures, order-dependent behavior
 - **Diagnosis**: Track variable state through execution flow
 - **Fix pattern**: Use immutable data, explicit state transitions
 
 ### 2. Boundary / Edge Case Bugs
+
 - **Symptom**: Fails on specific inputs (None, empty, max values)
 - **Diagnosis**: Test with boundary values
 - **Fix pattern**: Input validation, early returns
 
 ### 3. Concurrency Bugs
+
 - **Symptom**: Race conditions, deadlocks, intermittent failures
 - **Diagnosis**: Analyze shared state access patterns
 - **Fix pattern**: Locks, queues, immutable shared state
 
 ### 4. Dependency / Integration Bugs
+
 - **Symptom**: Works locally, fails in CI or production
 - **Diagnosis**: Check version differences, API changes
 - **Fix pattern**: Pin versions, add integration tests
 
 ### 5. Type / Contract Bugs
+
 - **Symptom**: TypeError, AttributeError, unexpected None
 - **Diagnosis**: Trace type flow through call chain
 - **Fix pattern**: Type hints, runtime validation, strict contracts

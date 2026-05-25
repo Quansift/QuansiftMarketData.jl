@@ -5,11 +5,13 @@ Common patterns for creating effective task lists.
 ## Task Granularity
 
 ### Too Coarse (Bad)
+
 ```
 - Implement authentication system
 ```
 
 ### Too Fine (Bad)
+
 ```
 - Create User class
 - Add email field to User class
@@ -18,6 +20,7 @@ Common patterns for creating effective task lists.
 ```
 
 ### Just Right (Good)
+
 ```
 - Create User model with email and password fields
 - Implement password hashing and validation
@@ -29,33 +32,43 @@ Common patterns for creating effective task lists.
 ## Task Categories
 
 ### 1. Setup/Preparation
+
 Tasks that prepare the environment or scaffolding:
+
 - Install dependencies
 - Create directory structure
 - Set up configuration files
 - Create base classes/interfaces
 
 ### 2. Core Implementation
+
 Main feature development:
+
 - Implement business logic
 - Create data models
 - Build API endpoints
 - Develop UI components
 
 ### 3. Integration
+
 Connecting components:
+
 - Wire up dependencies
 - Connect to external services
 - Integrate with existing features
 
 ### 4. Testing
+
 Verification tasks:
+
 - Write unit tests
 - Add integration tests
 - Manual testing checklist
 
 ### 5. Documentation (Optional)
+
 Only when explicitly needed:
+
 - Update API docs
 - Add code comments for complex logic
 

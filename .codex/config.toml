@@ -1,25 +1,21 @@
-# Codex CLI Project Configuration
-# This file enables project-specific Codex settings
-
-# Default model configuration
+approval_policy = "never"
 model = "gpt-5.4"
 model_reasoning_effort = "high"
 model_reasoning_summary = "detailed"
-
-# Web search
 web_search = "live"
 
-# Approval policy
-approval_policy = "never"
-
-# Feature toggles
 [features]
 skills = true
 
-# Skills configuration - enable project skills
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+CLAUDE_CODE_SUBAGENT_MODEL = "claude-opus-4-6"
+EDITOR = "code --wait"
+
 [[skills.config]]
 enabled = true
 path = ".codex/skills/context-loader"
-
-# Response style
 verbosity = "medium"

@@ -49,6 +49,7 @@ Step 4: Integration & Verification
 ### Common Team Patterns
 
 **Pattern A: Module-Based (Recommended)**
+
 ```
 Teammate 1: Module A (models, core logic)
 Teammate 2: Module B (API, endpoints)
@@ -56,6 +57,7 @@ Teammate 3: Tests (unit + integration)
 ```
 
 **Pattern B: Layer-Based**
+
 ```
 Teammate 1: Data layer (models, DB)
 Teammate 2: Business logic (services)
@@ -63,6 +65,7 @@ Teammate 3: Interface layer (API/CLI)
 ```
 
 **Pattern C: Feature-Based**
+
 ```
 Teammate 1: Feature X (all layers)
 Teammate 2: Feature Y (all layers)

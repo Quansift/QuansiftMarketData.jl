@@ -8,7 +8,7 @@ on:
     workflow_dispatch:
 jobs:
     test:
-        name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
+        name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ github.event_name }}
         runs-on: ${{ matrix.os }}
         timeout-minutes: 60
         env:
@@ -26,18 +26,16 @@ jobs:
                 os:
                     - ubuntu-latest
                     - macos-latest
-                arch:
-                    - x64
-                # Exclude nightly from macOS to speed up CI
-                exclude:
-                    - os: macos-latest
-                      version: "nightly"
+                # arch is auto-detected by julia-actions/setup-julia based on
+                # the runner OS (ubuntu-latest -> x64, macos-latest -> aarch64).
+                # Hardcoding `x64` broke macos-latest after GitHub migrated the
+                # default macOS runner to Apple Silicon.
         steps:
             - uses: actions/checkout@v6
             - uses: julia-actions/setup-julia@v3
               with:
                   version: ${{ matrix.version }}
-                  arch: ${{ matrix.arch }}
+                  # arch omitted; setup-julia auto-detects the runner architecture.
             - name: Validate release hygiene
               run: |
                   julia --project=. scripts/ci/validate_release_hygiene.jl

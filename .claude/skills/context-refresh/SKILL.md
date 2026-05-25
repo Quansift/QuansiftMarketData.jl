@@ -152,6 +152,7 @@ modify or move any file. Return a structured summary only.
 ```
 
 If a path does not exist, write "not present" instead of fabricating data.
+
 ```
 
 Run the subagent in the foreground. The returned summary is the sole input to Phase 2.

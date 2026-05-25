@@ -28,6 +28,7 @@ Repeat: Red → Green → Refactor
    - What are the edge cases
 
 2. **List Test Cases**
+
    ```
    - [ ] Happy path: Basic functionality
    - [ ] Happy path: Boundary values
@@ -48,6 +49,7 @@ def test_{function}_basic():
 ```
 
 Run test and **confirm failure**:
+
 ```bash
 uv run pytest tests/test_{module}.py -v
 ```
@@ -55,11 +57,13 @@ uv run pytest tests/test_{module}.py -v
 #### Step 2: Implementation (Green)
 
 Write **minimal** code to pass the test:
+
 - Don't aim for perfection
 - Hardcoding is OK
 - Just make the test pass
 
 Run test and **confirm success**:
+
 ```bash
 uv run pytest tests/test_{module}.py -v
 ```
@@ -67,6 +71,7 @@ uv run pytest tests/test_{module}.py -v
 #### Step 3: Refactoring (Refactor)
 
 Improve while tests still pass:
+
 - Remove duplication
 - Improve naming
 - Clean up structure

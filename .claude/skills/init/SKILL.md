@@ -89,6 +89,7 @@ Replace the content **between** the two markers with the following template (kee
 ```bash
 {npm run dev / poe test / make build etc.}
 ```
+
 ```
 
 ### 4. Partial Update of AGENTS.md
@@ -118,6 +119,7 @@ Mirror the same information into `AGENTS.md` so Codex sees it. Update only the t
 ```bash
 {Detected commands}
 ```
+
 ```
 
 ### 5. Check Unnecessary Rules

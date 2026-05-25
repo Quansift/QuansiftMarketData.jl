@@ -239,6 +239,7 @@ Researcher: "httpx has a connection pool limit of 100 by default"
 ```
 
 Without Agent Teams (old subagent approach), this would require:
+
 1. Researcher subagent finishes → returns summary
 2. Claude reads summary → creates new Codex subagent prompt
 3. Codex subagent finishes → returns summary
@@ -255,6 +256,7 @@ Agent Teams collapses this into a single parallel session with real-time interac
 ### Step 1: Synthesize Results
 
 Read outputs from Phase 2:
+
 - `.claude/docs/research/{feature}.md` — Researcher findings
 - `.claude/docs/libraries/{library}.md` — Library documentation
 - `.claude/docs/DESIGN.md` — Architecture decisions

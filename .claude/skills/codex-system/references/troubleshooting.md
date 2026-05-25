@@ -31,6 +31,7 @@ codex login status
 | xhigh           | 900s                |
 
 Configure in config.toml:
+
 ```toml
 [mcp_servers.codex]
 tool_timeout_sec = 600
@@ -73,6 +74,7 @@ codex sessions show {SESSION_ID}
 ## Out of Memory
 
 When analyzing large codebases:
+
 1. Narrow down the target files
 2. Analyze in stages
 3. Adjust with `--config context_limit=...`

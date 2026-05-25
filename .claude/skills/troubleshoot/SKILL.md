@@ -453,6 +453,7 @@ Without Agent Teams, this discovery loop would require multiple sequential subag
 ### Step 1: Synthesize Diagnosis
 
 Read outputs from Phase 2:
+
 - `.claude/docs/research/troubleshoot-{issue}-root-cause.md` -- Root cause analysis
 - `.claude/docs/research/troubleshoot-{issue}-impact.md` -- Impact assessment
 
@@ -499,6 +500,7 @@ Create task list using TodoWrite:
 Task breakdown should follow `references/debug-patterns.md`.
 
 Typical fix task structure:
+
 1. **Write failing test** -- Reproduce the bug as a test case
 2. **Apply fix** -- Implement the root cause fix
 3. **Verify fix** -- Confirm the failing test now passes

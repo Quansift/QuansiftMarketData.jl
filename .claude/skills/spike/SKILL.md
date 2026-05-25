@@ -402,6 +402,7 @@ Without Agent Teams, this discovery loop would require multiple sequential subag
 ### Step 1: Gather Investigation Results
 
 Read outputs from Phase 2:
+
 - `.claude/docs/research/spike-{topic}-research.md` -- Researcher findings
 - `.claude/docs/research/spike-{topic}-feasibility.md` -- Feasibility analysis (Codex-driven)
 - `.claude/spikes/{topic}/` -- Prototype code and results (if PROTOTYPE mode)

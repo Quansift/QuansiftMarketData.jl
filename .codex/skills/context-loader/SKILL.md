@@ -32,6 +32,7 @@ Read all files in `.claude/rules/`:
 ### Step 2: Load Design Documentation
 
 Read `.claude/docs/DESIGN.md` for:
+
 - Architecture decisions
 - Implementation patterns
 - Library choices and constraints
@@ -40,6 +41,7 @@ Read `.claude/docs/DESIGN.md` for:
 ### Step 3: Check Library Documentation
 
 If the task involves specific libraries, read relevant files from:
+
 ```
 .claude/docs/libraries/
 ```
@@ -47,6 +49,7 @@ If the task involves specific libraries, read relevant files from:
 ### Step 4: Execute Task
 
 With the loaded context, execute the requested task following:
+
 - Coding principles from rules
 - Design decisions from DESIGN.md
 - Library constraints from docs
@@ -70,6 +73,7 @@ After loading, always follow these principles:
 ## Output
 
 After loading context, briefly confirm:
+
 - Rules loaded
 - Design document status
 - Ready to execute task

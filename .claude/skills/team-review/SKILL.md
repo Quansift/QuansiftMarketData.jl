@@ -227,6 +227,7 @@ Have them actively try to disprove each other's theories.
 **Integrate results from all reviewers and assign priorities.**
 
 Read review reports:
+
 - `.claude/docs/research/review-security-{feature}.md`
 - `.claude/docs/research/review-quality-{feature}.md`
 - `.claude/docs/research/review-tests-{feature}.md`

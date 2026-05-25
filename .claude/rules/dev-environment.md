@@ -74,7 +74,7 @@ quote-style = "double"
 
 ## Type Checking: ty
 
-> Note: `ty` is currently in beta (0.0.x); the API and behavior are unstable. See https://docs.astral.sh/ty/ for status.
+> Note: `ty` is currently in beta (0.0.x); the API and behavior are unstable. See <https://docs.astral.sh/ty/> for status.
 >
 > Install: `uv tool install ty` (global) or `uv add --dev ty` (project dev dep).
 

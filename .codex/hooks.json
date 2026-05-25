@@ -1,85 +1,85 @@
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/check-codex-before-write.py'",
-            "timeout": 10
-          }
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Edit|Write",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/check-codex-before-write.py'",
+                        "timeout": 10
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Task",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/check-codex-after-plan.py'",
+                        "timeout": 10
+                    }
+                ]
+            },
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/error-to-codex.py'",
+                        "timeout": 10
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/post-test-analysis.py'",
+                        "timeout": 10
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/log-cli-tools.py'",
+                        "timeout": 5
+                    }
+                ]
+            },
+            {
+                "matcher": "Edit|Write",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/lint-on-save.py'",
+                        "timeout": 30
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/post-implementation-review.py'",
+                        "timeout": 10
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "matcher": "auto",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "echo '{\"hookSpecificOutput\": {\"additionalContext\": \"Context compaction triggered. Key context: Check CLAUDE.md for project rules, .claude/docs/DESIGN.md for design decisions, .claude/rules/ for coding standards.\"}}'"
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/agent-router.py'",
+                        "timeout": 5
+                    }
+                ]
+            }
         ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/check-codex-after-plan.py'",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/error-to-codex.py'",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/post-test-analysis.py'",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/log-cli-tools.py'",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/lint-on-save.py'",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/post-implementation-review.py'",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '{\"hookSpecificOutput\": {\"additionalContext\": \"Context compaction triggered. Key context: Check CLAUDE.md for project rules, .claude/docs/DESIGN.md for design decisions, .claude/rules/ for coding standards.\"}}'"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 '/Volumes/T7/00_TOKUSENQUANT/public/TiingoJulia/.codex/hooks/agent-router.py'",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
+    }
 }

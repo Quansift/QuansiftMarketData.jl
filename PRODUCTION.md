@@ -83,6 +83,6 @@ The current schedule is daily at `06:00` local machine time. Adjust the `Hour` a
 
 - Docker best practices: <https://docs.docker.com/build/building/best-practices/>
 - Twelve-Factor config/logs/dev-prod parity: <https://12factor.net/config>, <https://12factor.net/logs>, <https://12factor.net/dev-prod-parity>
-- DuckDB PostgreSQL extension: <https://duckdb.org/docs/current/core_extensions/postgres>
+- DuckDB PostgreSQL extension: <https://duckdb.org/docs/stable/core_extensions/postgres>
 - PostgreSQL transactions: <https://www.postgresql.org/docs/current/tutorial-transactions.html>
 - OpenTelemetry: <https://opentelemetry.io/docs/>

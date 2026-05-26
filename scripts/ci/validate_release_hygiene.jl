@@ -77,7 +77,7 @@ function validate_tracked_env_files()
     for file in tracked_files
         isempty(file) && continue
         is_env_like = occursin(r"(^|/)\.env($|\.)", file)
-        is_example = endswith(file, ".env.example")
+        is_example = occursin(r"(^|/)\.env(\.[^/]*)?\.example$", file)
         if is_env_like && !is_example
             push!(bad_files, file)
         end

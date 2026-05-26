@@ -42,4 +42,4 @@ jobs:
 
               with:
                   fail: true
-                  args: --config '.lychee.toml' .
+                  args: --config '.lychee.toml' README.md CHANGELOG.md PRODUCTION.md CLAUDE.md AGENTS.md docs/src

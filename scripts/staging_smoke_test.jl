@@ -33,7 +33,7 @@ function main()
     max_concurrent = parse_int_env("TIINGO_SMOKE_MAX_CONCURRENT", 5)
     use_parallel = parse_bool_env("TIINGO_SMOKE_USE_PARALLEL", false)
     export_postgres = parse_bool_env("TIINGO_SMOKE_EXPORT_POSTGRES", false)
-    pg_connection_string = strip(get(ENV, "TIINGO_PG_CONNECTION", ""))
+    pg_connection_string = String(strip(get(ENV, "TIINGO_PG_CONNECTION", "")))
 
     if ticker_limit < 1
         throw(ArgumentError("TIINGO_SMOKE_TICKER_LIMIT must be >= 1"))

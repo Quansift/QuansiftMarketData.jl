@@ -1,0 +1,17 @@
+[Unit]
+Description=TiingoJulia data pipeline (oneshot container run)
+Documentation=https://github.com/10kpw/TiingoJulia
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Point this at the repo checkout on the droplet (or symlink the checkout here).
+WorkingDirectory=/opt/tiingojulia
+ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+TimeoutStartSec=1800
+
+# Installed/triggered by tiingojulia-pipeline.timer; no [Install] section here
+# so it is not enabled to run on its own.

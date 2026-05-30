@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_DIR="/Users/otwn/Documents/TiingoJulia"
+REPO_DIR="${TIINGO_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENV_FILE="${TIINGO_ENV_FILE:-$REPO_DIR/.env.staging}"
 
 cd "$REPO_DIR"

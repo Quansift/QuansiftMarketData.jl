@@ -52,7 +52,7 @@ Use `config.example.toml` as a template if you want a custom config file per dep
 - `TIINGO_API_MAX_RETRIES`: API retry attempts
 - `TIINGO_API_RETRY_DELAY`: API retry base delay (seconds)
 - `TIINGO_LOG_FILE`: log file path
-- `TIINGO_DUCKDB_TMP`: DuckDB temp directory
+- `TIINGO_DUCKDB_TMP`: DuckDB scratch/temp directory
 - `TIINGO_SUPPORTED_EXCHANGES`: comma-separated exchange list
 - `TIINGO_SUPPORTED_ASSET_TYPES`: comma-separated asset type list
 
@@ -126,6 +126,7 @@ The current Linux deployment path is:
 - `/etc/default/tiingojulia-pipeline` for host-side compose selection
 
 `cron` is not the recommended scheduler here. The repo ships `systemd` units and the pipeline depends on Docker plus an external DB network, which `systemd` manages more cleanly.
+`TIINGO_DB_PATH` is the intermediate DuckDB file path. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
 
 ### Required Env Files
 

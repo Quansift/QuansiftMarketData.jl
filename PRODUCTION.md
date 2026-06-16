@@ -11,11 +11,15 @@ TiingoJulia is close to production use, but it should be shipped with the same d
 
 ## Recommended Deployment Shape
 
-- Scheduler: Cron, GitHub Actions, systemd timer, or your orchestrator
+- Scheduler: systemd timer
 - Runtime: container built from [`docker/Dockerfile`](docker/Dockerfile)
 - Backing stores: DuckDB for local working state, PostgreSQL for shared serving/analytics
 - Secrets: environment variables or a secret manager
 - Telemetry: process logs plus request/error/row-count metrics
+
+`systemd timer` is the recommended scheduler for both `10kpw-non-prod` and `tokusenquant.com`.
+It fits the existing repository assets, handles Docker/network dependencies cleanly,
+and is easier to inspect than `cron` with `systemctl` and `journalctl`.
 
 ## Pre-Production Verification
 
@@ -33,10 +37,11 @@ TiingoJulia is close to production use, but it should be shipped with the same d
 3. Set `TIINGO_API_KEY`.
 4. Set `TIINGO_PG_CONNECTION` only if you want to validate PostgreSQL export too.
 5. Keep `TIINGO_SMOKE_EXPORT_POSTGRES=false` for the first run.
-6. Run the smoke test:
+6. Run the smoke test.
+   Inline `TIINGO_SMOKE_*` overrides now take precedence over values in the env file:
 
 ```bash
-/Users/otwn/Documents/TiingoJulia/scripts/run_staging_smoke.sh
+TIINGO_SMOKE_TICKER_LIMIT=5 TIINGO_SMOKE_EXPORT_POSTGRES=false scripts/run_staging_smoke.sh
 ```
 
 The smoke test will:
@@ -57,6 +62,80 @@ The smoke test will:
 6. Confirm your runtime captures stdout logs
 7. Put the smoke-test settings behind a production scheduler
 8. Increase ticker scope gradually instead of jumping straight to the full universe
+
+## Linux Deployment
+
+This repo ships Linux deployment assets for Docker + `systemd`:
+
+- [`deploy/compose/docker-compose.pipeline.yml`](deploy/compose/docker-compose.pipeline.yml)
+- [`deploy/systemd/tiingojulia-pipeline.service`](deploy/systemd/tiingojulia-pipeline.service)
+- [`deploy/systemd/tiingojulia-pipeline.timer`](deploy/systemd/tiingojulia-pipeline.timer)
+- [`deploy/systemd/tiingojulia-pipeline.env.example`](deploy/systemd/tiingojulia-pipeline.env.example)
+
+The current scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl).
+Production scope is therefore controlled by `TIINGO_SMOKE_*` variables in the app env file.
+
+### 10kpw Preprod (`10kpw-non-prod`)
+
+```bash
+sudo mkdir -p /opt/tiingojulia
+sudo chown "$USER":"$USER" /opt/tiingojulia
+git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+cd /opt/tiingojulia
+
+cp .env.staging.example .env.staging
+
+cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_TAG=staging
+TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
+TIINGO_DOCKER_NETWORK=db-net
+EOF
+
+sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
+sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
+sudo cp deploy/systemd/tiingojulia-pipeline.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+
+sudo systemctl enable --now tiingojulia-pipeline.timer
+systemctl list-timers tiingojulia-pipeline.timer
+journalctl -u tiingojulia-pipeline.service -f
+```
+
+### TokusenQuant Prod (`tokusenquant.com`)
+
+```bash
+sudo mkdir -p /opt/tiingojulia
+sudo chown "$USER":"$USER" /opt/tiingojulia
+git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+cd /opt/tiingojulia
+
+cp .env.example .env
+
+cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_TAG=latest
+TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
+TIINGO_DOCKER_NETWORK=db-net
+EOF
+
+sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
+sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
+sudo cp deploy/systemd/tiingojulia-pipeline.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+
+sudo systemctl enable --now tiingojulia-pipeline.timer
+systemctl list-timers tiingojulia-pipeline.timer
+journalctl -u tiingojulia-pipeline.service -f
+```
 
 ## macOS Scheduler
 

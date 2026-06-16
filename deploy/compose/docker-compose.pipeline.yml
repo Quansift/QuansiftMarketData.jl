@@ -24,10 +24,11 @@ services:
         env_file:
             - ${TIINGO_APP_ENV_FILE:-../../.env.staging}
         environment:
-            # DuckDB is local working state; the authoritative store is PostgreSQL.
-            # Keep it in writable, ephemeral /tmp so the non-root container user can write.
-            TIINGO_DB_PATH: /tmp/tiingo.duckdb
+            # Respect TIINGO_DB_PATH from the selected app env file.
+            # Only container-local scratch files are forced into /tmp.
             TIINGO_DUCKDB_TMP: /tmp
+            TIINGO_TICKERS_ZIP: /tmp/supported_tickers.zip
+            TIINGO_TICKERS_CSV: /tmp/supported_tickers.csv
         networks:
             - db-net
         restart: "no"

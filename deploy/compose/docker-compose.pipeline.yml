@@ -1,0 +1,38 @@
+# TiingoJulia data pipeline — oneshot run on the shared DB network.
+#
+# Run on a droplet (from the repo root):
+#   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+#
+# Requires:
+#   - The external Docker network the DB stack exposes (preprod: `db-net`).
+#   - An env file at the repo root (preprod: `.env.staging`) providing
+#     TIINGO_API_KEY and TIINGO_PG_CONNECTION. The PG host MUST be the
+#     in-network service alias on port 5432 (e.g. postgres:5432 / postgres_db:5432),
+#     NOT the host-published 127.0.0.1:5433. SSL is typically off in-network:
+#       TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
+#       TIINGO_SMOKE_EXPORT_POSTGRES=true
+#
+# Image tag and env file are overridable:
+#   TIINGO_IMAGE_TAG=latest TIINGO_ENV_FILE=../../.env docker compose -f ... run --rm pipeline
+
+services:
+    pipeline:
+        image: ghcr.io/10kpw/tiingojulia:${TIINGO_IMAGE_TAG:-staging}
+        # ENTRYPOINT is `julia --project=/app`; this is the script it runs.
+        # Swap for the full-sync entrypoint once one exists under scripts/.
+        command: ["scripts/staging_smoke_test.jl"]
+        env_file:
+            - ${TIINGO_ENV_FILE:-../../.env.staging}
+        environment:
+            # DuckDB is local working state; the authoritative store is PostgreSQL.
+            # Keep it in writable, ephemeral /tmp so the non-root container user can write.
+            TIINGO_DB_PATH: /tmp/tiingo.duckdb
+            TIINGO_DUCKDB_TMP: /tmp
+        networks:
+            - db-net
+        restart: "no"
+
+networks:
+    # Provided by the DB stack; not created by this compose file.
+    db-net:
+        external: true

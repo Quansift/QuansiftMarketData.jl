@@ -52,6 +52,11 @@ The smoke test will:
 - Pull a bounded set of historical prices using `TIINGO_SMOKE_TICKER_LIMIT`
 - Optionally export `historical_data` and `us_tickers_filtered` to PostgreSQL
 
+`TIINGO_DB_PATH` is the actual intermediate DuckDB file path.
+`TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
+The containerized deployment keeps scratch space and downloaded ticker temp files in `/tmp`
+but no longer overrides `TIINGO_DB_PATH`.
+
 ## Launch Checklist
 
 1. Build the artifact you plan to ship: `docker build -f docker/Dockerfile .`
@@ -74,6 +79,7 @@ This repo ships Linux deployment assets for Docker + `systemd`:
 
 The current scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl).
 Production scope is therefore controlled by `TIINGO_SMOKE_*` variables in the app env file.
+Container runs respect `TIINGO_DB_PATH` from the selected app env file.
 
 ### 10kpw Preprod (`10kpw-non-prod`)
 

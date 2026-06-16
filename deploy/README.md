@@ -87,6 +87,9 @@ If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
 - The scheduled command is currently `scripts/staging_smoke_test.jl` (a real but
   bounded sync + PG export). Control production scope with `TIINGO_SMOKE_*` variables
   in the selected app env file.
-- DuckDB runs in ephemeral `/tmp` (the authoritative store is PostgreSQL). If a
-  persistent local DuckDB is needed later, add a `/data` volume plus a Dockerfile
-  `mkdir -p /data && chown appuser /data`.
+- `TIINGO_DB_PATH` is the DuckDB file location and now comes directly from the
+  selected app env file. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB
+  scratch space. The compose file pins scratch space and downloaded ticker temp
+  files to `/tmp` inside the container.
+- If a persistent local DuckDB file is needed later, add a container volume for the
+  chosen `TIINGO_DB_PATH` location plus a writable directory owned by `appuser`.

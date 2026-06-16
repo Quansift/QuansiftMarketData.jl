@@ -36,7 +36,22 @@ Environment tiers (same image, config-only difference):
 
    Preprod aliases that resolve on `db-net`: `postgres`, `postgres_db`, `pdb`.
 
-4. **Smoke test the container** (verifies the whole path, incl. the PostgreSQL export):
+4. **Create the host-side systemd env file** so `docker compose` gets the right
+   image tag, app env file, and external network:
+
+   ```bash
+   sudo install -m 0644 deploy/systemd/tiingojulia-pipeline.env.example /etc/default/tiingojulia-pipeline
+   ```
+
+   Then edit `/etc/default/tiingojulia-pipeline`:
+
+   ```dotenv
+   TIINGO_IMAGE_TAG=staging
+   TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
+   TIINGO_DOCKER_NETWORK=db-net
+   ```
+
+5. **Smoke test the container** (verifies the whole path, incl. the PostgreSQL export):
 
    ```bash
    docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
@@ -58,15 +73,20 @@ journalctl -u tiingojulia-pipeline.service -f      # follow run logs
 
 ## preprod → prod promotion
 
-Same files. On the prod droplet: set `TIINGO_IMAGE_TAG` (e.g. `latest`), provide the
-prod `.env` (TIINGO_ENV_FILE), and confirm the prod DB stack's external network name
-matches `db-net` (edit the compose `networks:` block if it differs).
+Same files. On the prod droplet:
+
+- set `TIINGO_IMAGE_TAG=latest`
+- set `TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env`
+- keep `TIINGO_DOCKER_NETWORK=db-net` unless the prod DB stack exposes a different name
+
+If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
+`/etc/default/tiingojulia-pipeline`; the compose file now reads it dynamically.
 
 ## Notes / follow-ups
 
 - The scheduled command is currently `scripts/staging_smoke_test.jl` (a real but
-  ticker-limited sync + PG export). A full production-sync entrypoint under `scripts/`
-  is a follow-up; point the compose `command:` at it when it lands.
+  bounded sync + PG export). Control production scope with `TIINGO_SMOKE_*` variables
+  in the selected app env file.
 - DuckDB runs in ephemeral `/tmp` (the authoritative store is PostgreSQL). If a
   persistent local DuckDB is needed later, add a `/data` volume plus a Dockerfile
   `mkdir -p /data && chown appuser /data`.

@@ -9,6 +9,7 @@ Wants=network-online.target
 Type=oneshot
 # Point this at the repo checkout on the droplet (or symlink the checkout here).
 WorkingDirectory=/opt/tiingojulia
+EnvironmentFile=-/etc/default/tiingojulia-pipeline
 ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
 ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
 TimeoutStartSec=1800

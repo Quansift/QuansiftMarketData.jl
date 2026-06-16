@@ -38,6 +38,7 @@
 | Use `systemd timer` for Linux preprod/prod scheduling | The pipeline is a oneshot Docker workload with explicit Docker/network dependencies and benefits from `systemctl`/`journalctl` operability | Cron, GitHub Actions, ad hoc shell scheduling | 2026-06-16 |
 | Separate host-side compose selection from app env via `TIINGO_APP_ENV_FILE` and `/etc/default/tiingojulia-pipeline` | Avoids overloading `TIINGO_ENV_FILE` across library config, shell wrappers, and Docker Compose interpolation | Keep `TIINGO_ENV_FILE` for every layer, hardcode env file paths in units | 2026-06-16 |
 | Keep the current scheduled command on `scripts/staging_smoke_test.jl` and control scope via `TIINGO_SMOKE_*` variables | Matches the code that exists today and allows gradual promotion from preprod to prod without inventing an unverified full-sync entrypoint | Document a nonexistent full-sync script, add a new production script in the same change | 2026-06-16 |
+| Respect `TIINGO_DB_PATH` in container runs and reserve `/tmp` only for DuckDB scratch and downloaded ticker temp files | The DuckDB file path is valid runtime state and should come from the selected app env file; forcing it to `/tmp` hid configuration and caused droplet confusion | Keep overriding `TIINGO_DB_PATH` to `/tmp/tiingo.duckdb` in Docker Compose | 2026-06-16 |
 
 ## TODO
 
@@ -51,4 +52,4 @@
 
 | Date | Changes |
 |------|---------|
-| 2026-06-16 | Recorded Linux deployment decisions for systemd scheduling, host-side compose env selection, and bounded-sync production rollout. |
+| 2026-06-16 | Recorded Linux deployment decisions for systemd scheduling, host-side compose env selection, bounded-sync production rollout, and DuckDB path handling in containers. |

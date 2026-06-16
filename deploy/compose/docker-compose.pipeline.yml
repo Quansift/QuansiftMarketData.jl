@@ -13,7 +13,7 @@
 #       TIINGO_SMOKE_EXPORT_POSTGRES=true
 #
 # Image tag and env file are overridable:
-#   TIINGO_IMAGE_TAG=latest TIINGO_ENV_FILE=../../.env docker compose -f ... run --rm pipeline
+#   TIINGO_IMAGE_TAG=latest TIINGO_APP_ENV_FILE=../../.env docker compose -f ... run --rm pipeline
 
 services:
     pipeline:
@@ -22,7 +22,7 @@ services:
         # Swap for the full-sync entrypoint once one exists under scripts/.
         command: ["scripts/staging_smoke_test.jl"]
         env_file:
-            - ${TIINGO_ENV_FILE:-../../.env.staging}
+            - ${TIINGO_APP_ENV_FILE:-../../.env.staging}
         environment:
             # DuckDB is local working state; the authoritative store is PostgreSQL.
             # Keep it in writable, ephemeral /tmp so the non-root container user can write.
@@ -35,4 +35,5 @@ services:
 networks:
     # Provided by the DB stack; not created by this compose file.
     db-net:
+        name: ${TIINGO_DOCKER_NETWORK:-db-net}
         external: true

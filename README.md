@@ -56,7 +56,8 @@ Use `config.example.toml` as a template if you want a custom config file per dep
 - `TIINGO_SUPPORTED_EXCHANGES`: comma-separated exchange list
 - `TIINGO_SUPPORTED_ASSET_TYPES`: comma-separated asset type list
 
-All supported variables are documented in `.env.example`.
+Package/runtime variables are documented in `.env.example`.
+The current scheduled pipeline variables are documented in `.env.staging.example`.
 Set overrides before running `using TiingoJulia`.
 For a real-environment validation pass before launch, use [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl) with [`PRODUCTION.md`](PRODUCTION.md).
 
@@ -113,6 +114,131 @@ If you use TiingoJulia.jl in your work, please cite using the reference given in
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 For deployment guidance, see [PRODUCTION.md](PRODUCTION.md).
+
+## Production Deployment
+
+The current Linux deployment path is:
+
+- `systemd timer` as the scheduler
+- `docker compose` as the runtime wrapper
+- GHCR image tags for preprod/prod promotion
+- `.env.staging` / `.env` for application secrets and sync settings
+- `/etc/default/tiingojulia-pipeline` for host-side compose selection
+
+`cron` is not the recommended scheduler here. The repo ships `systemd` units and the pipeline depends on Docker plus an external DB network, which `systemd` manages more cleanly.
+
+### Required Env Files
+
+Application env file:
+
+- Preprod (`10kpw-non-prod`): `/opt/tiingojulia/.env.staging`
+- Prod (`tokusenquant.com`): `/opt/tiingojulia/.env`
+
+Host-side `systemd` env file:
+
+- Both hosts: `/etc/default/tiingojulia-pipeline`
+
+The app env file should contain the variables you actually want inside the container, for example:
+
+```dotenv
+TIINGO_API_KEY=replace_me_with_real_tiingo_api_key
+TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
+TIINGO_LOGGER=console
+TIINGO_SMOKE_TICKER_LIMIT=25
+TIINGO_SMOKE_BATCH_SIZE=25
+TIINGO_SMOKE_MAX_CONCURRENT=5
+TIINGO_SMOKE_USE_PARALLEL=false
+TIINGO_SMOKE_EXPORT_POSTGRES=true
+```
+
+The host-side `systemd` env file selects which image/env/network `docker compose` should use:
+
+```dotenv
+TIINGO_IMAGE_TAG=staging
+TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
+TIINGO_DOCKER_NETWORK=db-net
+```
+
+### 10kpw Droplet
+
+Copy-paste path for preprod (`10kpw-non-prod`):
+
+```bash
+sudo mkdir -p /opt/tiingojulia
+sudo chown "$USER":"$USER" /opt/tiingojulia
+git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+cd /opt/tiingojulia
+
+cp .env.staging.example .env.staging
+
+cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_TAG=staging
+TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
+TIINGO_DOCKER_NETWORK=db-net
+EOF
+
+sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
+sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
+sudo cp deploy/systemd/tiingojulia-pipeline.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+
+sudo systemctl enable --now tiingojulia-pipeline.timer
+systemctl list-timers tiingojulia-pipeline.timer
+journalctl -u tiingojulia-pipeline.service -f
+```
+
+Edit `/opt/tiingojulia/.env.staging` before the first run and set at least:
+
+- `TIINGO_API_KEY`
+- `TIINGO_PG_CONNECTION` if PostgreSQL export is enabled
+- `TIINGO_SMOKE_EXPORT_POSTGRES=true` when you want the export path validated
+
+### TokusenQuant.com
+
+Copy-paste path for prod (`tokusenquant.com`):
+
+```bash
+sudo mkdir -p /opt/tiingojulia
+sudo chown "$USER":"$USER" /opt/tiingojulia
+git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+cd /opt/tiingojulia
+
+cp .env.example .env
+
+cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_TAG=latest
+TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
+TIINGO_DOCKER_NETWORK=db-net
+EOF
+
+sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
+sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
+sudo cp deploy/systemd/tiingojulia-pipeline.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
+
+sudo systemctl enable --now tiingojulia-pipeline.timer
+systemctl list-timers tiingojulia-pipeline.timer
+journalctl -u tiingojulia-pipeline.service -f
+```
+
+Edit `/opt/tiingojulia/.env` before the first run and set:
+
+- `TIINGO_API_KEY`
+- `TIINGO_PG_CONNECTION`
+- `TIINGO_SMOKE_EXPORT_POSTGRES=true`
+- `TIINGO_SMOKE_TICKER_LIMIT` to the production scope you actually want
+
+At the moment the scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl), so production scope is controlled by `TIINGO_SMOKE_*` variables rather than a separate full-sync entrypoint.
 
 ## Contributing
 
@@ -398,6 +524,13 @@ TIINGO_PG_CONNECTION=postgresql://user:password@host:5432/database?sslmode=requi
 
 # Optional: Database configuration
 TIINGO_DB_PATH=/path/to/your/preferred/database.duckdb
+
+# Current scheduled pipeline settings
+TIINGO_SMOKE_TICKER_LIMIT=25
+TIINGO_SMOKE_BATCH_SIZE=25
+TIINGO_SMOKE_MAX_CONCURRENT=5
+TIINGO_SMOKE_USE_PARALLEL=false
+TIINGO_SMOKE_EXPORT_POSTGRES=false
 ```
 
 #### Database File Organization
@@ -405,14 +538,15 @@ TIINGO_DB_PATH=/path/to/your/preferred/database.duckdb
 ```text
 your_project/
 ├── .env                           # API key configuration
+├── .env.staging                   # Preprod/smoke settings
 ├── data/
 │   ├── production_data.duckdb     # Main production database
 │   ├── test_data.duckdb          # Testing database
 │   └── backups/
 │       └── backup_2024_01_01.duckdb
 ├── scripts/
-│   ├── daily_update.jl           # Daily data update script
-│   └── initial_setup.jl          # One-time setup script
+│   ├── run_staging_smoke.sh      # Host-side bounded sync runner
+│   └── staging_smoke_test.jl     # Current container entrypoint
 └── analysis/
     ├── market_analysis.jl        # Your analysis scripts
     └── reports/

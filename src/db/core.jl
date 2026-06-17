@@ -224,9 +224,10 @@ module Core
             default_threads = total_memory_gb <= 4 ? 1 : detected_threads
             num_threads = max(1, Config.parse_env_int("TIINGO_DUCKDB_THREADS", default_threads))
             worker_threads = max(1, Config.parse_env_int("TIINGO_DUCKDB_WORKER_THREADS", max(1, num_threads - 1)))
+            external_threads = max(1, min(num_threads, worker_threads))
             preserve_insertion_order = parse_env_bool("TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER", false)
 
-            @info "System resources detected" total_memory_gb memory_limit_gb=memory_limit_gb detected_threads threads=num_threads worker_threads preserve_insertion_order
+            @info "System resources detected" total_memory_gb memory_limit_gb=memory_limit_gb detected_threads threads=num_threads worker_threads external_threads preserve_insertion_order
 
             # Apply DuckDB optimizations
             if memory_limit_gb >= 1
@@ -251,6 +252,13 @@ module Core
                 @debug "Could not set worker_threads" exception=e
             end
 
+            # Embedded DuckDB can inherit the host runtime thread pool unless external_threads is also set.
+            try
+                DBInterface.execute(conn, "SET external_threads = $external_threads")
+            catch e
+                @debug "Could not set external_threads" exception=e
+            end
+
             try
                 preserve_order_sql = preserve_insertion_order ? "true" : "false"
                 DBInterface.execute(conn, "SET preserve_insertion_order = $preserve_order_sql")
@@ -270,7 +278,26 @@ module Core
             DBInterface.execute(conn, "VACUUM")
             DBInterface.execute(conn, "ANALYZE")
 
-            @info "Database optimization completed" threads=num_threads worker_threads memory_limit_gb preserve_insertion_order tmp_dir
+            effective_settings = try
+                DBInterface.execute(
+                    conn,
+                    """
+                    SELECT name, value
+                    FROM duckdb_settings()
+                    WHERE name IN ('threads', 'worker_threads', 'external_threads', 'preserve_insertion_order')
+                    """,
+                ) |> DataFrame
+            catch e
+                @debug "Could not read effective DuckDB settings" exception=e
+                DataFrame(name=String[], value=String[])
+            end
+
+            function effective_setting(name::String, fallback)
+                matches = effective_settings[effective_settings.name .== name, :value]
+                return isempty(matches) ? fallback : matches[1]
+            end
+
+            @info "Database optimization completed" threads=effective_setting("threads", string(num_threads)) worker_threads=effective_setting("worker_threads", string(worker_threads)) external_threads=effective_setting("external_threads", string(external_threads)) memory_limit_gb preserve_insertion_order=effective_setting("preserve_insertion_order", string(preserve_insertion_order)) tmp_dir
         catch e
             @warn "Database optimization failed" exception=e
             rethrow(e)

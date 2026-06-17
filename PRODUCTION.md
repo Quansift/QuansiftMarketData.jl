@@ -120,6 +120,17 @@ systemctl list-timers tiingojulia-pipeline.timer
 journalctl -u tiingojulia-pipeline.service -f
 ```
 
+For a bounded one-off Docker smoke run, pass overrides with `run -e`:
+
+```bash
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
+  -e TIINGO_SMOKE_TICKER_LIMIT=100 \
+  -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
+  pipeline
+```
+
+Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix env vars only affect Compose interpolation and do not override values loaded into the container from `TIINGO_APP_ENV_FILE`.
+
 ### TokusenQuant Prod (`tokusenquant.com`)
 
 ```bash

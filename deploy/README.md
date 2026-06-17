@@ -46,9 +46,12 @@ Environment tiers (same image, config-only difference):
    Then edit `/etc/default/tiingojulia-pipeline`:
 
    ```dotenv
+   TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
    TIINGO_IMAGE_TAG=staging
    TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
    TIINGO_DOCKER_NETWORK=db-net
+   TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+   TIINGO_DB_CONTAINER_DIR=/data
    ```
 
 5. **Smoke test the container** (verifies the whole path, incl. the PostgreSQL export):
@@ -76,8 +79,11 @@ journalctl -u tiingojulia-pipeline.service -f      # follow run logs
 Same files. On the prod droplet:
 
 - set `TIINGO_IMAGE_TAG=latest`
+- set `TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia`
 - set `TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env`
 - keep `TIINGO_DOCKER_NETWORK=db-net` unless the prod DB stack exposes a different name
+- set `TIINGO_DB_HOST_DIR` to the host directory that already contains `tiingo_historical_data.duckdb`
+- keep `TIINGO_DB_CONTAINER_DIR=/data`
 
 If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
 `/etc/default/tiingojulia-pipeline`; the compose file now reads it dynamically.
@@ -91,5 +97,12 @@ If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
   selected app env file. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB
   scratch space. The compose file pins scratch space and downloaded ticker temp
   files to `/tmp` inside the container.
+- On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`,
+  `TIINGO_DUCKDB_THREADS=1`, `TIINGO_DUCKDB_WORKER_THREADS=1`,
+  `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`, and
+  `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
+- The compose file bind-mounts `TIINGO_DB_HOST_DIR` into `TIINGO_DB_CONTAINER_DIR`.
+  Set `TIINGO_DB_PATH` in the app env file to a path under that mounted container
+  directory, such as `/data/tiingo_historical_data.duckdb`.
 - If a persistent local DuckDB file is needed later, add a container volume for the
   chosen `TIINGO_DB_PATH` location plus a writable directory owned by `appuser`.

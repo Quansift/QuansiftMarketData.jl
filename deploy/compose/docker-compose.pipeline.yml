@@ -13,11 +13,11 @@
 #       TIINGO_SMOKE_EXPORT_POSTGRES=true
 #
 # Image tag and env file are overridable:
-#   TIINGO_IMAGE_TAG=latest TIINGO_APP_ENV_FILE=../../.env docker compose -f ... run --rm pipeline
+#   TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia TIINGO_IMAGE_TAG=latest TIINGO_APP_ENV_FILE=../../.env docker compose -f ... run --rm pipeline
 
 services:
     pipeline:
-        image: ghcr.io/10kpw/tiingojulia:${TIINGO_IMAGE_TAG:-staging}
+        image: ${TIINGO_IMAGE_REPO:-ghcr.io/quansift/tiingojulia}:${TIINGO_IMAGE_TAG:-staging}
         # ENTRYPOINT is `julia --project=/app`; this is the script it runs.
         # Swap for the full-sync entrypoint once one exists under scripts/.
         command: ["scripts/staging_smoke_test.jl"]
@@ -32,6 +32,8 @@ services:
         networks:
             - db-net
         restart: "no"
+        volumes:
+            - ${TIINGO_DB_HOST_DIR:-../../data}:${TIINGO_DB_CONTAINER_DIR:-/data}
 
 networks:
     # Provided by the DB stack; not created by this compose file.

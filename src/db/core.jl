@@ -22,6 +22,36 @@ module Core
     # Valid SQL identifier pattern: alphanumeric + underscore, must start with letter/underscore
     const VALID_IDENTIFIER_RE = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 
+    function parse_env_bool(name::String, default::Bool)::Bool
+        raw = lowercase(strip(get(ENV, name, default ? "true" : "false")))
+        if raw in ("1", "true", "yes", "on")
+            return true
+        elseif raw in ("0", "false", "no", "off")
+            return false
+        end
+
+        @warn "Invalid boolean environment variable, using default" var=name value=raw default
+        return default
+    end
+
+    function parse_env_float(name::String, default::Float64)::Float64
+        raw = strip(get(ENV, name, ""))
+        if isempty(raw)
+            return default
+        end
+
+        try
+            value = parse(Float64, raw)
+            if value <= 0
+                throw(ArgumentError("must be positive"))
+            end
+            return value
+        catch
+            @warn "Invalid float environment variable, using default" var=name value=raw default
+            return default
+        end
+    end
+
     """
         validate_identifier(name::String)::String
 
@@ -185,14 +215,18 @@ module Core
                 16  # Default to 16GB if detection fails
             end
 
-            # Set memory limit to ~75% of available memory, but don't hardcode a 4GB floor
-            memory_limit_gb = total_memory_gb * 0.75
+            # Set memory limit to ~75% of available memory by default, but allow overrides
+            default_memory_limit_gb = total_memory_gb * 0.75
+            memory_limit_gb = parse_env_float("TIINGO_DUCKDB_MEMORY_LIMIT_GB", default_memory_limit_gb)
 
-            # Detect CPU threads
-            num_threads = Sys.CPU_THREADS
-            worker_threads = max(1, num_threads - 1)
+            # Default to a single thread on very small hosts unless explicitly overridden
+            detected_threads = Sys.CPU_THREADS
+            default_threads = total_memory_gb <= 4 ? 1 : detected_threads
+            num_threads = max(1, Config.parse_env_int("TIINGO_DUCKDB_THREADS", default_threads))
+            worker_threads = max(1, Config.parse_env_int("TIINGO_DUCKDB_WORKER_THREADS", max(1, num_threads - 1)))
+            preserve_insertion_order = parse_env_bool("TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER", false)
 
-            @info "System resources detected" total_memory_gb memory_limit_gb=memory_limit_gb threads=num_threads
+            @info "System resources detected" total_memory_gb memory_limit_gb=memory_limit_gb detected_threads threads=num_threads worker_threads preserve_insertion_order
 
             # Apply DuckDB optimizations
             if memory_limit_gb >= 1
@@ -217,6 +251,13 @@ module Core
                 @debug "Could not set worker_threads" exception=e
             end
 
+            try
+                preserve_order_sql = preserve_insertion_order ? "true" : "false"
+                DBInterface.execute(conn, "SET preserve_insertion_order = $preserve_order_sql")
+            catch e
+                @debug "Could not set preserve_insertion_order" exception=e
+            end
+
             tmp_dir = get(ENV, "TIINGO_DUCKDB_TMP", tempdir())
             try
                 mkpath(tmp_dir)
@@ -229,7 +270,7 @@ module Core
             DBInterface.execute(conn, "VACUUM")
             DBInterface.execute(conn, "ANALYZE")
 
-            @info "Database optimization completed" threads=num_threads
+            @info "Database optimization completed" threads=num_threads worker_threads memory_limit_gb preserve_insertion_order tmp_dir
         catch e
             @warn "Database optimization failed" exception=e
             rethrow(e)

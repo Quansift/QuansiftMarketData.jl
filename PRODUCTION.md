@@ -56,6 +56,9 @@ The smoke test will:
 `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
 The containerized deployment keeps scratch space and downloaded ticker temp files in `/tmp`
 but no longer overrides `TIINGO_DB_PATH`.
+On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
+`TIINGO_DUCKDB_WORKER_THREADS=1`, `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`,
+and `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
 
 ## Launch Checklist
 
@@ -80,6 +83,8 @@ This repo ships Linux deployment assets for Docker + `systemd`:
 The current scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl).
 Production scope is therefore controlled by `TIINGO_SMOKE_*` variables in the app env file.
 Container runs respect `TIINGO_DB_PATH` from the selected app env file.
+The compose file bind-mounts a host DuckDB directory into the container, so `TIINGO_DB_PATH`
+should point at the container-side mount location, such as `/data/tiingo_historical_data.duckdb`.
 
 ### 10kpw Preprod (`10kpw-non-prod`)
 
@@ -92,9 +97,12 @@ cd /opt/tiingojulia
 cp .env.staging.example .env.staging
 
 cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
+TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
 sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
@@ -123,9 +131,12 @@ cd /opt/tiingojulia
 cp .env.example .env
 
 cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
 TIINGO_DOCKER_NETWORK=db-net
+TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
 sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline

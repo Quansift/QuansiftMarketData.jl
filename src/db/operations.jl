@@ -8,6 +8,68 @@ module Operations
     using ..Config
     using ..Core: DuckDBConnection, validate_identifier
 
+    function build_upsert_values(row, ticker::String)
+        return (
+            ticker,
+            row.date,
+            coalesce(row.close, NaN),
+            coalesce(row.high, NaN),
+            coalesce(row.low, NaN),
+            coalesce(row.open, NaN),
+            coalesce(row.volume, 0),
+            coalesce(row.adjClose, NaN),
+            coalesce(row.adjHigh, NaN),
+            coalesce(row.adjLow, NaN),
+            coalesce(row.adjOpen, NaN),
+            coalesce(row.adjVolume, 0),
+            coalesce(row.divCash, 0.0),
+            coalesce(row.splitFactor, 1.0)
+        )
+    end
+
+    function execute_upsert_in_chunks(
+        conn::DuckDBConnection,
+        data::DataFrame,
+        ticker::String,
+        upsert_stmt::String
+    )::Int
+        if nrow(data) == 0
+            return 0
+        end
+
+        chunk_size = max(1, Config.parse_env_int("TIINGO_DUCKDB_UPSERT_CHUNK_SIZE", 1000))
+        rows_updated = 0
+        in_transaction = false
+
+        try
+            for (i, row) in enumerate(eachrow(data))
+                if !in_transaction
+                    DBInterface.execute(conn, "BEGIN TRANSACTION")
+                    in_transaction = true
+                end
+
+                DBInterface.execute(conn, upsert_stmt, build_upsert_values(row, ticker))
+                rows_updated += 1
+
+                if i % chunk_size == 0
+                    DBInterface.execute(conn, "COMMIT")
+                    in_transaction = false
+                end
+            end
+
+            if in_transaction
+                DBInterface.execute(conn, "COMMIT")
+            end
+        catch
+            if in_transaction
+                DBInterface.execute(conn, "ROLLBACK")
+            end
+            rethrow()
+        end
+
+        return rows_updated
+    end
+
     """
         upsert_stock_data(conn::DuckDBConnection, data::DataFrame, ticker::String)
 
@@ -35,37 +97,12 @@ module Operations
             divCash = EXCLUDED.divCash,
             splitFactor = EXCLUDED.splitFactor
         """
-        rows_updated = 0
-        DBInterface.execute(conn, "BEGIN TRANSACTION")
         try
-            for row in eachrow(data)
-                values = (
-                    ticker,
-                    row.date,
-                    coalesce(row.close, NaN),
-                    coalesce(row.high, NaN),
-                    coalesce(row.low, NaN),
-                    coalesce(row.open, NaN),
-                    coalesce(row.volume, 0),
-                    coalesce(row.adjClose, NaN),
-                    coalesce(row.adjHigh, NaN),
-                    coalesce(row.adjLow, NaN),
-                    coalesce(row.adjOpen, NaN),
-                    coalesce(row.adjVolume, 0),
-                    coalesce(row.divCash, 0.0),
-                    coalesce(row.splitFactor, 1.0)
-                )
-                DBInterface.execute(conn, upsert_stmt, values)
-                rows_updated += 1
-            end
-            DBInterface.execute(conn, "COMMIT")
+            return execute_upsert_in_chunks(conn, data, ticker, upsert_stmt)
         catch e
-            DBInterface.execute(conn, "ROLLBACK")
             @error "Error upserting stock data for $ticker" exception=(e, catch_backtrace())
             rethrow(e)
         end
-
-        return rows_updated
     end
 
     """
@@ -107,37 +144,12 @@ module Operations
             splitFactor = EXCLUDED.splitFactor
         """
 
-        rows_updated = 0
-        DBInterface.execute(conn, "BEGIN TRANSACTION")
         try
-            for row in eachrow(ticker_data)
-                values = (
-                    ticker,
-                    row.date,
-                    coalesce(row.close, NaN),
-                    coalesce(row.high, NaN),
-                    coalesce(row.low, NaN),
-                    coalesce(row.open, NaN),
-                    coalesce(row.volume, 0),
-                    coalesce(row.adjClose, NaN),
-                    coalesce(row.adjHigh, NaN),
-                    coalesce(row.adjLow, NaN),
-                    coalesce(row.adjOpen, NaN),
-                    coalesce(row.adjVolume, 0),
-                    coalesce(row.divCash, 0.0),
-                    coalesce(row.splitFactor, 1.0)
-                )
-                DBInterface.execute(conn, upsert_stmt, values)
-                rows_updated += 1
-            end
-            DBInterface.execute(conn, "COMMIT")
+            return execute_upsert_in_chunks(conn, ticker_data, ticker, upsert_stmt)
         catch e
-            DBInterface.execute(conn, "ROLLBACK")
             @error "Error bulk upserting stock data for $ticker" exception=(e, catch_backtrace())
             rethrow(e)
         end
-
-        return rows_updated
     end
 
     """

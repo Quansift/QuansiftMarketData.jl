@@ -154,8 +154,23 @@ WHERE exchange IN ('NYSE', 'NASDAQ', 'NYSE ARCA', 'AMEX', 'ASX')
         )
 
         # Test upserting stock data
-        rows_updated = upsert_stock_data(conn, test_data, "AAPL")
-        @test rows_updated == 2
+        original_chunk_size = get(ENV, "TIINGO_DUCKDB_UPSERT_CHUNK_SIZE", nothing)
+        ENV["TIINGO_DUCKDB_UPSERT_CHUNK_SIZE"] = "1"
+        try
+            rows_updated = upsert_stock_data(conn, test_data, "AAPL")
+            @test rows_updated == 2
+
+            updated_data = copy(test_data)
+            updated_data.close .= [155.0, 156.0]
+            rows_updated = upsert_stock_data(conn, updated_data, "AAPL")
+            @test rows_updated == 2
+        finally
+            if original_chunk_size === nothing
+                delete!(ENV, "TIINGO_DUCKDB_UPSERT_CHUNK_SIZE")
+            else
+                ENV["TIINGO_DUCKDB_UPSERT_CHUNK_SIZE"] = original_chunk_size
+            end
+        end
 
         # Verify inserted data
         result = DBInterface.execute(
@@ -167,8 +182,8 @@ WHERE exchange IN ('NYSE', 'NASDAQ', 'NYSE ARCA', 'AMEX', 'ASX')
 """,
         ) |> DataFrame
         @test nrow(result) == 2
-        @test result[1, :close] ≈ 150.0
-        @test result[2, :close] ≈ 151.0
+        @test result[1, :close] ≈ 155.0
+        @test result[2, :close] ≈ 156.0
 
         close_duckdb(conn)
     end
@@ -266,7 +281,51 @@ end
     conn = connect_duckdb(test_db_path_parallel)
 
     # Test database optimization
-    @test_nowarn optimize_database(conn)
+    original_threads = get(ENV, "TIINGO_DUCKDB_THREADS", nothing)
+    original_worker_threads = get(ENV, "TIINGO_DUCKDB_WORKER_THREADS", nothing)
+    original_memory_limit = get(ENV, "TIINGO_DUCKDB_MEMORY_LIMIT_GB", nothing)
+    original_preserve_order = get(ENV, "TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER", nothing)
+
+    ENV["TIINGO_DUCKDB_THREADS"] = "1"
+    ENV["TIINGO_DUCKDB_WORKER_THREADS"] = "1"
+    ENV["TIINGO_DUCKDB_MEMORY_LIMIT_GB"] = "1"
+    ENV["TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER"] = "false"
+
+    try
+        @test_nowarn optimize_database(conn)
+        settings = DBInterface.execute(
+            conn,
+            """
+        SELECT name, value
+        FROM duckdb_settings()
+        WHERE name IN ('threads', 'worker_threads', 'preserve_insertion_order')
+        """,
+        ) |> DataFrame
+        @test settings[settings.name .== "threads", :value][1] == "1"
+        @test settings[settings.name .== "worker_threads", :value][1] == "1"
+        @test settings[settings.name .== "preserve_insertion_order", :value][1] == "false"
+    finally
+        if original_threads === nothing
+            delete!(ENV, "TIINGO_DUCKDB_THREADS")
+        else
+            ENV["TIINGO_DUCKDB_THREADS"] = original_threads
+        end
+        if original_worker_threads === nothing
+            delete!(ENV, "TIINGO_DUCKDB_WORKER_THREADS")
+        else
+            ENV["TIINGO_DUCKDB_WORKER_THREADS"] = original_worker_threads
+        end
+        if original_memory_limit === nothing
+            delete!(ENV, "TIINGO_DUCKDB_MEMORY_LIMIT_GB")
+        else
+            ENV["TIINGO_DUCKDB_MEMORY_LIMIT_GB"] = original_memory_limit
+        end
+        if original_preserve_order === nothing
+            delete!(ENV, "TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER")
+        else
+            ENV["TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER"] = original_preserve_order
+        end
+    end
 
     # Test parallel data insertion
     @test_nowarn upsert_stock_data_bulk(conn, test_data, "AAPL")

@@ -237,6 +237,52 @@ using ..API: get_ticker_data, get_api_key
         end
     end
 
+    function build_latest_date_lookup(latest_dates_df::DataFrame)::Dict{String,Date}
+        latest_dates_lookup = Dict{String,Date}()
+        for row in eachrow(latest_dates_df)
+            ticker = row.ticker
+            if ismissing(ticker) || ticker === nothing
+                continue
+            end
+            latest_dates_lookup[String(ticker)] = row.latest_date
+        end
+        return latest_dates_lookup
+    end
+
+    function build_ticker_row_lookup(tickers::DataFrame)::Dict{String,DataFrameRow}
+        ticker_lookup = Dict{String,DataFrameRow}()
+        for i in 1:nrow(tickers)
+            row = tickers[i, :]
+            ticker = row.ticker
+            if ismissing(ticker) || ticker === nothing
+                continue
+            end
+            ticker_lookup[String(ticker)] = row
+        end
+        return ticker_lookup
+    end
+
+    function resolve_ticker_end_date(row::DataFrameRow)::Date
+        if haskey(row, :end_date)
+            return row.end_date
+        end
+        if haskey(row, :endDate)
+            return row.endDate
+        end
+        return Date(now()) - Day(1)
+    end
+
+    function get_split_refresh_targets(conn::DuckDBConnection, end_date::Date)::DataFrame
+        return DBInterface.execute(conn, """
+            SELECT ticker, MAX(date) AS split_date
+            FROM historical_data
+            WHERE date = ?
+              AND splitFactor <> 1.0
+            GROUP BY ticker
+            ORDER BY ticker
+        """, [end_date]) |> DataFrame
+    end
+
     function update_historical_sequential_impl(
         conn::DuckDBConnection,
         tickers::DataFrame,
@@ -248,6 +294,7 @@ using ..API: get_ticker_data, get_api_key
         if latest_dates_df === nothing
             latest_dates_df = Operations.get_latest_dates(conn)
         end
+        latest_dates_lookup = build_latest_date_lookup(latest_dates_df)
 
         updated_tickers = String[]
         missing_tickers = String[]
@@ -255,11 +302,10 @@ using ..API: get_ticker_data, get_api_key
 
         for (i, row) in enumerate(eachrow(tickers))
             symbol = row.ticker
-            # Use ticker's own end_date from the row (this comes from us_tickers_filtered query)
-            ticker_end_date = haskey(row, :end_date) ? row.end_date : (haskey(row, :endDate) ? row.endDate : Date(now()) - Day(1))
-            ticker_latest = filter(r -> r.ticker == symbol, latest_dates_df)
+            ticker_end_date = resolve_ticker_end_date(row)
+            latest_date = get(latest_dates_lookup, symbol, nothing)
 
-            if isempty(ticker_latest)
+            if isnothing(latest_date)
                 if add_missing
                     handle_missing_ticker(conn, row, api_key, missing_tickers, updated_tickers)
                 else
@@ -267,7 +313,6 @@ using ..API: get_ticker_data, get_api_key
                     @info "$i : $symbol is missing and add_missing=false"
                 end
             else
-                latest_date = ticker_latest[1, :latest_date]
                 if latest_date < ticker_end_date
                     @info "$i : $symbol : $(latest_date + Day(1)) ~ $ticker_end_date"
                     try
@@ -312,6 +357,7 @@ using ..API: get_ticker_data, get_api_key
 
         # Pre-compute latest dates once for all batches
         latest_dates_df = Operations.get_latest_dates(conn)
+        latest_dates_lookup = build_latest_date_lookup(latest_dates_df)
 
         all_updated = String[]
         all_missing = String[]
@@ -367,11 +413,10 @@ using ..API: get_ticker_data, get_api_key
                             ticker = row.ticker
 
                             try
-                                ticker_end_date = haskey(row, :end_date) ? row.end_date :
-                                                 (haskey(row, :endDate) ? row.endDate : Date(now()) - Day(1))
-                                ticker_latest = filter(r -> r.ticker == ticker, latest_dates_df)
+                                ticker_end_date = resolve_ticker_end_date(row)
+                                latest_date = get(latest_dates_lookup, ticker, nothing)
 
-                                if isempty(ticker_latest)
+                                if isnothing(latest_date)
                                     # Missing ticker
                                     if add_missing
                                         ticker_data = get_ticker_data(row; api_key=api_key)
@@ -384,7 +429,6 @@ using ..API: get_ticker_data, get_api_key
                                         put!(write_queue, (ticker, nothing, false, nothing))
                                     end
                                 else
-                                    latest_date = ticker_latest[1, :latest_date]
                                     if latest_date < ticker_end_date
                                         ticker_data = get_ticker_data(
                                             row,
@@ -501,7 +545,8 @@ using ..API: get_ticker_data, get_api_key
     function update_split_ticker(
         conn::DuckDBConnection,
         tickers::DataFrame, # all tickers is best
-        api_key::String = get_api_key()
+        api_key::String = get_api_key();
+        max_concurrent::Int = 4
     )
         # Handle empty tickers DataFrame
         if nrow(tickers) == 0
@@ -510,30 +555,85 @@ using ..API: get_ticker_data, get_api_key
         end
 
         end_date = maximum(skipmissing(tickers.end_date))
-
-        split_tickers = DBInterface.execute(conn, """
-        SELECT ticker, splitFactor, date
-          FROM historical_data
-         WHERE date = ?
-           AND splitFactor <> 1.0
-        """, [end_date]) |> DataFrame
-
-        for (i, row) in enumerate(eachrow(split_tickers))
-            symbol = row.ticker
-            if ismissing(symbol) || symbol === nothing
-                continue  # Skip this row if ticker is missing or null
-            end
-            ticker_info = tickers[tickers.ticker .== symbol, :]
-            if isempty(ticker_info)
-                @warn "No ticker info found for $symbol"
-                continue
-            end
-            start_date = ticker_info[1, :start_date]
-            @info "$i: Updating split ticker $symbol from $start_date to $end_date"
-            ticker_data = get_ticker_data(ticker_info[1, :]; api_key=api_key)
-            Operations.upsert_stock_data(conn, ticker_data, symbol)
+        split_tickers = get_split_refresh_targets(conn, end_date)
+        if nrow(split_tickers) == 0
+            @info "No split tickers found for refresh" end_date
+            return
         end
-        @info "Updated split tickers"
+
+        ticker_lookup = build_ticker_row_lookup(tickers)
+        split_count = nrow(split_tickers)
+        worker_count = max(1, min(max_concurrent, split_count))
+        jobs = Channel{Int}(worker_count)
+        results = Channel{Tuple{String,Bool,Union{Exception,Nothing}}}(split_count)
+        write_queue = Channel{Tuple{String,Union{DataFrame,Nothing},Union{Exception,Nothing}}}(split_count)
+
+        @sync begin
+            @async begin
+                for (ticker, data, error) in write_queue
+                    if data === nothing
+                        put!(results, (ticker, false, error))
+                        continue
+                    end
+                    try
+                        Operations.upsert_stock_data(conn, data, ticker)
+                        put!(results, (ticker, true, nothing))
+                    catch e
+                        put!(results, (ticker, false, e))
+                    end
+                end
+                close(results)
+            end
+
+            @async begin
+                for i in 1:split_count
+                    put!(jobs, i)
+                end
+                close(jobs)
+            end
+
+            worker_tasks = Task[]
+            for _ in 1:worker_count
+                task = @async begin
+                    for job_idx in jobs
+                        row = split_tickers[job_idx, :]
+                        symbol = row.ticker
+                        ticker_info = get(ticker_lookup, symbol, nothing)
+                        if isnothing(ticker_info)
+                            put!(write_queue, (symbol, nothing, ErrorException("No ticker info found for $symbol")))
+                            continue
+                        end
+                        try
+                            @info "$job_idx: Updating split ticker $symbol from $(ticker_info.start_date) to $end_date" split_date=row.split_date
+                            ticker_data = get_ticker_data(ticker_info; api_key=api_key)
+                            put!(write_queue, (symbol, ticker_data, nothing))
+                        catch e
+                            put!(write_queue, (symbol, nothing, e))
+                        end
+                    end
+                end
+                push!(worker_tasks, task)
+            end
+
+            @async begin
+                for task in worker_tasks
+                    wait(task)
+                end
+                close(write_queue)
+            end
+        end
+
+        failed_tickers = String[]
+        for (ticker, success, error) in results
+            if !success
+                push!(failed_tickers, ticker)
+                if !isnothing(error)
+                    @warn "Failed to refresh split ticker: $ticker" exception=error
+                end
+            end
+        end
+
+        @info "Updated split tickers" refreshed_count=split_count failed_count=length(failed_tickers)
     end
 
     """

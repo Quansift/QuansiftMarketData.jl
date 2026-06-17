@@ -298,11 +298,12 @@ end
             """
         SELECT name, value
         FROM duckdb_settings()
-        WHERE name IN ('threads', 'worker_threads', 'preserve_insertion_order')
+        WHERE name IN ('threads', 'worker_threads', 'external_threads', 'preserve_insertion_order')
         """,
         ) |> DataFrame
         @test settings[settings.name .== "threads", :value][1] == "1"
         @test settings[settings.name .== "worker_threads", :value][1] == "1"
+        @test settings[settings.name .== "external_threads", :value][1] == "1"
         @test settings[settings.name .== "preserve_insertion_order", :value][1] == "false"
     finally
         if original_threads === nothing

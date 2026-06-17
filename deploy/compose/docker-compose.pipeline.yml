@@ -3,6 +3,14 @@
 # Run on a droplet (from the repo root):
 #   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
 #
+# One-off smoke overrides must be passed to the container with `run -e`.
+# Prefix env vars before `docker compose` only affect Compose interpolation and
+# do not override values loaded from the service env_file.
+#   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
+#     -e TIINGO_SMOKE_TICKER_LIMIT=100 \
+#     -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
+#     pipeline
+#
 # Requires:
 #   - The external Docker network the DB stack exposes (preprod: `db-net`).
 #   - An env file at the repo root (preprod: `.env.staging`) providing

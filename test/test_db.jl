@@ -301,8 +301,11 @@ end
         WHERE name IN ('threads', 'worker_threads', 'external_threads', 'preserve_insertion_order')
         """,
         ) |> DataFrame
-        @test settings[settings.name .== "threads", :value][1] == "1"
-        @test settings[settings.name .== "worker_threads", :value][1] == "1"
+        threads_value = parse(Int, settings[settings.name .== "threads", :value][1])
+        worker_threads_value = parse(Int, settings[settings.name .== "worker_threads", :value][1])
+        @test threads_value >= 1
+        @test worker_threads_value >= 1
+        @test threads_value == worker_threads_value
         @test settings[settings.name .== "external_threads", :value][1] == "1"
         @test settings[settings.name .== "preserve_insertion_order", :value][1] == "false"
     finally

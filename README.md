@@ -53,6 +53,11 @@ Use `config.example.toml` as a template if you want a custom config file per dep
 - `TIINGO_API_RETRY_DELAY`: API retry base delay (seconds)
 - `TIINGO_LOG_FILE`: log file path
 - `TIINGO_DUCKDB_TMP`: DuckDB scratch/temp directory
+- `TIINGO_DUCKDB_MEMORY_LIMIT_GB`: override DuckDB memory limit in GB
+- `TIINGO_DUCKDB_THREADS`: override DuckDB worker thread count for query execution
+- `TIINGO_DUCKDB_WORKER_THREADS`: override DuckDB background worker thread count
+- `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER`: set to `false` to reduce ingest memory pressure
+- `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE`: rows per transaction during historical-data upserts
 - `TIINGO_SUPPORTED_EXCHANGES`: comma-separated exchange list
 - `TIINGO_SUPPORTED_ASSET_TYPES`: comma-separated asset type list
 
@@ -127,6 +132,8 @@ The current Linux deployment path is:
 
 `cron` is not the recommended scheduler here. The repo ships `systemd` units and the pipeline depends on Docker plus an external DB network, which `systemd` manages more cleanly.
 `TIINGO_DB_PATH` is the intermediate DuckDB file path. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
+On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
+`TIINGO_DUCKDB_WORKER_THREADS=1`, and keep `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`.
 
 ### Required Env Files
 
@@ -155,9 +162,12 @@ TIINGO_SMOKE_EXPORT_POSTGRES=true
 The host-side `systemd` env file selects which image/env/network `docker compose` should use:
 
 ```dotenv
+TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
+TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_CONTAINER_DIR=/data
 ```
 
 ### 10kpw Droplet
@@ -173,9 +183,12 @@ cd /opt/tiingojulia
 cp .env.staging.example .env.staging
 
 cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
+TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
 sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
@@ -212,9 +225,12 @@ cd /opt/tiingojulia
 cp .env.example .env
 
 cat >/tmp/tiingojulia-pipeline <<'EOF'
+TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
 TIINGO_DOCKER_NETWORK=db-net
+TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
 sudo install -m 0644 /tmp/tiingojulia-pipeline /etc/default/tiingojulia-pipeline
@@ -236,6 +252,7 @@ Edit `/opt/tiingojulia/.env` before the first run and set:
 
 - `TIINGO_API_KEY`
 - `TIINGO_PG_CONNECTION`
+- `TIINGO_DB_PATH=/data/tiingo_historical_data.duckdb`
 - `TIINGO_SMOKE_EXPORT_POSTGRES=true`
 - `TIINGO_SMOKE_TICKER_LIMIT` to the production scope you actually want
 

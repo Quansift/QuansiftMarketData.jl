@@ -130,22 +130,124 @@ module Postgres
         LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_name;")
     end
 
+    """
+        is_fk_referenced(pg_conn, table_name) -> Bool
+
+    Check whether `table_name` is referenced by any foreign key constraint
+    from another table (i.e. it is the *parent* / referenced side).
+    """
+    function is_fk_referenced(pg_conn::PostgreSQLConnection, table_name::String)::Bool
+        safe_name = validate_identifier(table_name)
+        result = LibPQ.execute(pg_conn, """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE contype = 'f'
+                  AND confrelid = '$safe_name'::regclass
+            )
+        """)
+        df = DataFrame(result)
+        return df[1, 1]
+    end
+
+    """
+        get_primary_key_columns(pg_conn, table_name) -> Vector{String}
+
+    Return the column names that form the primary key of `table_name`,
+    looked up from the PostgreSQL catalog.
+    """
+    function get_primary_key_columns(pg_conn::PostgreSQLConnection, table_name::String)::Vector{String}
+        safe_name = validate_identifier(table_name)
+        result = LibPQ.execute(pg_conn, """
+            SELECT a.attname
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            WHERE i.indrelid = '$safe_name'::regclass
+              AND i.indisprimary
+            ORDER BY a.attnum
+        """)
+        df = DataFrame(result)
+        return String.(df[!, :attname])
+    end
+
     function replace_postgres_table!(pg_conn::PostgreSQLConnection, target_table::String, staging_table::String)
         safe_target = validate_identifier(target_table)
         safe_staging = validate_identifier(staging_table)
 
-        LibPQ.execute(pg_conn, "BEGIN")
+        # Check if the target table exists and is referenced by foreign keys
+        target_exists = false
         try
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_target;")
-            LibPQ.execute(pg_conn, "ALTER TABLE $safe_staging RENAME TO $safe_target;")
-            LibPQ.execute(pg_conn, "COMMIT")
-        catch e
-            try
-                LibPQ.execute(pg_conn, "ROLLBACK")
-            catch
+            res = LibPQ.execute(pg_conn, """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = '$safe_target'
+                )
+            """)
+            target_exists = DataFrame(res)[1, 1]
+        catch
+        end
+
+        fk_referenced = target_exists && is_fk_referenced(pg_conn, safe_target)
+
+        if fk_referenced
+            # Upsert path: refresh in-place to preserve dependent FK constraints
+            pk_cols = get_primary_key_columns(pg_conn, safe_target)
+            if isempty(pk_cols)
+                error("Table $safe_target is referenced by foreign keys but has no primary key; " *
+                      "an upsert key is required to refresh in-place without dropping the table")
             end
-            @error "Failed to atomically replace PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
-            rethrow(e)
+
+            # Get column list from the staging table
+            col_result = LibPQ.execute(pg_conn, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '$safe_staging'
+                ORDER BY ordinal_position
+            """)
+            all_cols = String.(DataFrame(col_result)[!, :column_name])
+            non_pk_cols = filter(c -> !(c in pk_cols), all_cols)
+
+            cols_sql = join(all_cols, ", ")
+            pk_sql = join(pk_cols, ", ")
+            update_sql = join(["$c = EXCLUDED.$c" for c in non_pk_cols], ", ")
+
+            upsert_query = if isempty(non_pk_cols)
+                "INSERT INTO $safe_target ($cols_sql) SELECT $cols_sql FROM $safe_staging ON CONFLICT ($pk_sql) DO NOTHING"
+            else
+                "INSERT INTO $safe_target ($cols_sql) SELECT $cols_sql FROM $safe_staging ON CONFLICT ($pk_sql) DO UPDATE SET $update_sql"
+            end
+
+            @info "Table $safe_target is FK-referenced; using upsert instead of drop+rename"
+            LibPQ.execute(pg_conn, "BEGIN")
+            try
+                LibPQ.execute(pg_conn, upsert_query)
+                LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_staging;")
+                LibPQ.execute(pg_conn, "COMMIT")
+            catch e
+                try
+                    LibPQ.execute(pg_conn, "ROLLBACK")
+                catch
+                end
+                try
+                    drop_postgres_table_if_exists(pg_conn, safe_staging)
+                catch
+                end
+                @error "Failed to upsert into FK-referenced PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
+                rethrow(e)
+            end
+        else
+            # Fast path: drop + rename (no FK dependents)
+            LibPQ.execute(pg_conn, "BEGIN")
+            try
+                LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_target;")
+                LibPQ.execute(pg_conn, "ALTER TABLE $safe_staging RENAME TO $safe_target;")
+                LibPQ.execute(pg_conn, "COMMIT")
+            catch e
+                try
+                    LibPQ.execute(pg_conn, "ROLLBACK")
+                catch
+                end
+                @error "Failed to atomically replace PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
+                rethrow(e)
+            end
         end
     end
 

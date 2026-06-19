@@ -336,7 +336,7 @@ module Postgres
             insert_query = "INSERT INTO $staging_name ($columns) VALUES ($placeholders)"
 
             LibPQ.load!(
-                (col => df[!, col] for col in names(df)),
+                df,
                 pg_conn,
                 insert_query
             )

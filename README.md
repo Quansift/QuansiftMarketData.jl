@@ -46,7 +46,7 @@ TIINGO_API_KEY=your_api_key_here
 Use `config.example.toml` as a template if you want a custom config file per deployment.
 
 - `TIINGO_CONFIG_PATH`: path to an alternate `config.toml` (legacy `config.json` is still supported)
-- `TIINGO_DB_PATH`: default DuckDB path
+- `OHLCV_DUCKDB_PATH`: DuckDB file path (legacy aliases: `DUCKDB_PATH`, `TIINGO_DUCKDB_PATH`, `TIINGO_DB_PATH`)
 - `TIINGO_API_BASE_URL`: Tiingo daily base URL
 - `TIINGO_TICKERS_URL`: ticker zip URL
 - `TIINGO_API_MAX_RETRIES`: API retry attempts
@@ -131,7 +131,7 @@ The current Linux deployment path is:
 - `/etc/default/tiingojulia-pipeline` for host-side compose selection
 
 `cron` is not the recommended scheduler here. The repo ships `systemd` units and the pipeline depends on Docker plus an external DB network, which `systemd` manages more cleanly.
-`TIINGO_DB_PATH` is the intermediate DuckDB file path. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
+`OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) is the intermediate DuckDB file path. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
 On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
 `TIINGO_DUCKDB_WORKER_THREADS=1`, and keep `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`.
 
@@ -150,7 +150,7 @@ The app env file should contain the variables you actually want inside the conta
 
 ```dotenv
 TIINGO_API_KEY=replace_me_with_real_tiingo_api_key
-TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
+OHLCV_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
 TIINGO_LOGGER=console
 TIINGO_SMOKE_TICKER_LIMIT=25
 TIINGO_SMOKE_BATCH_SIZE=25
@@ -209,7 +209,7 @@ journalctl -u tiingojulia-pipeline.service -f
 Edit `/opt/tiingojulia/.env.staging` before the first run and set at least:
 
 - `TIINGO_API_KEY`
-- `TIINGO_PG_CONNECTION` if PostgreSQL export is enabled
+- `OHLCV_PG_CONNECTION` (or legacy `TIINGO_PG_CONNECTION`) if PostgreSQL export is enabled
 - `TIINGO_SMOKE_EXPORT_POSTGRES=true` when you want the export path validated
 
 For a bounded one-off Docker smoke run, pass overrides with `run -e`:
@@ -262,12 +262,23 @@ journalctl -u tiingojulia-pipeline.service -f
 Edit `/opt/tiingojulia/.env` before the first run and set:
 
 - `TIINGO_API_KEY`
-- `TIINGO_PG_CONNECTION`
-- `TIINGO_DB_PATH=/data/tiingo_historical_data.duckdb`
+- `OHLCV_PG_CONNECTION` (or legacy `TIINGO_PG_CONNECTION`)
+- `OHLCV_DUCKDB_PATH=/data/tiingo_historical_data.duckdb` (or legacy `TIINGO_DB_PATH`)
 - `TIINGO_SMOKE_EXPORT_POSTGRES=true`
 - `TIINGO_SMOKE_TICKER_LIMIT` to the production scope you actually want
 
 At the moment the scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl), so production scope is controlled by `TIINGO_SMOKE_*` variables rather than a separate full-sync entrypoint.
+
+### OHLCV Environment Variables
+
+When run under the scheduler (systemd timer or launchd), TiingoJulia sources its own `.env` file (per-repo config ownership via `TIINGO_APP_ENV_FILE`).
+
+| Canonical name | Purpose | Legacy aliases (checked in order if canonical is unset) |
+|---|---|---|
+| `OHLCV_DUCKDB_PATH` | Filesystem path to the OHLCV/historical-price DuckDB | `DUCKDB_PATH`, `TIINGO_DUCKDB_PATH`, `TIINGO_DB_PATH` |
+| `OHLCV_PG_CONNECTION` | PostgreSQL connection string for the OHLCV/price database | `TIINGO_PG_CONNECTION` |
+
+All legacy aliases remain functional. Existing deployments using `TIINGO_DB_PATH` or `TIINGO_PG_CONNECTION` require no changes.
 
 ## Contributing
 
@@ -479,7 +490,7 @@ ORDER BY ticker, date
 df = DBInterface.execute(conn, query) |> DataFrame
 
 # Export to PostgreSQL
-pg_connection_string = ENV["TIINGO_PG_CONNECTION"]
+pg_connection_string = get(ENV, "OHLCV_PG_CONNECTION", ENV["TIINGO_PG_CONNECTION"])
 pg_conn = connect_postgres(pg_connection_string)
 export_to_postgres(
     conn,
@@ -549,10 +560,10 @@ TIINGO_API_KEY=your_actual_api_key_here
 TIINGO_LOGGER=console    # Default: "console". Options: "null", "console", "tee", "file", "tee-file"
 
 # Optional: PostgreSQL export connection
-TIINGO_PG_CONNECTION=postgresql://user:password@host:5432/database?sslmode=require
+OHLCV_PG_CONNECTION=postgresql://user:password@host:5432/database?sslmode=require
 
 # Optional: Database configuration
-TIINGO_DB_PATH=/path/to/your/preferred/database.duckdb
+OHLCV_DUCKDB_PATH=/path/to/your/preferred/database.duckdb
 
 # Current scheduled pipeline settings
 TIINGO_SMOKE_TICKER_LIMIT=25

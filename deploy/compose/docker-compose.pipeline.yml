@@ -14,7 +14,7 @@
 # Requires:
 #   - The external Docker network the DB stack exposes (preprod: `db-net`).
 #   - An env file at the repo root (preprod: `.env.staging`) providing
-#     TIINGO_API_KEY and TIINGO_PG_CONNECTION. The PG host MUST be the
+#     TIINGO_API_KEY and OHLCV_PG_CONNECTION (or legacy TIINGO_PG_CONNECTION). The PG host MUST be the
 #     in-network service alias on port 5432 (e.g. postgres:5432 / postgres_db:5432),
 #     NOT the host-published 127.0.0.1:5433. SSL is typically off in-network:
 #       TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
@@ -32,7 +32,7 @@ services:
         env_file:
             - ${TIINGO_APP_ENV_FILE:-../../.env.staging}
         environment:
-            # Respect TIINGO_DB_PATH from the selected app env file.
+            # Respect OHLCV_DUCKDB_PATH (or legacy TIINGO_DB_PATH) from the selected app env file.
             # Only container-local scratch files are forced into /tmp.
             TIINGO_DUCKDB_TMP: /tmp
             TIINGO_TICKERS_ZIP: /tmp/supported_tickers.zip

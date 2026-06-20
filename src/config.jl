@@ -129,7 +129,11 @@ module Config
 
     module DB
         import ..CONFIG, ..cfg_get
-        const DEFAULT_DUCKDB_PATH = get(ENV, "TIINGO_DB_PATH", "tiingo_historical_data.duckdb")
+        # Canonical: OHLCV_DUCKDB_PATH; legacy aliases: DUCKDB_PATH, TIINGO_DUCKDB_PATH, TIINGO_DB_PATH
+        const DEFAULT_DUCKDB_PATH = get(ENV, "OHLCV_DUCKDB_PATH",
+            get(ENV, "DUCKDB_PATH",
+                get(ENV, "TIINGO_DUCKDB_PATH",
+                    get(ENV, "TIINGO_DB_PATH", "tiingo_historical_data.duckdb"))))
         const DEFAULT_CSV_FILE = get(ENV, "TIINGO_TICKERS_CSV", String(cfg_get(CONFIG, ["files", "csv_file"])))
         const ZIP_FILE_PATH = get(ENV, "TIINGO_TICKERS_ZIP", String(cfg_get(CONFIG, ["files", "zip_file"])))
         const LOG_FILE = get(ENV, "TIINGO_LOG_FILE", "stock.log")

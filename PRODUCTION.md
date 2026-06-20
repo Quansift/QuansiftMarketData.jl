@@ -35,7 +35,7 @@ and is easier to inspect than `cron` with `systemctl` and `journalctl`.
 1. Create a staging env file from [.env.staging.example](.env.staging.example).
 2. Or use the machine-specific `.env.staging` that lives in the repo root and fill in the placeholders.
 3. Set `TIINGO_API_KEY`.
-4. Set `TIINGO_PG_CONNECTION` only if you want to validate PostgreSQL export too.
+4. Set `OHLCV_PG_CONNECTION` (or legacy `TIINGO_PG_CONNECTION`) only if you want to validate PostgreSQL export too.
 5. Keep `TIINGO_SMOKE_EXPORT_POSTGRES=false` for the first run.
 6. Run the smoke test.
    Inline `TIINGO_SMOKE_*` overrides now take precedence over values in the env file:
@@ -46,16 +46,16 @@ TIINGO_SMOKE_TICKER_LIMIT=5 TIINGO_SMOKE_EXPORT_POSTGRES=false scripts/run_stagi
 
 The smoke test will:
 
-- Create or open the DuckDB file from `TIINGO_DB_PATH`
+- Create or open the DuckDB file from `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`)
 - Optimize and index the database
 - Download Tiingo ticker metadata
 - Pull a bounded set of historical prices using `TIINGO_SMOKE_TICKER_LIMIT`
 - Optionally export `historical_data` and `us_tickers_filtered` to PostgreSQL
 
-`TIINGO_DB_PATH` is the actual intermediate DuckDB file path.
+`OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) is the actual intermediate DuckDB file path.
 `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
 The containerized deployment keeps scratch space and downloaded ticker temp files in `/tmp`
-but no longer overrides `TIINGO_DB_PATH`.
+but no longer overrides `OHLCV_DUCKDB_PATH`.
 On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
 `TIINGO_DUCKDB_WORKER_THREADS=1`, `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`,
 and `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
@@ -82,8 +82,8 @@ This repo ships Linux deployment assets for Docker + `systemd`:
 
 The current scheduled container command is still [`scripts/staging_smoke_test.jl`](scripts/staging_smoke_test.jl).
 Production scope is therefore controlled by `TIINGO_SMOKE_*` variables in the app env file.
-Container runs respect `TIINGO_DB_PATH` from the selected app env file.
-The compose file bind-mounts a host DuckDB directory into the container, so `TIINGO_DB_PATH`
+Container runs respect `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) from the selected app env file.
+The compose file bind-mounts a host DuckDB directory into the container, so `OHLCV_DUCKDB_PATH`
 should point at the container-side mount location, such as `/data/tiingo_historical_data.duckdb`.
 
 ### 10kpw Preprod (`10kpw-non-prod`)

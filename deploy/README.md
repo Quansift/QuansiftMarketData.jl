@@ -30,7 +30,7 @@ Environment tiers (same image, config-only difference):
 
    ```dotenv
    TIINGO_API_KEY=...
-   TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
+   OHLCV_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
    TIINGO_SMOKE_EXPORT_POSTGRES=true
    ```
 
@@ -106,7 +106,7 @@ If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
 - The scheduled command is currently `scripts/staging_smoke_test.jl` (a real but
   bounded sync + PG export). Control production scope with `TIINGO_SMOKE_*` variables
   in the selected app env file.
-- `TIINGO_DB_PATH` is the DuckDB file location and now comes directly from the
+- `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) is the DuckDB file location and now comes directly from the
   selected app env file. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB
   scratch space. The compose file pins scratch space and downloaded ticker temp
   files to `/tmp` inside the container.
@@ -115,7 +115,7 @@ If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
   `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`, and
   `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
 - The compose file bind-mounts `TIINGO_DB_HOST_DIR` into `TIINGO_DB_CONTAINER_DIR`.
-  Set `TIINGO_DB_PATH` in the app env file to a path under that mounted container
+  Set `OHLCV_DUCKDB_PATH` in the app env file to a path under that mounted container
   directory, such as `/data/tiingo_historical_data.duckdb`.
 - If a persistent local DuckDB file is needed later, add a container volume for the
-  chosen `TIINGO_DB_PATH` location plus a writable directory owned by `appuser`.
+  chosen `OHLCV_DUCKDB_PATH` location plus a writable directory owned by `appuser`.

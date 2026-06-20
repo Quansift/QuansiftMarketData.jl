@@ -11,10 +11,10 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# Preserve explicit TIINGO_* environment overrides supplied by the caller.
+# Preserve explicit TIINGO_* and OHLCV_* environment overrides supplied by the caller.
 EXISTING_TIINGO_ENV=()
 while IFS='=' read -r name _; do
-  if [[ "$name" == TIINGO_* ]] && [[ -n "${!name+x}" ]]; then
+  if [[ "$name" == TIINGO_* || "$name" == OHLCV_* ]] && [[ -n "${!name+x}" ]]; then
     EXISTING_TIINGO_ENV+=("$name=${!name}")
   fi
 done < <(env)
@@ -34,8 +34,10 @@ if [[ "${TIINGO_API_KEY:-}" == "replace_me_with_real_tiingo_api_key" || "${TIING
   exit 1
 fi
 
-if [[ "${TIINGO_SMOKE_EXPORT_POSTGRES:-false}" == "true" && "${TIINGO_PG_CONNECTION:-}" == "postgresql://user:password@host:5432/database?sslmode=require" ]]; then
-  echo "Set TIINGO_PG_CONNECTION in $ENV_FILE before enabling PostgreSQL export." >&2
+# Resolve PG connection: canonical OHLCV_PG_CONNECTION, then legacy TIINGO_PG_CONNECTION.
+_resolved_pg="${OHLCV_PG_CONNECTION:-${TIINGO_PG_CONNECTION:-}}"
+if [[ "${TIINGO_SMOKE_EXPORT_POSTGRES:-false}" == "true" && "$_resolved_pg" == "postgresql://user:password@host:5432/database?sslmode=require" ]]; then
+  echo "Set OHLCV_PG_CONNECTION (or TIINGO_PG_CONNECTION) in $ENV_FILE before enabling PostgreSQL export." >&2
   exit 1
 fi
 

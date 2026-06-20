@@ -27,13 +27,19 @@ function parse_int_env(name::String, default::Int)::Int
 end
 
 function main()
-    db_path = abspath(get(ENV, "TIINGO_DB_PATH", joinpath(pwd(), "data", "staging_smoke.duckdb")))
+    # Canonical: OHLCV_DUCKDB_PATH; legacy aliases: DUCKDB_PATH, TIINGO_DUCKDB_PATH, TIINGO_DB_PATH
+    db_path = abspath(get(ENV, "OHLCV_DUCKDB_PATH",
+        get(ENV, "DUCKDB_PATH",
+            get(ENV, "TIINGO_DUCKDB_PATH",
+                get(ENV, "TIINGO_DB_PATH", joinpath(pwd(), "data", "staging_smoke.duckdb"))))))
     ticker_limit = parse_int_env("TIINGO_SMOKE_TICKER_LIMIT", 25)
     batch_size = parse_int_env("TIINGO_SMOKE_BATCH_SIZE", min(ticker_limit, 25))
     max_concurrent = parse_int_env("TIINGO_SMOKE_MAX_CONCURRENT", 5)
     use_parallel = parse_bool_env("TIINGO_SMOKE_USE_PARALLEL", false)
     export_postgres = parse_bool_env("TIINGO_SMOKE_EXPORT_POSTGRES", false)
-    pg_connection_string = String(strip(get(ENV, "TIINGO_PG_CONNECTION", "")))
+    # Canonical: OHLCV_PG_CONNECTION; legacy alias: TIINGO_PG_CONNECTION
+    pg_connection_string = String(strip(get(ENV, "OHLCV_PG_CONNECTION",
+        get(ENV, "TIINGO_PG_CONNECTION", ""))))
 
     if ticker_limit < 1
         throw(ArgumentError("TIINGO_SMOKE_TICKER_LIMIT must be >= 1"))
@@ -45,7 +51,7 @@ function main()
         throw(ArgumentError("TIINGO_SMOKE_MAX_CONCURRENT must be >= 1"))
     end
     if export_postgres && isempty(pg_connection_string)
-        throw(ArgumentError("TIINGO_PG_CONNECTION is required when TIINGO_SMOKE_EXPORT_POSTGRES=true"))
+        throw(ArgumentError("OHLCV_PG_CONNECTION (or legacy TIINGO_PG_CONNECTION) is required when TIINGO_SMOKE_EXPORT_POSTGRES=true"))
     end
 
     mkpath(dirname(db_path))

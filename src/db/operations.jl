@@ -5,69 +5,75 @@ module Operations
     using Dates
     using Logging
 
-    using ..Config
     using ..Core: DuckDBConnection, validate_identifier
 
-    function build_upsert_values(row, ticker::String)
-        return (
-            ticker,
-            row.date,
-            coalesce(row.close, NaN),
-            coalesce(row.high, NaN),
-            coalesce(row.low, NaN),
-            coalesce(row.open, NaN),
-            coalesce(row.volume, 0),
-            coalesce(row.adjClose, NaN),
-            coalesce(row.adjHigh, NaN),
-            coalesce(row.adjLow, NaN),
-            coalesce(row.adjOpen, NaN),
-            coalesce(row.adjVolume, 0),
-            coalesce(row.divCash, 0.0),
-            coalesce(row.splitFactor, 1.0)
-        )
-    end
+    # Name of the transient view used to expose a DataFrame to DuckDB for a
+    # single set-based upsert. Registered just before the INSERT and removed
+    # immediately after, so it never collides across calls on one connection.
+    const UPSERT_SOURCE_VIEW = "_tiingo_upsert_source"
 
-    function execute_upsert_in_chunks(
+    """
+        execute_upsert_set_based(conn, data, ticker)
+
+    Upsert `data` into `historical_data` with a single set-based statement.
+
+    The DataFrame is registered as a zero-copy DuckDB view and inserted in one
+    `INSERT ... SELECT ... ON CONFLICT` round trip, replacing the previous
+    per-row prepared-statement loop. `COALESCE` mirrors the old per-row default
+    handling (NaN for prices, 0 for volumes, 0.0 dividends, 1.0 split factor).
+
+    Assumes one ticker's data with unique `date` values per call (true for a
+    Tiingo daily response); duplicate keys within a batch would violate the
+    `ON CONFLICT` target.
+    """
+    function execute_upsert_set_based(
         conn::DuckDBConnection,
         data::DataFrame,
-        ticker::String,
-        upsert_stmt::String
+        ticker::String
     )::Int
         if nrow(data) == 0
             return 0
         end
 
-        chunk_size = max(1, Config.parse_env_int("TIINGO_DUCKDB_UPSERT_CHUNK_SIZE", 1000))
-        rows_updated = 0
-        in_transaction = false
-
+        DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
         try
-            for (i, row) in enumerate(eachrow(data))
-                if !in_transaction
-                    DBInterface.execute(conn, "BEGIN TRANSACTION")
-                    in_transaction = true
-                end
-
-                DBInterface.execute(conn, upsert_stmt, build_upsert_values(row, ticker))
-                rows_updated += 1
-
-                if i % chunk_size == 0
-                    DBInterface.execute(conn, "COMMIT")
-                    in_transaction = false
-                end
-            end
-
-            if in_transaction
-                DBInterface.execute(conn, "COMMIT")
-            end
-        catch
-            if in_transaction
-                DBInterface.execute(conn, "ROLLBACK")
-            end
-            rethrow()
+            upsert_stmt = """
+            INSERT INTO historical_data (ticker, date, close, high, low, open, volume, adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor)
+            SELECT
+                CAST(? AS VARCHAR),
+                date,
+                COALESCE(close, 'nan'::FLOAT),
+                COALESCE(high, 'nan'::FLOAT),
+                COALESCE(low, 'nan'::FLOAT),
+                COALESCE(open, 'nan'::FLOAT),
+                COALESCE(volume, 0),
+                COALESCE(adjClose, 'nan'::FLOAT),
+                COALESCE(adjHigh, 'nan'::FLOAT),
+                COALESCE(adjLow, 'nan'::FLOAT),
+                COALESCE(adjOpen, 'nan'::FLOAT),
+                COALESCE(adjVolume, 0),
+                COALESCE(divCash, 0.0),
+                COALESCE(splitFactor, 1.0)
+            FROM $UPSERT_SOURCE_VIEW
+            ON CONFLICT (ticker, date) DO UPDATE SET
+                close = EXCLUDED.close,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                open = EXCLUDED.open,
+                volume = EXCLUDED.volume,
+                adjClose = EXCLUDED.adjClose,
+                adjHigh = EXCLUDED.adjHigh,
+                adjLow = EXCLUDED.adjLow,
+                adjOpen = EXCLUDED.adjOpen,
+                adjVolume = EXCLUDED.adjVolume,
+                divCash = EXCLUDED.divCash,
+                splitFactor = EXCLUDED.splitFactor
+            """
+            DBInterface.execute(conn, upsert_stmt, (ticker,))
+            return nrow(data)
+        finally
+            DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
         end
-
-        return rows_updated
     end
 
     """
@@ -80,25 +86,8 @@ module Operations
         data::DataFrame,
         ticker::String
     )
-        upsert_stmt = """
-        INSERT INTO historical_data (ticker, date, close, high, low, open, volume, adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (ticker, date) DO UPDATE SET
-            close = EXCLUDED.close,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            open = EXCLUDED.open,
-            volume = EXCLUDED.volume,
-            adjClose = EXCLUDED.adjClose,
-            adjHigh = EXCLUDED.adjHigh,
-            adjLow = EXCLUDED.adjLow,
-            adjOpen = EXCLUDED.adjOpen,
-            adjVolume = EXCLUDED.adjVolume,
-            divCash = EXCLUDED.divCash,
-            splitFactor = EXCLUDED.splitFactor
-        """
         try
-            return execute_upsert_in_chunks(conn, data, ticker, upsert_stmt)
+            return execute_upsert_set_based(conn, data, ticker)
         catch e
             @error "Error upserting stock data for $ticker" exception=(e, catch_backtrace())
             rethrow(e)
@@ -108,7 +97,8 @@ module Operations
     """
         upsert_stock_data_bulk(conn::DuckDBConnection, data::DataFrame, ticker::String)
 
-    Bulk upsert stock data into the historical_data table using prepared statements for better performance.
+    Bulk upsert stock data into the historical_data table. Filters to `ticker`
+    when a `ticker` column is present, then delegates to the set-based upsert.
     """
     function upsert_stock_data_bulk(
         conn::DuckDBConnection,
@@ -119,33 +109,16 @@ module Operations
             return 0
         end
 
-        # Filter data for the specific ticker only if the column exists
-        has_ticker_col = :ticker in names(data)
+        # Filter data for the specific ticker only if the column exists.
+        # Use propertynames (Symbols); names() returns Strings and would never match.
+        has_ticker_col = :ticker in propertynames(data)
         ticker_data = has_ticker_col ? filter(row -> row.ticker == ticker, data) : data
         if nrow(ticker_data) == 0
             return 0
         end
 
-        upsert_stmt = """
-        INSERT INTO historical_data (ticker, date, close, high, low, open, volume, adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (ticker, date) DO UPDATE SET
-            close = EXCLUDED.close,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            open = EXCLUDED.open,
-            volume = EXCLUDED.volume,
-            adjClose = EXCLUDED.adjClose,
-            adjHigh = EXCLUDED.adjHigh,
-            adjLow = EXCLUDED.adjLow,
-            adjOpen = EXCLUDED.adjOpen,
-            adjVolume = EXCLUDED.adjVolume,
-            divCash = EXCLUDED.divCash,
-            splitFactor = EXCLUDED.splitFactor
-        """
-
         try
-            return execute_upsert_in_chunks(conn, ticker_data, ticker, upsert_stmt)
+            return execute_upsert_set_based(conn, ticker_data, ticker)
         catch e
             @error "Error bulk upserting stock data for $ticker" exception=(e, catch_backtrace())
             rethrow(e)

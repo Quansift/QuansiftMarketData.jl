@@ -172,8 +172,13 @@ module Schema
         end
         query *= join(columns, ", ")
 
-        if lowercase(table_name) == "historical_data"
-            query *= ", UNIQUE (ticker, date)"
+        # Match the logical table name even when building a staging table
+        # (e.g. "historical_data_staging"), so the swapped-in table keeps the
+        # (ticker, date) key that ON CONFLICT upserts rely on. Use PRIMARY KEY
+        # so it is a valid FK target and is found by get_primary_key_columns.
+        base_name = replace(lowercase(table_name), r"_staging$" => "")
+        if base_name == "historical_data"
+            query *= ", PRIMARY KEY (ticker, date)"
         end
 
         query *= ")"

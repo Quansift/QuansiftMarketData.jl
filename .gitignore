@@ -57,6 +57,7 @@ supported_tickers.csv
 *.log
 stock.log
 .claude/logs/
+.serena/
 
 # Temporary files
 *.tmp

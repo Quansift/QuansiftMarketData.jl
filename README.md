@@ -223,6 +223,28 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 
 Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix env vars only affect Compose interpolation and do not override values loaded into the container from `TIINGO_APP_ENV_FILE`.
 
+### Updating the checkout(s)
+
+On the `10kpw-non-prod` data-plane droplet TiingoJulia is checked out in **two**
+places — keep **both** current when you pull a source update, they can drift:
+
+- **`/opt/tiingojulia`** — the systemd + `docker compose` production checkout (above).
+- **`~/10kpw/TiingoJulia`** — the working checkout used alongside the
+  `quansift_scheduler` Julia pipeline.
+
+```bash
+git -C /opt/tiingojulia pull --ff-only
+git -C ~/10kpw/TiingoJulia pull --ff-only
+```
+
+For the Docker pipeline, also refresh the image and restart the timer:
+
+```bash
+cd /opt/tiingojulia
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+sudo systemctl restart tiingojulia-pipeline.timer
+```
+
 ### TokusenQuant.com
 
 Copy-paste path for prod (`tokusenquant.com`):

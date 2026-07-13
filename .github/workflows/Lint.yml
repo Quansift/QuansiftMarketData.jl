@@ -15,7 +15,7 @@ jobs:
         name: Linting
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
             - uses: julia-actions/setup-julia@v3
               with:
                   version: "1.12"
@@ -25,7 +25,7 @@ jobs:
             - uses: actions/setup-python@v6
               with:
                   cache: "pip"
-            - uses: actions/cache@v5
+            - uses: actions/cache@v6
               with:
                   path: ~/.cache/pre-commit
                   key: ${{ runner.os }}-pre-commit-${{ hashFiles('**/.pre-commit-config.yaml') }}
@@ -37,7 +37,7 @@ jobs:
         name: Link Checker
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
             - uses: lycheeverse/lychee-action@v2.8.0
 
               with:

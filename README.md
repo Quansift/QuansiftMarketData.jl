@@ -122,6 +122,8 @@ For deployment guidance, see [PRODUCTION.md](PRODUCTION.md).
 
 ## Production Deployment
 
+> **Canonical runtime = `/opt/tiingojulia`** (Docker + systemd; see below). A source checkout may also exist at `/home/shin/10kpw/TiingoJulia`; it is **not** the runtime — do not run the pipeline from there. If you build/develop from that checkout, refresh Julia deps after `git pull`: `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'`.
+
 The current Linux deployment path is:
 
 - `systemd timer` as the scheduler

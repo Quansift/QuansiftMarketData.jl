@@ -301,7 +301,7 @@ module Postgres
     close_postgres(conn::PostgreSQLConnection) = LibPQ.close(conn)
 
     """
-        export_to_postgres(duckdb_conn::DuckDBConnection, pg_conn::PostgreSQLConnection, tables::Vector{String}; pg_host::String="127.0.0.1", pg_user::String="otwn", pg_dbname::String="tiingo")
+        export_to_postgres(duckdb_conn::DuckDBConnection, pg_conn::PostgreSQLConnection, tables::Vector{String}; pg_host::String="127.0.0.1", pg_user::String="postgres", pg_dbname::String="tiingo")
 
     Export tables from DuckDB to PostgreSQL.
     """

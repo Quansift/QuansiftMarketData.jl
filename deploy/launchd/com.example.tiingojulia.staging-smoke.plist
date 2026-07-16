@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.otwn.tiingojulia.staging-smoke</string>
+    <string>com.example.tiingojulia.staging-smoke</string>
 
     <key>ProgramArguments</key>
     <array>

@@ -101,7 +101,7 @@ TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -146,7 +146,7 @@ TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
 TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -167,21 +167,21 @@ journalctl -u tiingojulia-pipeline.service -f
 
 ## macOS Scheduler
 
-This repo now includes a `launchd` job definition at [`deploy/launchd/com.otwn.tiingojulia.staging-smoke.plist`](deploy/launchd/com.otwn.tiingojulia.staging-smoke.plist).
+This repo now includes a `launchd` job definition at [`deploy/launchd/com.example.tiingojulia.staging-smoke.plist`](deploy/launchd/com.example.tiingojulia.staging-smoke.plist).
 
 Install it with:
 
 ```bash
-mkdir -p /Users/otwn/Library/LaunchAgents /Users/otwn/Documents/TiingoJulia/logs
-cp /Users/otwn/Documents/TiingoJulia/deploy/launchd/com.otwn.tiingojulia.staging-smoke.plist /Users/otwn/Library/LaunchAgents/
-launchctl unload /Users/otwn/Library/LaunchAgents/com.otwn.tiingojulia.staging-smoke.plist 2>/dev/null || true
-launchctl load /Users/otwn/Library/LaunchAgents/com.otwn.tiingojulia.staging-smoke.plist
+mkdir -p /Users/<user>/Library/LaunchAgents /Users/<user>/Documents/TiingoJulia/logs
+cp /Users/<user>/Documents/TiingoJulia/deploy/launchd/com.example.tiingojulia.staging-smoke.plist /Users/<user>/Library/LaunchAgents/
+launchctl unload /Users/<user>/Library/LaunchAgents/com.example.tiingojulia.staging-smoke.plist 2>/dev/null || true
+launchctl load /Users/<user>/Library/LaunchAgents/com.example.tiingojulia.staging-smoke.plist
 ```
 
 Run it immediately once with:
 
 ```bash
-launchctl start com.otwn.tiingojulia.staging-smoke
+launchctl start com.example.tiingojulia.staging-smoke
 ```
 
 The current schedule is daily at `06:00` local machine time. Adjust the `Hour` and `Minute` fields in the plist if you want a different schedule.

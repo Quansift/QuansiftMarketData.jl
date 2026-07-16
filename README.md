@@ -122,6 +122,8 @@ For deployment guidance, see [PRODUCTION.md](PRODUCTION.md).
 
 ## Production Deployment
 
+> **Canonical runtime = `/opt/tiingojulia`** (Docker + systemd; see below). A source checkout may also exist at `/home/<user>/TiingoJulia`; it is **not** the runtime — do not run the pipeline from there. If you build/develop from that checkout, refresh Julia deps after `git pull`: `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'`.
+
 The current Linux deployment path is:
 
 - `systemd timer` as the scheduler
@@ -166,7 +168,7 @@ TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 ```
 
@@ -187,7 +189,7 @@ TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
 TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -262,7 +264,7 @@ TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
 TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
 TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 

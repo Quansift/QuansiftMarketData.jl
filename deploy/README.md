@@ -50,7 +50,7 @@ Environment tiers (same image, config-only difference):
    TIINGO_IMAGE_TAG=staging
    TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
    TIINGO_DOCKER_NETWORK=db-net
-   TIINGO_DB_HOST_DIR=/home/shin/tiingo/data
+   TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
    TIINGO_DB_CONTAINER_DIR=/data
    ```
 

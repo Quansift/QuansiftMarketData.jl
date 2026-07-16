@@ -20,7 +20,7 @@ using Logging
 # Reuse the package's postgres ATTACH mechanism (src/db/postgres.jl:525-556)
 import TiingoJulia.DB.Postgres: connection_options_map, postgres_env_vars, with_temporary_env
 
-const DEFAULT_PG_CONN_STR = "postgresql://otwn@127.0.0.1:5432/tiingo?sslmode=disable"
+const DEFAULT_PG_CONN_STR = "postgresql://postgres@127.0.0.1:5432/tiingo?sslmode=disable"
 const DEFAULT_DUCKDB_PATH = "data/tiingo_local.duckdb"
 const TABLES_TO_EXPORT = ["historical_data", "us_tickers_filtered"]
 

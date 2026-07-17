@@ -7,7 +7,7 @@ JuliaMinVersion: '1.6'
 License: MIT
 LicenseCopyrightHolders: 10kpw
 PackageName: TiingoJulia
-PackageOwner: 10kpw
+PackageOwner: Quansift
 PackageUUID: 1316d3df-ea13-4eef-8810-037e2b70086f
 _commit: v0.10.1
 _src_path: https://github.com/abelsiqueira/BestieTemplate.jl

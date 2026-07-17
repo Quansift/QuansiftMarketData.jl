@@ -12,15 +12,15 @@ const numbered_pages = [
 makedocs(;
     modules = [TiingoJulia],
     authors = "Kojiroh <kojiroh.homma@gmail.com> and contributors",
-    repo = "https://github.com/10kpw/TiingoJulia/blob/{commit}{path}#{line}",
+    repo = "https://github.com/Quansift/TiingoJulia/blob/{commit}{path}#{line}",
     sitename = "TiingoJulia",
     warnonly = [:missing_docs, :cross_references],
-    format = Documenter.HTML(; canonical = "https://10kpw.github.io/TiingoJulia"),
+    format = Documenter.HTML(; canonical = "https://quansift.github.io/TiingoJulia"),
     pages = ["index.md"; numbered_pages],
 )
 
 if lowercase(get(ENV, "DOCS_DEPLOY", "true")) in ("1", "true", "yes")
-    deploydocs(; repo = "github.com/10kpw/TiingoJulia", devbranch = "main")
+    deploydocs(; repo = "github.com/Quansift/TiingoJulia", devbranch = "main")
 else
     @info "DOCS_DEPLOY is false; skipping deploydocs"
 end

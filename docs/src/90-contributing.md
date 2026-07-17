@@ -8,7 +8,7 @@ Be polite and respectful, and follow the code of conduct.
 
 ## Bug reports and discussions
 
-If you think you found a bug, feel free to open an [issue](https://github.com/10kpw/TiingoJulia/issues).
+If you think you found a bug, feel free to open an [issue](https://github.com/Quansift/TiingoJulia/issues).
 Focused suggestions and requests can also be opened as issues.
 Before opening a pull request, start an issue or a discussion on the topic, please.
 

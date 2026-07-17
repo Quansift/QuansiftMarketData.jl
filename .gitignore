@@ -56,8 +56,9 @@ supported_tickers.csv
 # Log files
 *.log
 stock.log
-.claude/logs/
-.claude/settings.json
+# Agent tooling (local dev config — not for the public repo)
+.codex/
+.claude/
 .serena/
 
 # Temporary files

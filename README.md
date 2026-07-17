@@ -2,9 +2,9 @@
 
 A Julia package for downloading and managing financial data from the Tiingo API, with high-performance DuckDB storage and parallel processing capabilities.
 
-[![Tests](https://img.shields.io/github/actions/workflow/status/10kpw/TiingoJulia/CI.yml?branch=main&label=Tests)](https://github.com/10kpw/TiingoJulia/actions)
-[![Documentation](https://img.shields.io/github/actions/workflow/status/10kpw/TiingoJulia/Docs.yml?branch=main&label=Docs)](https://10kpw.github.io/TiingoJulia/dev)
-[![Lint](https://img.shields.io/github/actions/workflow/status/10kpw/TiingoJulia/Lint.yml?branch=main&label=Lint)](https://github.com/10kpw/TiingoJulia/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/TiingoJulia/actions)
+[![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/TiingoJulia/dev)
+[![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/TiingoJulia/actions)
 
 ## Features
 
@@ -113,7 +113,7 @@ update_historical(conn, large_tickers;
 
 ## How to Cite
 
-If you use TiingoJulia.jl in your work, please cite using the reference given in [CITATION.cff](https://github.com/10kpw/TiingoJulia/blob/main/CITATION.cff).
+If you use TiingoJulia.jl in your work, please cite using the reference given in [CITATION.cff](https://github.com/Quansift/TiingoJulia/blob/main/CITATION.cff).
 
 ## Changelog
 
@@ -141,8 +141,8 @@ On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THR
 
 Application env file:
 
-- Preprod (`10kpw-non-prod`): `/opt/tiingojulia/.env.staging`
-- Prod (`tokusenquant.com`): `/opt/tiingojulia/.env`
+- Preprod: `/opt/tiingojulia/.env.staging`
+- Prod: `/opt/tiingojulia/.env`
 
 Host-side `systemd` env file:
 
@@ -172,14 +172,14 @@ TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
 TIINGO_DB_CONTAINER_DIR=/data
 ```
 
-### 10kpw Droplet
+### Preprod Droplet
 
-Copy-paste path for preprod (`10kpw-non-prod`):
+Copy-paste path for preprod:
 
 ```bash
 sudo mkdir -p /opt/tiingojulia
 sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
 cd /opt/tiingojulia
 
 cp .env.staging.example .env.staging
@@ -227,16 +227,16 @@ Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix e
 
 ### Updating the checkout(s)
 
-On the `10kpw-non-prod` data-plane droplet TiingoJulia is checked out in **two**
+On the preprod droplet TiingoJulia is checked out in **two**
 places — keep **both** current when you pull a source update, they can drift:
 
 - **`/opt/tiingojulia`** — the systemd + `docker compose` production checkout (above).
-- **`~/10kpw/TiingoJulia`** — the working checkout used alongside the
-  `quansift_scheduler` Julia pipeline.
+- **`~/<user>/TiingoJulia`** — the working checkout used alongside the
+  scheduler Julia pipeline.
 
 ```bash
 git -C /opt/tiingojulia pull --ff-only
-git -C ~/10kpw/TiingoJulia pull --ff-only
+git -C ~/<user>/TiingoJulia pull --ff-only
 ```
 
 For the Docker pipeline, also refresh the image and restart the timer:
@@ -247,14 +247,14 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
 sudo systemctl restart tiingojulia-pipeline.timer
 ```
 
-### TokusenQuant.com
+### Prod Droplet
 
-Copy-paste path for prod (`tokusenquant.com`):
+Copy-paste path for prod:
 
 ```bash
 sudo mkdir -p /opt/tiingojulia
 sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
 cd /opt/tiingojulia
 
 cp .env.example .env

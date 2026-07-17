@@ -7,11 +7,11 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>~/10kpw/TiingoJulia/scripts/run_staging_smoke.sh</string>
+        <string>~/<user>/TiingoJulia/scripts/run_staging_smoke.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>~/10kpw/TiingoJulia</string>
+    <string>~/<user>/TiingoJulia</string>
 
     <key>RunAtLoad</key>
     <false/>
@@ -25,9 +25,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>~/10kpw/TiingoJulia/logs/staging_smoke.out.log</string>
+    <string>~/<user>/TiingoJulia/logs/staging_smoke.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>~/10kpw/TiingoJulia/logs/staging_smoke.err.log</string>
+    <string>~/<user>/TiingoJulia/logs/staging_smoke.err.log</string>
 </dict>
 </plist>

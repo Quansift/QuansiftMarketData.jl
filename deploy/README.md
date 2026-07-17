@@ -8,8 +8,8 @@ Environment tiers (same image, config-only difference):
 
 | Domain | Role | Host | Image tag | Env file |
 |--------|------|------|-----------|----------|
-| 10kpw.com | preprod | `10kpw-non-prod` | `staging` | `.env.staging` |
-| TokusenQuant.com | prod | — | `latest` (or version) | `.env` |
+| `<preprod-domain>` | preprod | `<preprod-droplet>` | `staging` | `.env.staging` |
+| `<prod-domain>` | prod | — | `latest` (or version) | `.env` |
 
 ## One-time setup on a droplet
 

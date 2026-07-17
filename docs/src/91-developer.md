@@ -17,7 +17,7 @@ If this is the first time you work with this repository, follow the instructions
 3. Add this repo as a remote:
 
    ```bash
-   git remote add upstream https://github.com/10kpw/TiingoJulia
+   git remote add upstream https://github.com/Quansift/TiingoJulia
    ```
 
 This will ensure that you have two remotes in your git: `origin` and `upstream`.
@@ -150,7 +150,7 @@ To create a new release, you can follow these simple steps:
     - Change the "[unreleased]" link to use the latest version - end of line, `vx.y.z ... HEAD`.
 - Keep general docs version-neutral (avoid hardcoding the current package version in docs pages). Only include version numbers in release/changelog/"what changed" style documentation.
 - Create a commit "Release vx.y.z", push, create a PR, wait for it to pass, merge the PR.
-- Go back to main screen and click on the latest commit (link: <https://github.com/10kpw/TiingoJulia/commit/main>)
+- Go back to main screen and click on the latest commit (link: <https://github.com/Quansift/TiingoJulia/commit/main>)
 - At the bottom, write `@JuliaRegistrator register`
 
 After that, you only need to wait and verify:
@@ -158,7 +158,7 @@ After that, you only need to wait and verify:
 - Wait for the bot to comment (should take < 1m) with a link to a RP to the registry
 - Follow the link and wait for a comment on the auto-merge
 - The comment should said all is well and auto-merge should occur shortly
-- After the merge happens, TagBot will trigger and create a new GitHub tag. Check on <https://github.com/10kpw/TiingoJulia/releases>
+- After the merge happens, TagBot will trigger and create a new GitHub tag. Check on <https://github.com/Quansift/TiingoJulia/releases>
 - After the release is create, a "docs" GitHub action will start for the tag.
 - After it passes, a deploy action will run.
 - After that runs, the stable docs should be updated. Check them and look for the version number.

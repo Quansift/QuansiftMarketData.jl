@@ -17,7 +17,7 @@ TiingoJulia is close to production use, but it should be shipped with the same d
 - Secrets: environment variables or a secret manager
 - Telemetry: process logs plus request/error/row-count metrics
 
-`systemd timer` is the recommended scheduler for both `10kpw-non-prod` and `tokusenquant.com`.
+`systemd timer` is the recommended scheduler for both preprod and prod.
 It fits the existing repository assets, handles Docker/network dependencies cleanly,
 and is easier to inspect than `cron` with `systemctl` and `journalctl`.
 
@@ -86,12 +86,12 @@ Container runs respect `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) from the
 The compose file bind-mounts a host DuckDB directory into the container, so `OHLCV_DUCKDB_PATH`
 should point at the container-side mount location, such as `/data/tiingo_historical_data.duckdb`.
 
-### 10kpw Preprod (`10kpw-non-prod`)
+### Preprod
 
 ```bash
 sudo mkdir -p /opt/tiingojulia
 sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
 cd /opt/tiingojulia
 
 cp .env.staging.example .env.staging
@@ -131,12 +131,12 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 
 Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix env vars only affect Compose interpolation and do not override values loaded into the container from `TIINGO_APP_ENV_FILE`.
 
-### TokusenQuant Prod (`tokusenquant.com`)
+### Prod
 
 ```bash
 sudo mkdir -p /opt/tiingojulia
 sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/10kpw/TiingoJulia.git /opt/tiingojulia
+git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
 cd /opt/tiingojulia
 
 cp .env.example .env

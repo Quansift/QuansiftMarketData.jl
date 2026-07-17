@@ -1,6 +1,6 @@
 [Unit]
 Description=TiingoJulia data pipeline (oneshot container run)
-Documentation=https://github.com/10kpw/TiingoJulia
+Documentation=https://github.com/Quansift/TiingoJulia
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

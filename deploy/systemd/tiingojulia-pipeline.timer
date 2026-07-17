@@ -1,6 +1,6 @@
 [Unit]
 Description=Run the TiingoJulia data pipeline daily
-Documentation=https://github.com/10kpw/TiingoJulia
+Documentation=https://github.com/Quansift/TiingoJulia
 
 [Timer]
 # Daily at 06:00 (matches the previous macOS launchd schedule). Adjust as needed.

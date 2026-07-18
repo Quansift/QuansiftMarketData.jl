@@ -1,22 +1,22 @@
-# Droplet deployment (containerized pipeline)
+# Server deployment (containerized pipeline)
 
-The TiingoJulia pipeline runs as a **oneshot container** joined to the DB stack's
+The TiingoJulia pipeline runs as a **oneshot container** joined to your DB stack's
 shared Docker network, scheduled by a systemd timer. The image is built and pushed
-to GHCR by CI, so the droplet only pulls (no heavy Julia precompile on the droplet).
+to GHCR by CI, so the deployment host only pulls (no heavy Julia precompile on the host).
 
 Environment tiers (same image, config-only difference):
 
-| Domain | Role | Host | Image tag | Env file |
-|--------|------|------|-----------|----------|
-| `<preprod-domain>` | preprod | `<preprod-droplet>` | `staging` | `.env.staging` |
-| `<prod-domain>` | prod | — | `latest` (or version) | `.env` |
+| Role | Image tag | Env file |
+|------|-----------|----------|
+| preprod | `staging` | `.env.staging` |
+| prod | `latest` (or version) | `.env` |
 
-## One-time setup on a droplet
+## One-time setup on a host
 
-1. **Clone / place the repo** at `/opt/tiingojulia` (or edit `WorkingDirectory` in the
-   systemd unit to point at your checkout).
+1. **Clone / place the repo** at a deployment directory of your choice (referred to
+   below as `<deploy-dir>`), and set `WorkingDirectory` in the systemd unit to match.
 
-2. **Authenticate to GHCR** so the droplet can pull the (private) image:
+2. **Authenticate to GHCR** so the host can pull the (private) image:
 
    ```bash
    echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
@@ -26,7 +26,7 @@ Environment tiers (same image, config-only difference):
    then no login is needed.)
 
 3. **Create the env file** at the repo root. The PG host must be the **in-network
-   alias on port 5432** (not the host-published `127.0.0.1:5433`):
+   alias on port 5432** (not a port published on the host loopback):
 
    ```dotenv
    TIINGO_API_KEY=...
@@ -34,7 +34,8 @@ Environment tiers (same image, config-only difference):
    TIINGO_SMOKE_EXPORT_POSTGRES=true
    ```
 
-   Preprod aliases that resolve on `db-net`: `postgres`, `postgres_db`, `pdb`.
+   Use whatever alias your PostgreSQL container exposes on the shared Docker
+   network (commonly `postgres`).
 
 4. **Create the host-side systemd env file** so `docker compose` gets the right
    image tag, app env file, and external network:
@@ -48,9 +49,9 @@ Environment tiers (same image, config-only difference):
    ```dotenv
    TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
    TIINGO_IMAGE_TAG=staging
-   TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
-   TIINGO_DOCKER_NETWORK=db-net
-   TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+   TIINGO_APP_ENV_FILE=<deploy-dir>/.env.staging
+   TIINGO_DOCKER_NETWORK=<db-network>
+   TIINGO_DB_HOST_DIR=<db-host-dir>
    TIINGO_DB_CONTAINER_DIR=/data
    ```
 
@@ -80,7 +81,7 @@ Environment tiers (same image, config-only difference):
 ```bash
 sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
 sudo cp deploy/systemd/tiingojulia-pipeline.timer   /etc/systemd/system/
-# edit WorkingDirectory in the .service if not using /opt/tiingojulia
+# edit WorkingDirectory in the .service to point at your deployment directory
 sudo systemctl daemon-reload
 sudo systemctl enable --now tiingojulia-pipeline.timer
 systemctl list-timers tiingojulia-pipeline.timer   # confirm next run
@@ -89,12 +90,12 @@ journalctl -u tiingojulia-pipeline.service -f      # follow run logs
 
 ## preprod → prod promotion
 
-Same files. On the prod droplet:
+Same files. On the prod host:
 
 - set `TIINGO_IMAGE_TAG=latest`
 - set `TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia`
-- set `TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env`
-- keep `TIINGO_DOCKER_NETWORK=db-net` unless the prod DB stack exposes a different name
+- set `TIINGO_APP_ENV_FILE=<deploy-dir>/.env`
+- set `TIINGO_DOCKER_NETWORK` to the external Docker network name your prod DB stack exposes
 - set `TIINGO_DB_HOST_DIR` to the host directory that already contains `tiingo_historical_data.duckdb`
 - keep `TIINGO_DB_CONTAINER_DIR=/data`
 
@@ -110,7 +111,7 @@ If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
   selected app env file. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB
   scratch space. The compose file pins scratch space and downloaded ticker temp
   files to `/tmp` inside the container.
-- On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`,
+- On 3GB-class hosts, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`,
   `TIINGO_DUCKDB_THREADS=1`, `TIINGO_DUCKDB_WORKER_THREADS=1`,
   `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`, and
   `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.

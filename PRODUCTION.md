@@ -56,7 +56,7 @@ The smoke test will:
 `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
 The containerized deployment keeps scratch space and downloaded ticker temp files in `/tmp`
 but no longer overrides `OHLCV_DUCKDB_PATH`.
-On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
+On 3GB-class hosts, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
 `TIINGO_DUCKDB_WORKER_THREADS=1`, `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`,
 and `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
 
@@ -88,20 +88,24 @@ should point at the container-side mount location, such as `/data/tiingo_histori
 
 ### Preprod
 
+Choose your own deployment directory, DB network name, and DuckDB host directory:
+
 ```bash
-sudo mkdir -p /opt/tiingojulia
-sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
-cd /opt/tiingojulia
+DEPLOY_DIR=/path/to/tiingojulia
+
+sudo mkdir -p "$DEPLOY_DIR"
+sudo chown "$USER":"$USER" "$DEPLOY_DIR"
+git clone https://github.com/Quansift/TiingoJulia.git "$DEPLOY_DIR"
+cd "$DEPLOY_DIR"
 
 cp .env.staging.example .env.staging
 
-cat >/tmp/tiingojulia-pipeline <<'EOF'
+cat >/tmp/tiingojulia-pipeline <<EOF
 TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
-TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
-TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+TIINGO_APP_ENV_FILE=$DEPLOY_DIR/.env.staging
+TIINGO_DOCKER_NETWORK=<db-network>
+TIINGO_DB_HOST_DIR=<db-host-dir>
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -133,20 +137,24 @@ Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix e
 
 ### Prod
 
+Same placeholders as preprod:
+
 ```bash
-sudo mkdir -p /opt/tiingojulia
-sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
-cd /opt/tiingojulia
+DEPLOY_DIR=/path/to/tiingojulia
+
+sudo mkdir -p "$DEPLOY_DIR"
+sudo chown "$USER":"$USER" "$DEPLOY_DIR"
+git clone https://github.com/Quansift/TiingoJulia.git "$DEPLOY_DIR"
+cd "$DEPLOY_DIR"
 
 cp .env.example .env
 
-cat >/tmp/tiingojulia-pipeline <<'EOF'
+cat >/tmp/tiingojulia-pipeline <<EOF
 TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
-TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
-TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+TIINGO_APP_ENV_FILE=$DEPLOY_DIR/.env
+TIINGO_DOCKER_NETWORK=<db-network>
+TIINGO_DB_HOST_DIR=<db-host-dir>
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 

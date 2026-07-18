@@ -122,7 +122,7 @@ For deployment guidance, see [PRODUCTION.md](PRODUCTION.md).
 
 ## Production Deployment
 
-> **Canonical runtime = `/opt/tiingojulia`** (Docker + systemd; see below). A source checkout may also exist at `/home/<user>/TiingoJulia`; it is **not** the runtime — do not run the pipeline from there. If you build/develop from that checkout, refresh Julia deps after `git pull`: `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'`.
+> **The pipeline runs via Docker + a systemd timer** from your deployment checkout (see below). If you also keep a separate source checkout for development, that checkout is **not** the runtime — do not run the pipeline from there. After `git pull` in a development checkout, refresh Julia deps: `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'`.
 
 The current Linux deployment path is:
 
@@ -134,15 +134,15 @@ The current Linux deployment path is:
 
 `cron` is not the recommended scheduler here. The repo ships `systemd` units and the pipeline depends on Docker plus an external DB network, which `systemd` manages more cleanly.
 `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) is the intermediate DuckDB file path. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB scratch space.
-On 3GB-class droplets, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
+On 3GB-class hosts, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`, `TIINGO_DUCKDB_THREADS=1`,
 `TIINGO_DUCKDB_WORKER_THREADS=1`, and keep `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`.
 
 ### Required Env Files
 
 Application env file:
 
-- Preprod: `/opt/tiingojulia/.env.staging`
-- Prod: `/opt/tiingojulia/.env`
+- Preprod: `<deploy-dir>/.env.staging`
+- Prod: `<deploy-dir>/.env`
 
 Host-side `systemd` env file:
 
@@ -166,30 +166,33 @@ The host-side `systemd` env file selects which image/env/network `docker compose
 ```dotenv
 TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
-TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
-TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+TIINGO_APP_ENV_FILE=<deploy-dir>/.env.staging
+TIINGO_DOCKER_NETWORK=<db-network>
+TIINGO_DB_HOST_DIR=<db-host-dir>
 TIINGO_DB_CONTAINER_DIR=/data
 ```
 
-### Preprod Droplet
+### Preprod Host
 
-Copy-paste path for preprod:
+Copy-paste path for preprod (choose your own deployment directory, DB network
+name, and DuckDB host directory):
 
 ```bash
-sudo mkdir -p /opt/tiingojulia
-sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
-cd /opt/tiingojulia
+DEPLOY_DIR=/path/to/tiingojulia
+
+sudo mkdir -p "$DEPLOY_DIR"
+sudo chown "$USER":"$USER" "$DEPLOY_DIR"
+git clone https://github.com/Quansift/TiingoJulia.git "$DEPLOY_DIR"
+cd "$DEPLOY_DIR"
 
 cp .env.staging.example .env.staging
 
-cat >/tmp/tiingojulia-pipeline <<'EOF'
+cat >/tmp/tiingojulia-pipeline <<EOF
 TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=staging
-TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env.staging
-TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+TIINGO_APP_ENV_FILE=$DEPLOY_DIR/.env.staging
+TIINGO_DOCKER_NETWORK=<db-network>
+TIINGO_DB_HOST_DIR=<db-host-dir>
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -208,7 +211,7 @@ systemctl list-timers tiingojulia-pipeline.timer
 journalctl -u tiingojulia-pipeline.service -f
 ```
 
-Edit `/opt/tiingojulia/.env.staging` before the first run and set at least:
+Edit `<deploy-dir>/.env.staging` before the first run and set at least:
 
 - `TIINGO_API_KEY`
 - `OHLCV_PG_CONNECTION` (or legacy `TIINGO_PG_CONNECTION`) if PostgreSQL export is enabled
@@ -225,46 +228,44 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 
 Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this. Prefix env vars only affect Compose interpolation and do not override values loaded into the container from `TIINGO_APP_ENV_FILE`.
 
-### Updating the checkout(s)
+### Updating the checkout
 
-On the preprod droplet TiingoJulia is checked out in **two**
-places — keep **both** current when you pull a source update, they can drift:
-
-- **`/opt/tiingojulia`** — the systemd + `docker compose` production checkout (above).
-- **`~/<user>/TiingoJulia`** — the working checkout used alongside the
-  scheduler Julia pipeline.
+If you keep more than one checkout of TiingoJulia on a host (for example a
+deployment checkout plus a development checkout), keep each current when you
+pull a source update — they can drift:
 
 ```bash
-git -C /opt/tiingojulia pull --ff-only
-git -C ~/<user>/TiingoJulia pull --ff-only
+git -C "$DEPLOY_DIR" pull --ff-only
 ```
 
 For the Docker pipeline, also refresh the image and restart the timer:
 
 ```bash
-cd /opt/tiingojulia
+cd "$DEPLOY_DIR"
 docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
 sudo systemctl restart tiingojulia-pipeline.timer
 ```
 
-### Prod Droplet
+### Prod Host
 
-Copy-paste path for prod:
+Copy-paste path for prod (same placeholders as preprod):
 
 ```bash
-sudo mkdir -p /opt/tiingojulia
-sudo chown "$USER":"$USER" /opt/tiingojulia
-git clone https://github.com/Quansift/TiingoJulia.git /opt/tiingojulia
-cd /opt/tiingojulia
+DEPLOY_DIR=/path/to/tiingojulia
+
+sudo mkdir -p "$DEPLOY_DIR"
+sudo chown "$USER":"$USER" "$DEPLOY_DIR"
+git clone https://github.com/Quansift/TiingoJulia.git "$DEPLOY_DIR"
+cd "$DEPLOY_DIR"
 
 cp .env.example .env
 
-cat >/tmp/tiingojulia-pipeline <<'EOF'
+cat >/tmp/tiingojulia-pipeline <<EOF
 TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
 TIINGO_IMAGE_TAG=latest
-TIINGO_APP_ENV_FILE=/opt/tiingojulia/.env
-TIINGO_DOCKER_NETWORK=db-net
-TIINGO_DB_HOST_DIR=/home/<user>/tiingo/data
+TIINGO_APP_ENV_FILE=$DEPLOY_DIR/.env
+TIINGO_DOCKER_NETWORK=<db-network>
+TIINGO_DB_HOST_DIR=<db-host-dir>
 TIINGO_DB_CONTAINER_DIR=/data
 EOF
 
@@ -283,7 +284,7 @@ systemctl list-timers tiingojulia-pipeline.timer
 journalctl -u tiingojulia-pipeline.service -f
 ```
 
-Edit `/opt/tiingojulia/.env` before the first run and set:
+Edit `<deploy-dir>/.env` before the first run and set:
 
 - `TIINGO_API_KEY`
 - `OHLCV_PG_CONNECTION` (or legacy `TIINGO_PG_CONNECTION`)

@@ -178,6 +178,7 @@ using .Sync
 
 # Include fundamental data module
 include("fundamental.jl")
+include("fundamental_sync.jl")
 
 # Export all public functions to maintain backward compatibility
 export get_api_key
@@ -185,11 +186,14 @@ export get_ticker_data
 export download_tickers_duckdb, download_latest_tickers, process_tickers_csv, generate_filtered_tickers
 export connect_duckdb, close_duckdb, update_us_tickers
 export upsert_stock_data, upsert_stock_data_bulk
+export upsert_security_observations, upsert_fundamental_daily_metrics
 export add_historical_data, update_historical, update_historical_parallel, update_historical_sequential, update_split_ticker
 export get_tickers_all, get_tickers_etf, get_tickers_stock
 export connect_postgres, close_postgres, export_to_postgres
 export list_tables
-export get_daily_fundamental
+export get_daily_fundamental, get_fundamental_meta
+export normalize_security_observations, normalize_fundamental_daily_metrics
+export get_fundamental_watermarks, sync_fundamentals!
 export create_or_replace_table, create_tables, create_indexes, optimize_database
 # Export types and errors
 export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQLConnection

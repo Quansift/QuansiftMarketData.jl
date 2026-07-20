@@ -126,6 +126,85 @@ module Operations
     end
 
     """
+        upsert_security_observations(conn::DuckDBConnection, data::DataFrame)::Int
+
+    Idempotently upsert observed security identity snapshots using
+    `(perma_ticker, observed_at)` as the deterministic key.
+    """
+    function upsert_security_observations(conn::DuckDBConnection, data::DataFrame)::Int
+        nrow(data) == 0 && return 0
+
+        DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
+        try
+            DBInterface.execute(conn, """
+                INSERT INTO security_observations (
+                    perma_ticker, observed_at, ticker, is_active, is_adr,
+                    daily_last_updated, exchange, asset_type,
+                    price_coverage_start, price_coverage_end, is_leveraged,
+                    join_status
+                )
+                SELECT
+                    perma_ticker, observed_at, ticker, is_active, is_adr,
+                    daily_last_updated, exchange, asset_type,
+                    price_coverage_start, price_coverage_end, is_leveraged,
+                    join_status
+                FROM $UPSERT_SOURCE_VIEW
+                ON CONFLICT (perma_ticker, observed_at) DO UPDATE SET
+                    ticker = EXCLUDED.ticker,
+                    is_active = EXCLUDED.is_active,
+                    is_adr = EXCLUDED.is_adr,
+                    daily_last_updated = EXCLUDED.daily_last_updated,
+                    exchange = EXCLUDED.exchange,
+                    asset_type = EXCLUDED.asset_type,
+                    price_coverage_start = EXCLUDED.price_coverage_start,
+                    price_coverage_end = EXCLUDED.price_coverage_end,
+                    is_leveraged = EXCLUDED.is_leveraged,
+                    join_status = EXCLUDED.join_status
+            """)
+            return nrow(data)
+        finally
+            DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
+        end
+    end
+
+    """
+        upsert_fundamental_daily_metrics(conn::DuckDBConnection, data::DataFrame)::Int
+
+    Idempotently upsert Daily Metrics rows using `(perma_ticker, metric_date)`
+    as the deterministic key.
+    """
+    function upsert_fundamental_daily_metrics(
+        conn::DuckDBConnection,
+        data::DataFrame,
+    )::Int
+        nrow(data) == 0 && return 0
+
+        DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
+        try
+            DBInterface.execute(conn, """
+                INSERT INTO fundamental_daily_metrics (
+                    perma_ticker, metric_date, market_cap, enterprise_value,
+                    pe_ratio, available_at, fetched_at, source_revision
+                )
+                SELECT
+                    perma_ticker, metric_date, market_cap, enterprise_value,
+                    pe_ratio, available_at, fetched_at, source_revision
+                FROM $UPSERT_SOURCE_VIEW
+                ON CONFLICT (perma_ticker, metric_date) DO UPDATE SET
+                    market_cap = EXCLUDED.market_cap,
+                    enterprise_value = EXCLUDED.enterprise_value,
+                    pe_ratio = EXCLUDED.pe_ratio,
+                    available_at = EXCLUDED.available_at,
+                    fetched_at = EXCLUDED.fetched_at,
+                    source_revision = EXCLUDED.source_revision
+            """)
+            return nrow(data)
+        finally
+            DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
+        end
+    end
+
+    """
         get_tickers_all(conn::DBInterface.Connection)
 
     Get all tickers from the us_tickers_filtered table.
@@ -203,6 +282,7 @@ module Operations
         """, [symbol]) |> DataFrame
     end
     export upsert_stock_data, upsert_stock_data_bulk
+    export upsert_security_observations, upsert_fundamental_daily_metrics
     export get_tickers_all, get_tickers_etf, get_tickers_stock
     export get_table_count, get_latest_dates, get_latest_date
 end

@@ -142,6 +142,8 @@ module Config
             const US_TICKERS = "us_tickers"
             const US_TICKERS_FILTERED = "us_tickers_filtered"
             const HISTORICAL_DATA = "historical_data"
+            const SECURITY_OBSERVATIONS = "security_observations"
+            const FUNDAMENTAL_DAILY_METRICS = "fundamental_daily_metrics"
         end
     end
 

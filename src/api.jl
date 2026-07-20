@@ -57,6 +57,23 @@ function get_api_key(; env_path::Union{String,Nothing}=nothing, reload_env::Bool
     return api_key
 end
 
+function _redact_api_error(error)::String
+    message = error isa AbstractString ? String(error) : sprint(showerror, error)
+    message = replace(
+        message,
+        r"(?i)((?:[\"']|%22)?authorization(?:[\"']|%22)?(?:\s|%20)*(?::|=>|=|%3d|%3a)(?:\s|%20)*(?:[\"']|%22)?(?:token|bearer)(?:\s+|%20))[^\s,;}\"'<>#]+" => s"\1[REDACTED]",
+    )
+    return replace(
+        message,
+        r"(?i)((?:[\"']|%22)?(?:token|apikey|api(?:_|-|%5f|%2d)key)(?:[\"']|%22)?(?:\s|%20)*(?::|=>|=|%3d|%3a)(?:\s|%20)*(?:[\"']|%22)?)[^&\s,;}\"'<>#]+" => s"\1[REDACTED]",
+    )
+end
+
+function _http_status_error(status, url, _body)::ErrorException
+    safe_url = _redact_api_error(url)
+    return ErrorException("HTTP $status for $safe_url; response body omitted")
+end
+
 
 """
     get_ticker_data(
@@ -95,7 +112,7 @@ end
 
 
 """
-    fetch_api_data(url::String, query::Dict, headers::Dict; max_retries::Int=3)
+    fetch_api_data(url::String, query::Dict, headers::Dict; max_retries::Int=3, allow_empty::Bool=false)
 
 Fetch data from API with retry logic and error handling.
 """
@@ -106,7 +123,8 @@ function fetch_api_data(
     max_retries::Int = Config.API.MAX_RETRIES,
     retry_delay::Int = Config.API.RETRY_DELAY,
     connect_timeout::Real = 10,
-    readtimeout::Real = 30
+    readtimeout::Real = 30,
+    allow_empty::Bool = false,
 )
     last_error = nothing
 
@@ -114,8 +132,10 @@ function fetch_api_data(
         throw(ArgumentError("max_retries must be >= 1"))
     end
 
+    safe_url = _redact_api_error(url)
+
     for attempt in 1:max_retries
-        @info "API request attempt $attempt for URL: $url"
+        @info "API request attempt $attempt for URL: $safe_url"
         response = nothing
         try
             response = HTTP.get(
@@ -126,29 +146,33 @@ function fetch_api_data(
                 readtimeout=readtimeout
             )
         catch e
-            last_error = e
-            @warn "API request attempt $attempt failed" exception=e
+            safe_error = ErrorException(_redact_api_error(e))
+            last_error = safe_error
+            @warn "API request attempt $attempt failed" error=safe_error.msg
 
             if attempt < max_retries
                 sleep(retry_delay * 2^(attempt - 1))  # Exponential backoff
                 continue
             else
-                rethrow(e)
+                throw(safe_error)
             end
         end
 
         status = response.status
         if status == 200
-            data = JSON3.read(String(response.body))
-            if isempty(data)
-                throw(ErrorException("No data returned from $url"))
+            data = try
+                JSON3.read(String(response.body))
+            catch
+                throw(ErrorException("Invalid JSON response from $safe_url"))
+            end
+            if isempty(data) && !allow_empty
+                throw(ErrorException("No data returned from $safe_url"))
             end
             return data
         end
 
         retryable = status == 429 || (status >= 500 && status <= 599)
-        body = String(response.body)
-        err = ErrorException("HTTP $status for $url: $body")
+        err = _http_status_error(status, url, response.body)
         last_error = err
 
         if retryable && attempt < max_retries

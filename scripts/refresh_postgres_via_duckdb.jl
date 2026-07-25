@@ -16,13 +16,81 @@ using DBInterface
 using DuckDB
 using DataFrames
 using Logging
+using Dates
 
 # Reuse the package's postgres ATTACH mechanism (src/db/postgres.jl:525-556)
 import TiingoJulia.DB.Postgres: connection_options_map, postgres_env_vars, with_temporary_env
+import TiingoJulia.DB.Core: validate_identifier
 
 const DEFAULT_PG_CONN_STR = "postgresql://postgres@127.0.0.1:5432/tiingo?sslmode=disable"
 const DEFAULT_DUCKDB_PATH = "data/tiingo_local.duckdb"
-const TABLES_TO_EXPORT = ["historical_data", "us_tickers_filtered"]
+const TABLES_TO_HYDRATE = [
+    "historical_data",
+    "security_observations",
+    "fundamental_daily_metrics",
+]
+const TABLES_TO_EXPORT = [
+    "historical_data",
+    "us_tickers_filtered",
+    "security_observations",
+    "fundamental_daily_metrics",
+]
+
+const DOW30_TICKERS = Set([
+    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK", "MSFT",
+    "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
+])
+
+function verify_fundamentals_entitlement!(
+    observations::DataFrame,
+    api_key::String;
+    as_of::Date=today(),
+    daily_fetcher::Function=get_daily_fundamental,
+    max_candidates::Int=25,
+)
+    max_candidates > 0 || throw(ArgumentError("max_candidates must be positive"))
+    candidates = filter(observations) do row
+        row.join_status == "matched" && row.is_active &&
+            !ismissing(row.asset_type) && lowercase(String(row.asset_type)) == "stock" &&
+            !(String(row.ticker) in DOW30_TICKERS)
+    end
+    nrow(candidates) > 0 || error("no non-DOW matched stock available for entitlement probe")
+    if :daily_last_updated in propertynames(candidates)
+        sort!(
+            candidates,
+            :daily_last_updated;
+            by=value -> ismissing(value) ? DateTime(1) : DateTime(value),
+            rev=true,
+        )
+    end
+
+    attempted = 0
+    for probe in eachrow(first(candidates, min(max_candidates, nrow(candidates))))
+        attempted += 1
+        try
+            payload = daily_fetcher(
+                String(probe.perma_ticker);
+                api_key,
+                start_date=as_of - Day(7),
+                end_date=as_of,
+                columns=["marketCap"],
+                return_type="original",
+            )
+            rows = isempty(payload) ? DataFrame() : DataFrame(payload)
+            has_market_cap = "marketCap" in names(rows) && any(
+                value -> !ismissing(value) && !isnothing(value),
+                rows.marketCap,
+            )
+            has_market_cap || continue
+            @info "Fundamentals entitlement probe passed" ticker=String(probe.ticker)
+            return nothing
+        catch error
+            @debug "Fundamentals entitlement candidate failed" ticker=String(probe.ticker) exception=(error, catch_backtrace())
+        end
+    end
+    error("Fundamentals entitlement probe returned no marketCap data across $attempted candidates")
+end
 
 """
     attach_postgres_readonly!(conn, pg_conn_str) -> Nothing
@@ -43,41 +111,183 @@ function attach_postgres_readonly!(conn::DBInterface.Connection, pg_conn_str::St
 end
 
 """
-    hydrate_from_postgres!(conn, pg_conn_str) -> Int
+    hydrate_from_postgres!(conn, pg_conn_str) -> Dict{String,Int}
 
-Copy historical_data from PG into an empty DuckDB. This seeds the per-ticker
-latest dates that drive incremental fetching. `us_tickers_filtered` is NOT
-hydrated here: it is rebuilt fresh from Tiingo via `download_tickers_duckdb`
-so that each ticker's `endDate` reflects the current trading day (a stale
-endDate makes `update_historical` treat every ticker as up to date).
-Returns the historical_data row count. Errors on count mismatch.
+Copy persisted source tables from PostgreSQL into an empty DuckDB. The ticker
+filter is deliberately rebuilt from Tiingo so its `endDate` stays current.
+Historical data is required; fundamentals tables are optional during their
+first deployment and are exported after the refresh creates them.
 """
-function hydrate_from_postgres!(conn::DBInterface.Connection, pg_conn_str::String)::Int
+function hydrate_from_postgres!(
+    conn::DBInterface.Connection,
+    pg_conn_str::String,
+)::Dict{String,Int}
     attach_postgres_readonly!(conn, pg_conn_str)
+    counts = Dict{String,Int}()
+    try
+        counts["historical_data"] = hydrate_attached_table!(
+            conn,
+            "historical_data",
+            [
+                "ticker", "date", "close", "high", "low", "open", "volume",
+                "adjClose", "adjHigh", "adjLow", "adjOpen", "adjVolume",
+                "divCash", "splitFactor",
+            ],
+            [
+                "ticker", "date", "close", "high", "low", "open", "volume",
+                "adjclose", "adjhigh", "adjlow", "adjopen", "adjvolume",
+                "divcash", "splitfactor",
+            ];
+            required = true,
+        )
+        counts["security_observations"] = hydrate_attached_table!(
+            conn,
+            "security_observations",
+            [
+                "perma_ticker", "observed_at", "ticker", "is_active", "is_adr",
+                "daily_last_updated", "exchange", "asset_type",
+                "price_coverage_start", "price_coverage_end", "is_leveraged",
+                "join_status",
+            ],
+        )
+        counts["fundamental_daily_metrics"] = hydrate_attached_table!(
+            conn,
+            "fundamental_daily_metrics",
+            [
+                "perma_ticker", "metric_date", "market_cap", "enterprise_value",
+                "pe_ratio", "available_at", "fetched_at", "source_revision",
+            ],
+        )
+    finally
+        DBInterface.execute(conn, "DETACH pg_src;")
+    end
 
-    # Read PG count before hydration
-    pg_hist = (DBInterface.execute(conn, "SELECT count(*) FROM pg_src.historical_data") |> DataFrame)[1, 1]
-    @info "PostgreSQL source count" historical_data=pg_hist
+    @info "Hydration verified" counts
+    return counts
+end
 
-    # Explicit column mapping: DuckDB camelCase <- Postgres lowercase (same positional order)
-    @info "Hydrating historical_data ($pg_hist rows)..."
+function attached_postgres_table_exists(
+    conn::DBInterface.Connection,
+    table_name::String,
+)::Bool
+    safe_name = validate_identifier(table_name)
+    result = DBInterface.execute(
+        conn,
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_catalog = 'pg_src' AND table_name = ?
+        """,
+        (safe_name,),
+    ) |> DataFrame
+    return nrow(result) == 1
+end
+
+function hydrate_attached_table!(
+    conn::DBInterface.Connection,
+    table_name::String,
+    target_columns::Vector{String},
+    source_columns::Vector{String} = lowercase.(target_columns);
+    required::Bool = false,
+)::Int
+    safe_name = validate_identifier(table_name)
+    if !attached_postgres_table_exists(conn, safe_name)
+        required && error("Required PostgreSQL table is missing: $safe_name")
+        @info "Skipping absent PostgreSQL table during first deployment" table=safe_name
+        return 0
+    end
+
+    pg_count = Int((
+        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.$safe_name") |> DataFrame
+    )[1, 1])
+    @info "Hydrating table" table=safe_name rows=pg_count
     DBInterface.execute(conn, """
-        INSERT INTO historical_data (ticker, date, close, high, low, open, volume,
-            adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor)
-        SELECT ticker, date, close, high, low, open, volume,
-            adjclose, adjhigh, adjlow, adjopen, adjvolume, divcash, splitfactor
-        FROM pg_src.historical_data
+        INSERT INTO $safe_name ($(join(target_columns, ", ")))
+        SELECT $(join(source_columns, ", "))
+        FROM pg_src.$safe_name
     """)
 
-    DBInterface.execute(conn, "DETACH pg_src;")
+    duck_count = Int((
+        DBInterface.execute(conn, "SELECT count(*) FROM $safe_name") |> DataFrame
+    )[1, 1])
+    duck_count == pg_count || error(
+        "Hydration mismatch: $safe_name DuckDB=$duck_count PG=$pg_count",
+    )
+    return duck_count
+end
 
-    # Verify DuckDB count matches PG
-    duck_hist = (DBInterface.execute(conn, "SELECT count(*) FROM historical_data") |> DataFrame)[1, 1]
-    @info "DuckDB post-hydration" historical_data=duck_hist
+"""
+    merge_attached_table!(conn, table_name, target_columns, key_columns; source_columns=lowercase.(target_columns)) -> Int
 
-    duck_hist != pg_hist && error("Hydration mismatch: historical_data DuckDB=$duck_hist PG=$pg_hist")
-    @info "Hydration verified"
-    return duck_hist
+Merge rows from the read-only `pg_src` attachment into an existing local table
+without replacing local rows that have the same primary key. This preserves all
+PostgreSQL keys when a resumable DuckDB already contains partial backfill data.
+"""
+function merge_attached_table!(
+    conn::DBInterface.Connection,
+    table_name::String,
+    target_columns::Vector{String},
+    key_columns::Vector{String},
+    source_columns::Vector{String} = lowercase.(target_columns),
+)::Int
+    safe_name = validate_identifier(table_name)
+    isempty(key_columns) && error("key_columns must not be empty")
+    validated_keys = validate_identifier.(key_columns)
+    if !attached_postgres_table_exists(conn, safe_name)
+        @info "Skipping absent PostgreSQL table during first deployment" table=safe_name
+        return 0
+    end
+
+    pg_count = Int((
+        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.$safe_name") |> DataFrame
+    )[1, 1])
+    DBInterface.execute(conn, """
+        INSERT INTO $safe_name ($(join(target_columns, ", ")))
+        SELECT $(join(source_columns, ", "))
+        FROM pg_src.$safe_name
+        ON CONFLICT ($(join(validated_keys, ", "))) DO NOTHING
+    """)
+
+    local_count = Int((
+        DBInterface.execute(conn, "SELECT count(*) FROM $safe_name") |> DataFrame
+    )[1, 1])
+    key_match = join(
+        ["local_row.$key = source_row.$key" for key in validated_keys],
+        " AND ",
+    )
+    missing_source_keys = Int((DBInterface.execute(conn, """
+        SELECT count(*)
+        FROM pg_src.$safe_name AS source_row
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM $safe_name AS local_row
+            WHERE $key_match
+        )
+    """) |> DataFrame)[1, 1])
+    missing_source_keys == 0 || error(
+        "PostgreSQL merge lost $missing_source_keys keys from $safe_name",
+    )
+    @info "Merged PostgreSQL source into resumable DuckDB" table=safe_name pg_rows=pg_count local_rows=local_count
+    return local_count
+end
+
+function verify_hydrated_row_counts!(
+    conn::DBInterface.Connection,
+    hydrated_counts::AbstractDict{String,<:Integer},
+)::Dict{String,Int}
+    post_counts = Dict{String,Int}()
+    for table_name in TABLES_TO_HYDRATE
+        safe_name = validate_identifier(table_name)
+        post_count = Int((
+            DBInterface.execute(conn, "SELECT count(*) FROM $safe_name") |> DataFrame
+        )[1, 1])
+        hydrated_count = Int(get(hydrated_counts, safe_name, 0))
+        post_count < hydrated_count && error(
+            "ABORT: $safe_name count dropped ($post_count < $hydrated_count)",
+        )
+        post_counts[safe_name] = post_count
+    end
+    return post_counts
 end
 
 function main()
@@ -104,7 +314,7 @@ function main()
         create_tables(conn)
 
         # 3. Hydrate from PostgreSQL into DuckDB
-        hydrated_count = hydrate_from_postgres!(conn, pg_conn_str)
+        hydrated_counts = hydrate_from_postgres!(conn, pg_conn_str)
 
         # Create indexes after bulk insert for better performance
         create_indexes(conn)
@@ -114,6 +324,32 @@ function main()
         #     Without this, hydrated stale endDates make every ticker look up to date.
         @info "Refreshing ticker metadata from Tiingo..."
         download_tickers_duckdb(conn)
+
+        do_fundamentals_sync = lowercase(get(ENV, "DO_FUNDAMENTALS_SYNC", "false")) == "true"
+        if do_fundamentals_sync
+            @info "Fetching current Fundamentals identity metadata"
+            meta_payload = get_fundamental_meta(api_key=api_key)
+            universe_payload = get_tickers_all(conn)
+            observed_at = now(UTC)
+            observations = normalize_security_observations(
+                meta_payload,
+                universe_payload;
+                observed_at,
+            )
+            verify_fundamentals_entitlement!(observations, api_key)
+            sync_result = sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key,
+                observed_at,
+                fetched_at=observed_at,
+            )
+            isempty(sync_result.failed) || error(
+                "Fundamentals sync incomplete for $(length(sync_result.failed)) securities; refusing export",
+            )
+            @info "Fundamentals sync complete" observations=sync_result.observation_rows metrics=sync_result.metric_rows requested=length(sync_result.requested) skipped=length(sync_result.skipped) unchanged=length(sync_result.unchanged) unavailable=length(sync_result.unavailable) statuses=sync_result.status_counts
+        end
 
         # 4. Incremental update from Tiingo API
         tickers = get_tickers_all(conn)
@@ -129,9 +365,12 @@ function main()
         @info "Incremental update done" updated=length(updated) skipped=length(missing_t)
 
         # 5. Safety gate: never export a subset
-        post_count = (DBInterface.execute(conn, "SELECT count(*) FROM historical_data") |> DataFrame)[1, 1]
-        post_count < hydrated_count && error("ABORT: count dropped ($post_count < $hydrated_count)")
-        @info "READY TO EXPORT" count=post_count added=(post_count - hydrated_count)
+        post_counts = verify_hydrated_row_counts!(conn, hydrated_counts)
+        added_counts = Dict(
+            table => post_counts[table] - hydrated_counts[table]
+            for table in TABLES_TO_HYDRATE
+        )
+        @info "READY TO EXPORT" counts=post_counts added=added_counts
 
         if !do_export
             @info "Export skipped (DO_EXPORT != \"true\"). Re-run with DO_EXPORT=true to push to PostgreSQL."
@@ -153,4 +392,6 @@ function main()
     @info "Done."
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

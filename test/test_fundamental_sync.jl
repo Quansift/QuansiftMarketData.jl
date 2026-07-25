@@ -61,6 +61,36 @@ using TiingoJulia
     @test !(:valid_to in propertynames(normalized))
 end
 
+@testset "Fundamentals metadata tickers reconcile case-insensitively" begin
+    observed_at = DateTime(2026, 7, 22, 12)
+    meta_payload = [(
+        permaTicker = "perm-googl",
+        ticker = "googl",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = "2026-07-22T01:52:38Z",
+    )]
+    universe_payload = [(
+        ticker = "GOOGL",
+        exchange = "NASDAQ",
+        asset_type = "Stock",
+        start_date = "2004-08-19",
+        end_date = "2026-07-22",
+    )]
+
+    normalized = normalize_security_observations(
+        meta_payload,
+        universe_payload;
+        observed_at,
+    )
+
+    @test only(normalized.join_status) == "matched"
+    @test only(normalized.ticker) == "GOOGL"
+    @test only(normalized.asset_type) == "Stock"
+    @test only(normalized.price_coverage_start) == Date(2004, 8, 19)
+    @test only(normalized.price_coverage_end) == Date(2026, 7, 22)
+end
+
 @testset "Duplicate identities are quarantined" begin
     observed_at = DateTime(2026, 7, 19, 12)
     universe = [
@@ -294,7 +324,7 @@ end
     end
 end
 
-@testset "Empty daily Fundamentals payload fails the security" begin
+@testset "Empty daily Fundamentals payload is unavailable, not failed" begin
     conn = connect_duckdb(":memory:")
     try
         as_of = Date(2026, 7, 19)
@@ -336,12 +366,109 @@ end
         )
 
         @test isempty(result.requested)
-        @test result.failed == ["perm-empty"]
+        @test result.unavailable == ["perm-empty"]
+        @test isempty(result.failed)
         @test result.metric_rows == 0
         @test (
             DBInterface.execute(conn, "SELECT count(*) FROM fundamental_daily_metrics") |>
             DataFrame
         )[1, 1] == 0
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "No newer Daily Metrics row is unchanged after a watermark" begin
+    conn = connect_duckdb(":memory:")
+    try
+        as_of = Date(2026, 7, 21)
+        observed_at = DateTime(2026, 7, 22, 12)
+        meta_payload = [(
+            permaTicker = "perm-existing",
+            ticker = "EXIST",
+            isActive = true,
+            isADR = false,
+            dailyLastUpdated = string(observed_at),
+        )]
+        universe_payload = [(
+            ticker = "EXIST",
+            exchange = "NYSE",
+            assetType = "Stock",
+            startDate = "2020-01-01",
+            endDate = "2026-07-22",
+        )]
+        seeded_fetcher = function (ticker; kwargs...)
+            return [(date = string(as_of), marketCap = 10.0)]
+        end
+        sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at,
+            fetched_at = observed_at,
+            daily_fetcher = seeded_fetcher,
+        )
+        empty_fetcher = function (ticker; kwargs...)
+            return NamedTuple[]
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of = as_of + Day(1),
+            observed_at = observed_at + Day(1),
+            fetched_at = observed_at + Day(1),
+            daily_fetcher = empty_fetcher,
+        )
+
+        @test result.unchanged == ["perm-existing"]
+        @test isempty(result.unavailable)
+        @test isempty(result.failed)
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Daily Fundamentals request errors remain retryable failures" begin
+    conn = connect_duckdb(":memory:")
+    try
+        as_of = Date(2026, 7, 19)
+        observed_at = DateTime(2026, 7, 19, 12)
+        meta_payload = [(
+            permaTicker = "perm-error",
+            ticker = "ERROR",
+            isActive = true,
+            isADR = false,
+            dailyLastUpdated = string(observed_at),
+        )]
+        universe_payload = [(
+            ticker = "ERROR",
+            exchange = "NASDAQ",
+            assetType = "Stock",
+            startDate = "2020-01-01",
+            endDate = string(as_of),
+        )]
+        error_fetcher = function (ticker; kwargs...)
+            error("temporary API failure")
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at,
+            fetched_at = observed_at,
+            daily_fetcher = error_fetcher,
+        )
+
+        @test isempty(result.unavailable)
+        @test result.failed == ["perm-error"]
     finally
         close_duckdb(conn)
     end

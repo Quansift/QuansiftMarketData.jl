@@ -42,30 +42,54 @@ const DOW30_TICKERS = Set([
     "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
 ])
 
-function verify_fundamentals_entitlement!(observations::DataFrame, api_key::String; as_of::Date=today())
+function verify_fundamentals_entitlement!(
+    observations::DataFrame,
+    api_key::String;
+    as_of::Date=today(),
+    daily_fetcher::Function=get_daily_fundamental,
+    max_candidates::Int=25,
+)
+    max_candidates > 0 || throw(ArgumentError("max_candidates must be positive"))
     candidates = filter(observations) do row
         row.join_status == "matched" && row.is_active &&
             !ismissing(row.asset_type) && lowercase(String(row.asset_type)) == "stock" &&
             !(String(row.ticker) in DOW30_TICKERS)
     end
     nrow(candidates) > 0 || error("no non-DOW matched stock available for entitlement probe")
-    probe = first(candidates)
-    payload = get_daily_fundamental(
-        String(probe.perma_ticker);
-        api_key,
-        start_date=as_of - Day(7),
-        end_date=as_of,
-        columns=["marketCap"],
-        return_type="original",
-    )
-    rows = isempty(payload) ? DataFrame() : DataFrame(payload)
-    has_market_cap = "marketCap" in names(rows) && any(
-        value -> !ismissing(value) && !isnothing(value),
-        rows.marketCap,
-    )
-    has_market_cap || error("Fundamentals entitlement probe returned no marketCap data")
-    @info "Fundamentals entitlement probe passed" ticker=String(probe.ticker)
-    return nothing
+    if :daily_last_updated in propertynames(candidates)
+        sort!(
+            candidates,
+            :daily_last_updated;
+            by=value -> ismissing(value) ? DateTime(1) : DateTime(value),
+            rev=true,
+        )
+    end
+
+    attempted = 0
+    for probe in eachrow(first(candidates, min(max_candidates, nrow(candidates))))
+        attempted += 1
+        try
+            payload = daily_fetcher(
+                String(probe.perma_ticker);
+                api_key,
+                start_date=as_of - Day(7),
+                end_date=as_of,
+                columns=["marketCap"],
+                return_type="original",
+            )
+            rows = isempty(payload) ? DataFrame() : DataFrame(payload)
+            has_market_cap = "marketCap" in names(rows) && any(
+                value -> !ismissing(value) && !isnothing(value),
+                rows.marketCap,
+            )
+            has_market_cap || continue
+            @info "Fundamentals entitlement probe passed" ticker=String(probe.ticker)
+            return nothing
+        catch error
+            @debug "Fundamentals entitlement candidate failed" ticker=String(probe.ticker) exception=(error, catch_backtrace())
+        end
+    end
+    error("Fundamentals entitlement probe returned no marketCap data across $attempted candidates")
 end
 
 """
@@ -324,7 +348,7 @@ function main()
             isempty(sync_result.failed) || error(
                 "Fundamentals sync incomplete for $(length(sync_result.failed)) securities; refusing export",
             )
-            @info "Fundamentals sync complete" observations=sync_result.observation_rows metrics=sync_result.metric_rows requested=length(sync_result.requested) skipped=length(sync_result.skipped) statuses=sync_result.status_counts
+            @info "Fundamentals sync complete" observations=sync_result.observation_rows metrics=sync_result.metric_rows requested=length(sync_result.requested) skipped=length(sync_result.skipped) unchanged=length(sync_result.unchanged) unavailable=length(sync_result.unavailable) statuses=sync_result.status_counts
         end
 
         # 4. Incremental update from Tiingo API

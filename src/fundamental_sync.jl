@@ -128,6 +128,22 @@ function _count_values(values)::Dict{String,Int}
     return counts
 end
 
+function _canonical_ticker(value)::String
+    normalized = uppercase(strip(String(value)))
+    isempty(normalized) && throw(ArgumentError("ticker cannot be empty"))
+    return normalized
+end
+
+function _count_tickers(values)::Dict{String,Int}
+    counts = Dict{String,Int}()
+    for value in values
+        (ismissing(value) || isnothing(value)) && continue
+        ticker = _canonical_ticker(value)
+        counts[ticker] = get(counts, ticker, 0) + 1
+    end
+    return counts
+end
+
 """
     normalize_security_observations(meta_payload, universe_payload; observed_at=Dates.now())
 
@@ -154,14 +170,15 @@ function normalize_security_observations(
         throw(ArgumentError("meta payload is missing permaTicker"))
     end
     meta_perma_counts = _count_values(perma_values)
-    meta_ticker_counts = _count_values(source.ticker)
+    meta_ticker_counts = _count_tickers(source.ticker)
 
     universe_ticker_counts = :ticker in propertynames(universe) ?
-        _count_values(universe.ticker) : Dict{String,Int}()
+        _count_tickers(universe.ticker) : Dict{String,Int}()
     universe_by_ticker = Dict{String,DataFrameRow}()
     if :ticker in propertynames(universe)
         for row in eachrow(universe)
-            ticker = String(row.ticker)
+            (ismissing(row.ticker) || isnothing(row.ticker)) && continue
+            ticker = _canonical_ticker(row.ticker)
             get(universe_ticker_counts, ticker, 0) == 1 || continue
             universe_by_ticker[ticker] = row
         end
@@ -174,7 +191,7 @@ function normalize_security_observations(
             (:permaTicker, :perma_ticker),
             "permaTicker",
         )
-        ticker = _required_payload_string(row, (:ticker,), "ticker")
+        ticker = _canonical_ticker(_required_payload_string(row, (:ticker,), "ticker"))
         is_active = _required_payload_bool(row, (:isActive, :is_active), "isActive")
         local_count = get(universe_ticker_counts, ticker, 0)
         local_row = get(universe_by_ticker, ticker, nothing)
@@ -211,11 +228,11 @@ function normalize_security_observations(
                 local_value((:assetType, :assettype, :asset_type)),
             ),
             price_coverage_start = _nullable_payload_date(
-                local_value((:startDate, :startdate, :price_coverage_start)),
+                local_value((:startDate, :startdate, :start_date, :price_coverage_start)),
                 "price coverage start",
             ),
             price_coverage_end = _nullable_payload_date(
-                local_value((:endDate, :enddate, :price_coverage_end)),
+                local_value((:endDate, :enddate, :end_date, :price_coverage_end)),
                 "price coverage end",
             ),
             is_leveraged = _nullable_payload_bool(
@@ -363,11 +380,14 @@ function sync_fundamentals!(
 
     requested = String[]
     skipped = String[]
+    unchanged = String[]
+    unavailable = String[]
     failed = String[]
     metric_rows = 0
     for security in eachrow(eligible_securities)
         perma_ticker = String(security.perma_ticker)
-        start_date = haskey(watermarks, perma_ticker) ?
+        has_watermark = haskey(watermarks, perma_ticker)
+        start_date = has_watermark ?
             watermarks[perma_ticker] + Day(1) :
             as_of - Year(history_years)
         if start_date > as_of
@@ -389,17 +409,19 @@ function sync_fundamentals!(
                 perma_ticker;
                 fetched_at,
             )
-            nrow(metrics) > 0 || error(
-                "daily Fundamentals returned no rows for $perma_ticker",
-            )
+            if nrow(metrics) == 0
+                push!(has_watermark ? unchanged : unavailable, perma_ticker)
+                continue
+            end
             in_requested_range = (
                 (metrics.metric_date .>= start_date) .&
                 (metrics.metric_date .<= as_of)
             )
             metrics = metrics[in_requested_range, :]
-            nrow(metrics) > 0 || error(
-                "daily Fundamentals returned no rows in the requested range for $perma_ticker",
-            )
+            if nrow(metrics) == 0
+                push!(has_watermark ? unchanged : unavailable, perma_ticker)
+                continue
+            end
             metric_rows += upsert_fundamental_daily_metrics(conn, metrics)
             push!(requested, perma_ticker)
         catch
@@ -412,5 +434,14 @@ function sync_fundamentals!(
     for status in observations.join_status
         status_counts[status] = get(status_counts, status, 0) + 1
     end
-    return (; observation_rows, metric_rows, requested, skipped, failed, status_counts)
+    return (;
+        observation_rows,
+        metric_rows,
+        requested,
+        skipped,
+        unchanged,
+        unavailable,
+        failed,
+        status_counts,
+    )
 end

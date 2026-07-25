@@ -9,6 +9,7 @@ Required:
 Optional:
   OHLCV_PG_CONNECTION=postgresql://...
   FUNDAMENTALS_HISTORY_YEARS=3
+  FUNDAMENTALS_AS_OF=YYYY-MM-DD
   FUNDAMENTALS_EXPORT=true   # default false
 
 The local DuckDB is intentionally retained after partial failures. PostgreSQL
@@ -32,6 +33,16 @@ function required_backfill_path()::String
     isabspath(raw) || error("FUNDAMENTALS_DUCKDB_PATH must be absolute")
     mkpath(dirname(raw))
     return normpath(raw)
+end
+
+function configured_backfill_as_of()::Date
+    raw = strip(get(ENV, "FUNDAMENTALS_AS_OF", ""))
+    isempty(raw) && return today()
+    try
+        return Date(raw, dateformat"yyyy-mm-dd")
+    catch
+        error("FUNDAMENTALS_AS_OF must use YYYY-MM-DD")
+    end
 end
 
 function hydrate_existing_fundamentals!(conn, pg_conn_str::String)::Nothing
@@ -96,7 +107,7 @@ function main()
     history_years = parse(Int, get(ENV, "FUNDAMENTALS_HISTORY_YEARS", "3"))
     history_years > 0 || error("FUNDAMENTALS_HISTORY_YEARS must be positive")
     do_export = lowercase(get(ENV, "FUNDAMENTALS_EXPORT", "false")) == "true"
-    as_of = today()
+    as_of = configured_backfill_as_of()
     observed_at = now(UTC)
 
     conn = connect_duckdb(duckdb_path)
@@ -142,7 +153,7 @@ function main()
                 close_postgres(pg_conn)
             end
         end
-        println("FUNDAMENTALS_BACKFILL_OK requested=$(length(result.requested)) skipped=$(length(result.skipped)) observations=$(counts.observations) metrics=$(counts.metrics) exported=$do_export")
+        println("FUNDAMENTALS_BACKFILL_OK requested=$(length(result.requested)) skipped=$(length(result.skipped)) unchanged=$(length(result.unchanged)) unavailable=$(length(result.unavailable)) observations=$(counts.observations) metrics=$(counts.metrics) exported=$do_export")
     finally
         close_duckdb(conn)
     end

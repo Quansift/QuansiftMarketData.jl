@@ -7,6 +7,34 @@ using TiingoJulia
 refresh_script = joinpath(@__DIR__, "..", "scripts", "refresh_postgres_via_duckdb.jl")
 include(refresh_script)
 
+@testset "Fundamentals entitlement probe falls back across current candidates" begin
+    observations = DataFrame(
+        perma_ticker = ["perm-empty", "perm-ok"],
+        ticker = ["EMPTY", "GOOGL"],
+        is_active = [true, true],
+        asset_type = ["Stock", "Stock"],
+        join_status = ["matched", "matched"],
+        daily_last_updated = [
+            DateTime(2026, 7, 22, 2),
+            DateTime(2026, 7, 22, 1),
+        ],
+    )
+    calls = String[]
+    daily_fetcher = function (ticker; api_key, start_date, end_date, columns, return_type)
+        push!(calls, ticker)
+        ticker == "perm-empty" && return NamedTuple[]
+        return [(date = "2026-07-21", marketCap = 1.0)]
+    end
+
+    @test isnothing(verify_fundamentals_entitlement!(
+        observations,
+        "offline-token";
+        as_of = Date(2026, 7, 22),
+        daily_fetcher,
+    ))
+    @test calls == ["perm-empty", "perm-ok"]
+end
+
 @testset "Refresh table contract" begin
     @test TABLES_TO_HYDRATE == [
         "historical_data",

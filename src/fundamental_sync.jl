@@ -346,6 +346,173 @@ function _eligible_backfill_rows(observations::DataFrame)::DataFrame
     return eligible
 end
 
+function _fundamental_status_counts(observations::DataFrame)::Dict{String,Int}
+    status_counts = Dict{String,Int}()
+    for status in observations.join_status
+        status_counts[status] = get(status_counts, status, 0) + 1
+    end
+    return status_counts
+end
+
+"""
+    collect_fundamentals(meta_payload, universe_payload; ...)
+
+Normalize identity observations and collect Tiingo Daily Metrics without
+choosing a database backend. `observation_writer` receives the complete
+observation frame. `metric_writer` is called as
+`metric_writer(perma_ticker, frame)`. Writers must return persisted row counts.
+By default, securities without a watermark request all available history and
+all supported response fields. Use `initial_start_date` or `columns` to bound
+new-security requests explicitly.
+Strict mode processes every eligible security and then throws
+`SyncIncompleteError` if any required operation failed.
+"""
+function collect_fundamentals(
+    meta_payload,
+    universe_payload;
+    watermarks::AbstractDict = Dict{String,Date}(),
+    api_key::String = get_api_key(),
+    as_of::Date = Date(Dates.now()),
+    initial_start_date::Union{Date,Nothing} = nothing,
+    columns::Union{Nothing,AbstractVector{<:AbstractString}} = nothing,
+    observed_at::DateTime = Dates.now(),
+    fetched_at::DateTime = Dates.now(),
+    daily_fetcher = get_daily_fundamental,
+    observation_writer = nothing,
+    metric_writer = nothing,
+    continue_on_error::Bool = true,
+    strict::Bool = false,
+)::FundamentalCollectionResult
+    !isnothing(initial_start_date) && initial_start_date > as_of &&
+        throw(ArgumentError("initial_start_date must be on or before as_of"))
+    normalized_watermarks = Dict(
+        String(perma_ticker) => Date(metric_date)
+        for (perma_ticker, metric_date) in watermarks
+        if !ismissing(perma_ticker) && !isnothing(perma_ticker) &&
+            !ismissing(metric_date) && !isnothing(metric_date)
+    )
+
+    observations = normalize_security_observations(
+        meta_payload,
+        universe_payload;
+        observed_at,
+    )
+    eligible_securities = _eligible_backfill_rows(observations)
+    attempted = String[]
+    updated = String[]
+    unchanged = String[]
+    unavailable = String[]
+    failed = String[]
+    failures = SyncFailure[]
+    observation_rows = 0
+    metric_rows = 0
+
+    if !isnothing(observation_writer)
+        try
+            rows = observation_writer(observations)
+            rows isa Integer ||
+                throw(ArgumentError("observation_writer must return an integer row count"))
+            rows >= 0 ||
+                throw(ArgumentError("observation_writer row count must be non-negative"))
+            observation_rows = rows
+        catch error
+            entity = "security_observations"
+            push!(failed, entity)
+            push!(failures, _sync_failure(entity, :write, error))
+            (!continue_on_error && !strict) && rethrow()
+        end
+    end
+
+    for security in eachrow(eligible_securities)
+        perma_ticker = String(security.perma_ticker)
+        push!(attempted, perma_ticker)
+        has_watermark = haskey(normalized_watermarks, perma_ticker)
+        start_date = has_watermark ?
+            normalized_watermarks[perma_ticker] + Day(1) :
+            initial_start_date
+        if !isnothing(start_date) && start_date > as_of
+            push!(unchanged, perma_ticker)
+            continue
+        end
+
+        payload = try
+            daily_fetcher(
+                perma_ticker;
+                api_key,
+                start_date,
+                end_date = as_of,
+                columns,
+                return_type = "original",
+            )
+        catch error
+            push!(failed, perma_ticker)
+            push!(failures, _sync_failure(perma_ticker, :fetch, error))
+            (!continue_on_error && !strict) && rethrow()
+            continue
+        end
+
+        metrics = try
+            normalize_fundamental_daily_metrics(
+                payload,
+                perma_ticker;
+                fetched_at,
+            )
+        catch error
+            push!(failed, perma_ticker)
+            push!(failures, _sync_failure(
+                perma_ticker,
+                :normalize,
+                error;
+                retryable = false,
+            ))
+            (!continue_on_error && !strict) && rethrow()
+            continue
+        end
+        if nrow(metrics) > 0
+            in_requested_range = metrics.metric_date .<= as_of
+            if !isnothing(start_date)
+                in_requested_range .&= metrics.metric_date .>= start_date
+            end
+            metrics = metrics[in_requested_range, :]
+        end
+        if nrow(metrics) == 0
+            push!(has_watermark ? unchanged : unavailable, perma_ticker)
+            continue
+        end
+
+        if !isnothing(metric_writer)
+            try
+                rows = metric_writer(perma_ticker, metrics)
+                rows isa Integer ||
+                    throw(ArgumentError("metric_writer must return an integer row count"))
+                rows >= 0 ||
+                    throw(ArgumentError("metric_writer row count must be non-negative"))
+                metric_rows += rows
+            catch error
+                push!(failed, perma_ticker)
+                push!(failures, _sync_failure(perma_ticker, :write, error))
+                (!continue_on_error && !strict) && rethrow()
+                continue
+            end
+        end
+        push!(updated, perma_ticker)
+    end
+
+    result = FundamentalCollectionResult(
+        observations,
+        attempted,
+        updated,
+        unchanged,
+        unavailable,
+        failed,
+        failures,
+        observation_rows,
+        metric_rows,
+        _fundamental_status_counts(observations),
+    )
+    return _finish_collection(result, strict)
+end
+
 """
     sync_fundamentals!(conn, meta_payload, universe_payload; ...)
 
@@ -430,10 +597,6 @@ function sync_fundamentals!(
         end
     end
 
-    status_counts = Dict{String,Int}()
-    for status in observations.join_status
-        status_counts[status] = get(status_counts, status, 0) + 1
-    end
     return (;
         observation_rows,
         metric_rows,
@@ -442,6 +605,6 @@ function sync_fundamentals!(
         unchanged,
         unavailable,
         failed,
-        status_counts,
+        status_counts = _fundamental_status_counts(observations),
     )
 end

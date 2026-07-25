@@ -1,6 +1,151 @@
 using ..DB.Core: DuckDBConnection, validate_identifier, validate_file_path, validate_sql_value
 using ..DB.Operations
 using ..API: get_ticker_data, get_api_key
+using ..TiingoJulia: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
+
+function _canonical_ticker_universe_frame()::DataFrame
+    return DataFrame(
+        ticker = String[],
+        exchange = Union{Missing,String}[],
+        asset_type = Union{Missing,String}[],
+        price_currency = Union{Missing,String}[],
+        start_date = Union{Missing,Date}[],
+        end_date = Union{Missing,Date}[],
+    )
+end
+
+function _universe_value(row::DataFrameRow, aliases::Tuple)
+    for alias in aliases
+        hasproperty(row, alias) || continue
+        value = getproperty(row, alias)
+        return isnothing(value) ? missing : value
+    end
+    return missing
+end
+
+function _universe_string(value)::Union{Missing,String}
+    ismissing(value) && return missing
+    normalized = strip(String(value))
+    return isempty(normalized) ? missing : normalized
+end
+
+function _universe_date(value, field_name::String)::Union{Missing,Date}
+    ismissing(value) && return missing
+    value isa Date && return value
+    value isa DateTime && return Date(value)
+    try
+        return Date(first(String(value), 10))
+    catch error
+        throw(ArgumentError("invalid $field_name: $error"))
+    end
+end
+
+function _normalized_ticker(value)::String
+    ismissing(value) && throw(ArgumentError("ticker is required"))
+    ticker = uppercase(strip(String(value)))
+    isempty(ticker) && throw(ArgumentError("ticker cannot be empty"))
+    return ticker
+end
+
+function _normalize_ticker_universe(source::DataFrame)::DataFrame
+    nrow(source) == 0 && return _canonical_ticker_universe_frame()
+    result = _canonical_ticker_universe_frame()
+    for row in eachrow(source)
+        push!(result, (
+            ticker = _normalized_ticker(_universe_value(row, (:ticker,))),
+            exchange = _universe_string(_universe_value(row, (:exchange,))),
+            asset_type = _universe_string(
+                _universe_value(row, (:assetType, :assettype, :asset_type)),
+            ),
+            price_currency = _universe_string(
+                _universe_value(row, (:priceCurrency, :pricecurrency, :price_currency)),
+            ),
+            start_date = _universe_date(
+                _universe_value(row, (:startDate, :startdate, :start_date)),
+                "start date",
+            ),
+            end_date = _universe_date(
+                _universe_value(row, (:endDate, :enddate, :end_date)),
+                "end date",
+            ),
+        ))
+    end
+    sort!(result, [:ticker, :exchange])
+    return result
+end
+
+function _filtered_ticker_universe(universe::DataFrame)::DataFrame
+    reference_dates = Date[
+        row.end_date
+        for row in eachrow(universe)
+        if !ismissing(row.end_date) &&
+            !ismissing(row.asset_type) && row.asset_type == "Stock" &&
+            !ismissing(row.exchange) && row.exchange == "NYSE"
+    ]
+    isempty(reference_dates) && return _canonical_ticker_universe_frame()
+    active_cutoff = maximum(reference_dates)
+    supported_exchanges = Set(Config.Filtering.SUPPORTED_EXCHANGES)
+    supported_asset_types = Set(Config.Filtering.SUPPORTED_ASSET_TYPES)
+    filtered = filter(universe) do row
+        !ismissing(row.exchange) && row.exchange in supported_exchanges &&
+            !ismissing(row.asset_type) && row.asset_type in supported_asset_types &&
+            !ismissing(row.end_date) && row.end_date >= active_cutoff &&
+            !occursin("/", row.ticker)
+    end
+    sort!(filtered, [:ticker, :exchange])
+    return filtered
+end
+
+"""
+    collect_ticker_universe(source::DataFrame)
+
+Normalize a Tiingo ticker-universe frame and return canonical `all` and
+stock/ETF `filtered` frames without selecting a persistence backend.
+"""
+function collect_ticker_universe(source::DataFrame)
+    all_tickers = _normalize_ticker_universe(source)
+    return (; all = all_tickers, filtered = _filtered_ticker_universe(all_tickers))
+end
+
+"""
+    collect_ticker_universe(; tickers_url, zip_file_path, csv_file, downloader)
+
+Download and normalize Tiingo's ticker universe. Pass `downloader=nothing` to
+read an existing CSV fixture, or inject a downloader that returns a `DataFrame`,
+a CSV path, or writes `csv_file` like `download_latest_tickers`.
+"""
+function collect_ticker_universe(;
+    tickers_url::String = Config.API.TICKERS_URL,
+    zip_file_path::String = Config.DB.ZIP_FILE_PATH,
+    csv_file::String = Config.DB.DEFAULT_CSV_FILE,
+    downloader = download_latest_tickers,
+)
+    zip_existed = isfile(zip_file_path)
+    csv_existed = isfile(csv_file)
+    downloaded = !isnothing(downloader)
+    try
+        downloaded_value = isnothing(downloader) ?
+            nothing :
+            downloader(tickers_url, zip_file_path, csv_file)
+        source = if downloaded_value isa DataFrame
+            downloaded_value
+        elseif downloaded_value isa AbstractString
+            CSV.read(String(downloaded_value), DataFrame)
+        else
+            CSV.read(csv_file, DataFrame)
+        end
+        return collect_ticker_universe(source)
+    finally
+        if downloaded
+            cleanup_files(
+                zip_file_path,
+                csv_file;
+                delete_zip = !zip_existed,
+                delete_csv = !csv_existed,
+            )
+        end
+    end
+end
 
 """
         download_tickers_duckdb(conn::DuckDBConnection; tickers_url, zip_file_path, csv_file)
@@ -270,6 +415,278 @@ using ..API: get_ticker_data, get_api_key
             return row.endDate
         end
         return Date(now()) - Day(1)
+    end
+
+    function resolve_ticker_start_date(row::DataFrameRow)::Union{Date,Nothing}
+        if haskey(row, :start_date)
+            return Date(row.start_date)
+        end
+        if haskey(row, :startDate)
+            return Date(row.startDate)
+        end
+        return nothing
+    end
+
+    function _canonical_eod_frame()::DataFrame
+        return DataFrame(
+            date = Date[],
+            close = Union{Missing,Float64}[],
+            high = Union{Missing,Float64}[],
+            low = Union{Missing,Float64}[],
+            open = Union{Missing,Float64}[],
+            volume = Union{Missing,Int64}[],
+            adjClose = Union{Missing,Float64}[],
+            adjHigh = Union{Missing,Float64}[],
+            adjLow = Union{Missing,Float64}[],
+            adjOpen = Union{Missing,Float64}[],
+            adjVolume = Union{Missing,Int64}[],
+            divCash = Union{Missing,Float64}[],
+            splitFactor = Union{Missing,Float64}[],
+        )
+    end
+
+    const EOD_PAYLOAD_COLUMNS = [
+        :date => (:date,),
+        :close => (:close,),
+        :high => (:high,),
+        :low => (:low,),
+        :open => (:open,),
+        :volume => (:volume,),
+        :adjClose => (:adjClose, :adjclose, :adj_close),
+        :adjHigh => (:adjHigh, :adjhigh, :adj_high),
+        :adjLow => (:adjLow, :adjlow, :adj_low),
+        :adjOpen => (:adjOpen, :adjopen, :adj_open),
+        :adjVolume => (:adjVolume, :adjvolume, :adj_volume),
+        :divCash => (:divCash, :divcash, :div_cash),
+        :splitFactor => (:splitFactor, :splitfactor, :split_factor),
+    ]
+
+    function _eod_value(row::DataFrameRow, aliases::Tuple, field::Symbol)
+        for alias in aliases
+            hasproperty(row, alias) && return getproperty(row, alias)
+        end
+        throw(ArgumentError("EOD payload is missing required column: $field"))
+    end
+
+    function _eod_date(value)::Date
+        (ismissing(value) || isnothing(value)) &&
+            throw(ArgumentError("EOD date cannot be missing"))
+        value isa Date && return value
+        value isa DateTime && return Date(value)
+        try
+            return Date(first(String(value), 10))
+        catch error
+            throw(ArgumentError("invalid EOD date: $error"))
+        end
+    end
+
+    function _eod_float(value, field::Symbol)::Union{Missing,Float64}
+        (ismissing(value) || isnothing(value)) && return missing
+        value isa Real || throw(ArgumentError("$field must be numeric or missing"))
+        return Float64(value)
+    end
+
+    function _eod_integer(value, field::Symbol)::Union{Missing,Int64}
+        (ismissing(value) || isnothing(value)) && return missing
+        value isa Real || throw(ArgumentError("$field must be numeric or missing"))
+        isinteger(value) || throw(ArgumentError("$field must be an integer or missing"))
+        return Int64(value)
+    end
+
+    """
+        normalize_eod_prices(payload; start_date=nothing, end_date=nothing)
+
+    Normalize one Tiingo EOD response to the complete historical-storage schema.
+    Dates are canonical `Date` values, numeric missings are preserved, duplicate
+    dates and rows outside the requested range are rejected, and output is
+    sorted by date.
+    """
+    function normalize_eod_prices(
+        payload;
+        start_date::Union{Date,Nothing} = nothing,
+        end_date::Union{Date,Nothing} = nothing,
+    )::DataFrame
+        !isnothing(start_date) && !isnothing(end_date) && start_date > end_date &&
+            throw(ArgumentError("start_date must be on or before end_date"))
+        source = payload isa DataFrame ? payload : DataFrame(payload)
+        nrow(source) == 0 && return _canonical_eod_frame()
+
+        result = _canonical_eod_frame()
+        for row in eachrow(source)
+            values = Dict(
+                field => _eod_value(row, aliases, field)
+                for (field, aliases) in EOD_PAYLOAD_COLUMNS
+            )
+            date = _eod_date(values[:date])
+            !isnothing(start_date) && date < start_date && throw(ArgumentError(
+                "EOD row date $date is before requested start date $start_date",
+            ))
+            !isnothing(end_date) && date > end_date && throw(ArgumentError(
+                "EOD row date $date is after requested end date $end_date",
+            ))
+            push!(result, (
+                date = date,
+                close = _eod_float(values[:close], :close),
+                high = _eod_float(values[:high], :high),
+                low = _eod_float(values[:low], :low),
+                open = _eod_float(values[:open], :open),
+                volume = _eod_integer(values[:volume], :volume),
+                adjClose = _eod_float(values[:adjClose], :adjClose),
+                adjHigh = _eod_float(values[:adjHigh], :adjHigh),
+                adjLow = _eod_float(values[:adjLow], :adjLow),
+                adjOpen = _eod_float(values[:adjOpen], :adjOpen),
+                adjVolume = _eod_integer(values[:adjVolume], :adjVolume),
+                divCash = _eod_float(values[:divCash], :divCash),
+                splitFactor = _eod_float(values[:splitFactor], :splitFactor),
+            ))
+        end
+        allunique(result.date) ||
+            throw(ArgumentError("EOD payload contains duplicate dates"))
+        sort!(result, :date)
+        return result
+    end
+
+    function _historical_latest_dates(latest_dates)::Dict{String,Date}
+        if latest_dates isa DataFrame
+            return build_latest_date_lookup(latest_dates)
+        elseif latest_dates isa AbstractDict
+            return Dict(
+                String(ticker) => Date(date)
+                for (ticker, date) in latest_dates
+                if !ismissing(ticker) && !isnothing(ticker) &&
+                    !ismissing(date) && !isnothing(date)
+            )
+        end
+        throw(ArgumentError("latest_dates must be a DataFrame or dictionary"))
+    end
+
+    function _is_unavailable_historical_error(error)::Bool
+        message = lowercase(sprint(showerror, error))
+        return occursin("no data returned", message) ||
+            occursin("no data retrieved", message) ||
+            occursin("no new data", message)
+    end
+
+    """
+        collect_historical(tickers, api_key=get_api_key(); ...)
+
+    Collect Tiingo EOD batches without choosing a database backend. `fetcher`
+    receives the same arguments as `get_ticker_data`. When supplied, `writer`
+    is called as `writer(ticker, frame)` and must return the number of rows it
+    persisted. Strict mode processes every ticker and then throws
+    `SyncIncompleteError` when one or more fetch, normalization, or write
+    operations failed.
+    """
+    function collect_historical(
+        tickers::DataFrame,
+        api_key::String = get_api_key();
+        latest_dates = Dict{String,Date}(),
+        add_missing::Bool = true,
+        fetcher = get_ticker_data,
+        writer = nothing,
+        continue_on_error::Bool = true,
+        strict::Bool = false,
+    )::HistoricalCollectionResult
+        latest_dates_lookup = _historical_latest_dates(latest_dates)
+        attempted = String[]
+        updated = String[]
+        unchanged = String[]
+        unavailable = String[]
+        failed = String[]
+        failures = SyncFailure[]
+        written_rows = 0
+
+        for row in eachrow(tickers)
+            symbol = String(row.ticker)
+            push!(attempted, symbol)
+
+            ticker_end_date = try
+                resolve_ticker_end_date(row)
+            catch error
+                push!(failed, symbol)
+                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                (!continue_on_error && !strict) && rethrow()
+                continue
+            end
+            latest_date = get(latest_dates_lookup, symbol, nothing)
+            if !isnothing(latest_date) && latest_date >= ticker_end_date
+                push!(unchanged, symbol)
+                continue
+            elseif isnothing(latest_date) && !add_missing
+                push!(unavailable, symbol)
+                continue
+            end
+
+            start_date = isnothing(latest_date) ?
+                resolve_ticker_start_date(row) :
+                latest_date + Day(1)
+            payload = try
+                if isnothing(start_date)
+                    fetcher(row; api_key)
+                else
+                    fetcher(
+                        row;
+                        start_date,
+                        end_date = ticker_end_date,
+                        api_key,
+                    )
+                end
+            catch error
+                if _is_unavailable_historical_error(error)
+                    push!(unavailable, symbol)
+                    continue
+                end
+                push!(failed, symbol)
+                push!(failures, _sync_failure(symbol, :fetch, error))
+                (!continue_on_error && !strict) && rethrow()
+                continue
+            end
+
+            frame = try
+                normalize_eod_prices(
+                    payload;
+                    start_date,
+                    end_date = ticker_end_date,
+                )
+            catch error
+                push!(failed, symbol)
+                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                (!continue_on_error && !strict) && rethrow()
+                continue
+            end
+            if nrow(frame) == 0
+                push!(isnothing(latest_date) ? unavailable : unchanged, symbol)
+                continue
+            end
+
+            if !isnothing(writer)
+                try
+                    rows = writer(symbol, frame)
+                    rows isa Integer ||
+                        throw(ArgumentError("writer must return an integer row count"))
+                    rows >= 0 ||
+                        throw(ArgumentError("writer row count must be non-negative"))
+                    written_rows += rows
+                catch error
+                    push!(failed, symbol)
+                    push!(failures, _sync_failure(symbol, :write, error))
+                    (!continue_on_error && !strict) && rethrow()
+                    continue
+                end
+            end
+            push!(updated, symbol)
+        end
+
+        result = HistoricalCollectionResult(
+            attempted,
+            updated,
+            unchanged,
+            unavailable,
+            failed,
+            failures,
+            written_rows,
+        )
+        return _finish_collection(result, strict)
     end
 
     function get_split_refresh_targets(conn::DuckDBConnection, end_date::Date)::DataFrame

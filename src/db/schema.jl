@@ -100,6 +100,118 @@ module Schema
     end
 
     """
+        create_tables(conn::LibPQ.Connection)
+
+    Idempotently create the PostgreSQL tables and indexes used by TiingoJulia.
+    Existing tables are preserved. Unique indexes provide the deterministic
+    conflict targets used by the PostgreSQL DataFrame upsert methods.
+    """
+    function create_tables(conn::LibPQ.Connection)
+        LibPQ.transaction_status(conn) == LibPQ.libpq_c.PQTRANS_IDLE ||
+            throw(ArgumentError(
+                "create_tables requires an idle PostgreSQL connection; " *
+                "caller-owned transactions are not supported",
+            ))
+
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS us_tickers (
+                ticker VARCHAR,
+                exchange VARCHAR,
+                assettype VARCHAR,
+                pricecurrency VARCHAR,
+                startdate DATE,
+                enddate DATE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS us_tickers_filtered (
+                ticker VARCHAR,
+                exchange VARCHAR,
+                assettype VARCHAR,
+                pricecurrency VARCHAR,
+                startdate DATE,
+                enddate DATE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS historical_data (
+                ticker VARCHAR NOT NULL,
+                date DATE NOT NULL,
+                close DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                open DOUBLE PRECISION,
+                volume BIGINT,
+                adjclose DOUBLE PRECISION,
+                adjhigh DOUBLE PRECISION,
+                adjlow DOUBLE PRECISION,
+                adjopen DOUBLE PRECISION,
+                adjvolume BIGINT,
+                divcash DOUBLE PRECISION,
+                splitfactor DOUBLE PRECISION,
+                PRIMARY KEY (ticker, date)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS security_observations (
+                perma_ticker VARCHAR NOT NULL,
+                observed_at TIMESTAMP NOT NULL,
+                ticker VARCHAR NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_adr BOOLEAN,
+                daily_last_updated TIMESTAMP,
+                exchange VARCHAR,
+                asset_type VARCHAR,
+                price_coverage_start DATE,
+                price_coverage_end DATE,
+                is_leveraged BOOLEAN,
+                join_status VARCHAR NOT NULL,
+                PRIMARY KEY (perma_ticker, observed_at)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS fundamental_daily_metrics (
+                perma_ticker VARCHAR NOT NULL,
+                metric_date DATE NOT NULL,
+                market_cap DOUBLE PRECISION,
+                enterprise_value DOUBLE PRECISION,
+                pe_ratio DOUBLE PRECISION,
+                available_at TIMESTAMP,
+                fetched_at TIMESTAMP NOT NULL,
+                source_revision VARCHAR,
+                PRIMARY KEY (perma_ticker, metric_date)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON us_tickers (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON us_tickers_filtered (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_assettype ON us_tickers_filtered (assettype)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_historical_ticker_date ON historical_data (ticker, date)",
+            "CREATE INDEX IF NOT EXISTS idx_historical_ticker ON historical_data (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data (date)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_security_observations_key ON security_observations (perma_ticker, observed_at)",
+            "CREATE INDEX IF NOT EXISTS idx_security_observations_ticker ON security_observations (ticker)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_fundamental_daily_metrics_key ON fundamental_daily_metrics (perma_ticker, metric_date)",
+            "CREATE INDEX IF NOT EXISTS idx_fundamental_daily_metrics_date ON fundamental_daily_metrics (metric_date)",
+        ]
+
+        close(LibPQ.execute(conn, "BEGIN"))
+        try
+            for statement in statements
+                close(LibPQ.execute(conn, statement))
+            end
+            close(LibPQ.execute(conn, "COMMIT"))
+        catch
+            try
+                close(LibPQ.execute(conn, "ROLLBACK"))
+            catch
+            end
+            rethrow()
+        end
+        return nothing
+    end
+
+    """
         create_indexes(conn::DuckDBConnection)
 
     Create indexes on the historical_data table for better query performance.

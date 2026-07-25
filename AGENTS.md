@@ -141,3 +141,18 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
 - Python environment uses `uv` (do not use `pip` directly)
 - Existing rules in `.Codex/rules/` take highest priority
 - Research notes are stored in `.Codex/docs/research/` (keep empty when distributing templates)
+
+## 10) TiingoJulia Responsibility Boundary
+
+- TiingoJulia owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
+  canonical `DataFrame` normalization; and PostgreSQL, verified atomic Parquet,
+  and optional DuckDB persistence primitives.
+- `quansift_scheduler` owns cron, stage orchestration, DigitalOcean Spaces,
+  rolling three-year Managed PostgreSQL publication, and QuantScreener/TATSU
+  sequencing.
+- DuckDB is optional internal analysis state. This repository does not impose a
+  DuckDB retention period or use DuckDB as the production full-history source.
+- PostgreSQL changes must pass the opt-in PostgreSQL 17 integration test in
+  `test/test_postgres_integration.jl`; CI provides the required service.
+- PostgreSQL-to-Parquet requires DuckDB's `postgres` extension to be installed
+  at build time. Runtime library code must not download extensions.

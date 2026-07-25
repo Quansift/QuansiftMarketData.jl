@@ -134,13 +134,22 @@ function main()
             observed_at,
             fetched_at=observed_at,
         )
-        if !isempty(result.failed)
-            println("FUNDAMENTALS_BACKFILL_PARTIAL failed=$(length(result.failed)) completed=$(length(result.requested)) resume_path=$duckdb_path")
-            exit(2)
-        end
+        failed_count = length(result.failed)
+
+        # Tolerate a small number of per-security failures. The export REPLACES the
+        # PostgreSQL tables (staging + atomic swap), so a widespread failure — an API
+        # outage — must NOT export: it would clobber good market caps with a nearly
+        # empty snapshot. But a handful of persistently-bad securities (delisted, no
+        # data, one-off API quirks) must not block caps for the other thousands, which
+        # is exactly what the old all-or-nothing gate did (one failure in ~5,300 left
+        # security_observations uncreated and every cap-dependent screener empty).
+        # Above the threshold we skip the export and keep yesterday's snapshot intact.
+        max_export_failures = parse(Int, get(ENV, "FUNDAMENTALS_MAX_EXPORT_FAILURES", "100"))
+        within_tolerance = failed_count <= max_export_failures
 
         counts = validate_backfill!(conn, as_of)
-        if do_export
+        exported = false
+        if do_export && within_tolerance
             pg_conn = connect_postgres(pg_conn_str)
             try
                 export_to_postgres(
@@ -149,11 +158,21 @@ function main()
                     ["security_observations", "fundamental_daily_metrics"];
                     pg_connection_string=pg_conn_str,
                 )
+                exported = true
             finally
                 close_postgres(pg_conn)
             end
         end
-        println("FUNDAMENTALS_BACKFILL_OK requested=$(length(result.requested)) skipped=$(length(result.skipped)) unchanged=$(length(result.unchanged)) unavailable=$(length(result.unavailable)) observations=$(counts.observations) metrics=$(counts.metrics) exported=$do_export")
+
+        if failed_count > 0
+            # exit 2 = partial but the good rows WERE exported (alert, not data loss);
+            # exit 3 = failures exceeded tolerance so the export was withheld to protect
+            # the existing snapshot (more urgent). Both keep the DuckDB for watermark
+            # resume on the next run.
+            println("FUNDAMENTALS_BACKFILL_PARTIAL failed=$(failed_count) completed=$(length(result.requested)) unchanged=$(length(result.unchanged)) unavailable=$(length(result.unavailable)) exported=$(exported) resume_path=$duckdb_path")
+            exit(within_tolerance ? 2 : 3)
+        end
+        println("FUNDAMENTALS_BACKFILL_OK requested=$(length(result.requested)) skipped=$(length(result.skipped)) unchanged=$(length(result.unchanged)) unavailable=$(length(result.unavailable)) observations=$(counts.observations) metrics=$(counts.metrics) exported=$exported")
     finally
         close_duckdb(conn)
     end

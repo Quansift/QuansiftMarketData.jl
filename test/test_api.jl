@@ -57,7 +57,7 @@ using TiingoJulia.API
     @testset "fetch_api_data" begin
         if get(ENV, "TIINGO_TEST_LIVE_API", "false") == "true"
             # Test the error handling path using a known-bad URL
-            @test_throws HTTP.Exceptions.ConnectError fetch_api_data(
+            @test_throws ErrorException fetch_api_data(
                 "http://invalid-url-for-testing.com",
                 Dict("param" => "value"),
                 Dict("Authorization" => "Token invalid-key")
@@ -65,6 +65,63 @@ using TiingoJulia.API
         else
             @test_skip "Skipping live network test (set TIINGO_TEST_LIVE_API=true to enable)"
         end
+    end
+
+    @testset "API errors redact credentials" begin
+        cases = [
+            (
+                "GET /daily?token=secret-token&columns=marketCap",
+                ["secret-token"],
+            ),
+            (
+                "GET /daily?apikey=secret.apikey&api_key=secret_key&api-key=secret-key",
+                ["secret.apikey", "secret_key", "secret-key"],
+            ),
+            (
+                "GET /daily?api%5Fkey%3Dsecret%2Fencoded%2Bvalue",
+                ["secret%2Fencoded%2Bvalue"],
+            ),
+            (
+                "Authorization: Token secret-token",
+                ["secret-token"],
+            ),
+            (
+                "\"Authorization\" => \"Bearer secret.bearer-token\"",
+                ["secret.bearer-token"],
+            ),
+            (
+                "%22Authorization%22%3A%20%22Token%20encoded-header-secret%22",
+                ["encoded-header-secret"],
+            ),
+            (
+                "HTTP 401: {\"api_key\":\"body-secret\",\"token\":\"other-secret\"}",
+                ["body-secret", "other-secret"],
+            ),
+            (
+                "Dict(\"api_key\" => \"dict-secret\")",
+                ["dict-secret"],
+            ),
+        ]
+
+        for (input, secrets) in cases
+            message = API._redact_api_error(ErrorException(input))
+            @test all(secret -> !occursin(secret, message), secrets)
+            @test occursin("[REDACTED]", message)
+        end
+
+        message = API._redact_api_error("GET /daily?token=secret-token")
+        @test !occursin("secret-token", message)
+        @test occursin("token=[REDACTED]", message)
+
+        status_error = API._http_status_error(
+            401,
+            "https://example.test/daily?token=url-secret",
+            "arbitrary unlabelled body secret",
+        )
+        status_message = sprint(showerror, status_error)
+        @test !occursin("url-secret", status_message)
+        @test !occursin("arbitrary unlabelled body secret", status_message)
+        @test occursin("response body omitted", status_message)
     end
 
     @testset "download_tickers_duckdb" begin

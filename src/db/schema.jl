@@ -50,6 +50,36 @@ module Schema
                 splitFactor FLOAT,
                 UNIQUE (ticker, date)
             )
+            """),
+            (Config.DB.Tables.SECURITY_OBSERVATIONS, """
+            CREATE TABLE IF NOT EXISTS security_observations (
+                perma_ticker VARCHAR NOT NULL,
+                observed_at TIMESTAMP NOT NULL,
+                ticker VARCHAR NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_adr BOOLEAN,
+                daily_last_updated TIMESTAMP,
+                exchange VARCHAR,
+                asset_type VARCHAR,
+                price_coverage_start DATE,
+                price_coverage_end DATE,
+                is_leveraged BOOLEAN,
+                join_status VARCHAR NOT NULL,
+                PRIMARY KEY (perma_ticker, observed_at)
+            )
+            """),
+            (Config.DB.Tables.FUNDAMENTAL_DAILY_METRICS, """
+            CREATE TABLE IF NOT EXISTS fundamental_daily_metrics (
+                perma_ticker VARCHAR,
+                metric_date DATE,
+                market_cap DOUBLE,
+                enterprise_value DOUBLE,
+                pe_ratio DOUBLE,
+                available_at TIMESTAMP,
+                fetched_at TIMESTAMP NOT NULL,
+                source_revision VARCHAR,
+                PRIMARY KEY (perma_ticker, metric_date)
+            )
             """)
         ]
 
@@ -172,13 +202,17 @@ module Schema
         end
         query *= join(columns, ", ")
 
-        # Match the logical table name even when building a staging table
-        # (e.g. "historical_data_staging"), so the swapped-in table keeps the
-        # (ticker, date) key that ON CONFLICT upserts rely on. Use PRIMARY KEY
-        # so it is a valid FK target and is found by get_primary_key_columns.
+        # Match the logical table name even when building a staging table so
+        # the swapped-in table keeps the key that ON CONFLICT upserts rely on.
+        # PRIMARY KEY also makes it discoverable by get_primary_key_columns.
         base_name = replace(lowercase(table_name), r"_staging$" => "")
-        if base_name == "historical_data"
-            query *= ", PRIMARY KEY (ticker, date)"
+        primary_keys = Dict(
+            "historical_data" => ("ticker", "date"),
+            "security_observations" => ("perma_ticker", "observed_at"),
+            "fundamental_daily_metrics" => ("perma_ticker", "metric_date"),
+        )
+        if haskey(primary_keys, base_name)
+            query *= ", PRIMARY KEY ($(join(primary_keys[base_name], ", ")))"
         end
 
         query *= ")"

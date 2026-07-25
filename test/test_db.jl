@@ -86,10 +86,16 @@ end
         tables_query = """
             SELECT table_name
             FROM information_schema.tables
-            WHERE table_name IN ('us_tickers', 'us_tickers_filtered', 'historical_data')
+            WHERE table_name IN (
+                'us_tickers',
+                'us_tickers_filtered',
+                'historical_data',
+                'security_observations',
+                'fundamental_daily_metrics'
+            )
         """
         tables = DBInterface.execute(conn, tables_query) |> DataFrame
-        @test nrow(tables) == 3
+        @test nrow(tables) == 5
 
         # Test table schemas
         historical_schema =

@@ -125,7 +125,7 @@ Spawn reviewers:
    - Library constraint violations (.Codex/docs/libraries/)
 
    Use Codex CLI for deep analysis of complex logic:
-   codex exec --model "${CODEX_MODEL:-gpt-5.4}" --sandbox read-only "{question}" 2>/dev/null
+   codex exec --model "${CODEX_MODEL:-gpt-5.6-sol}" --sandbox read-only "{question}" 2>/dev/null
 
    Changed files: {list}
 

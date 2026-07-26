@@ -7,6 +7,8 @@ module Postgres
 
     using ..Config
     using ..Core: DuckDBConnection, validate_identifier, validate_file_path
+    import ..Operations: upsert_stock_data, upsert_stock_data_bulk
+    import ..Operations: upsert_security_observations, upsert_fundamental_daily_metrics
     using ..Schema: create_or_replace_table, generate_create_table_query
 
     const PostgreSQLConnection = LibPQ.Connection
@@ -50,6 +52,7 @@ module Postgres
         "options" => "PGOPTIONS",
         "target_session_attrs" => "PGTARGETSESSIONATTRS",
     )
+    const TEMPORARY_ENV_LOCK = ReentrantLock()
 
     normalize_conninfo_value(value) = value === nothing || value === missing ? nothing : strip(String(value))
 
@@ -106,23 +109,37 @@ module Postgres
     end
 
     function with_temporary_env(f::Function, env_vars::Dict{String,String})
-        original = Dict{String,Union{Nothing,String}}()
-        try
-            for (name, value) in env_vars
-                original[name] = get(ENV, name, nothing)
-                ENV[name] = value
-            end
-            return f()
-        finally
-            for name in keys(env_vars)
-                original_value = get(original, name, nothing)
-                if original_value === nothing
-                    pop!(ENV, name, nothing)
-                else
-                    ENV[name] = original_value
+        lock(TEMPORARY_ENV_LOCK) do
+            original = Dict{String,Union{Nothing,String}}()
+            try
+                for (name, value) in env_vars
+                    original[name] = get(ENV, name, nothing)
+                    ENV[name] = value
+                end
+                return f()
+            finally
+                for name in keys(env_vars)
+                    original_value = get(original, name, nothing)
+                    if original_value === nothing
+                        pop!(ENV, name, nothing)
+                    else
+                        ENV[name] = original_value
+                    end
                 end
             end
         end
+    end
+
+    function require_idle_transaction(
+        pg_conn::PostgreSQLConnection,
+        operation::AbstractString,
+    )::Nothing
+        LibPQ.transaction_status(pg_conn) == LibPQ.libpq_c.PQTRANS_IDLE ||
+            throw(ArgumentError(
+                "$operation requires an idle PostgreSQL connection; " *
+                "caller-owned transactions are not supported",
+            ))
+        return nothing
     end
 
     function drop_postgres_table_if_exists(pg_conn::PostgreSQLConnection, table_name::String)
@@ -299,6 +316,319 @@ module Postgres
     Close the PostgreSQL database connection.
     """
     close_postgres(conn::PostgreSQLConnection) = LibPQ.close(conn)
+
+    function select_upsert_columns(
+        data::DataFrame,
+        mappings::Vector{Pair{Symbol,Symbol}},
+    )::DataFrame
+        available = Set(propertynames(data))
+        required = first.(mappings)
+        missing_columns = filter(column -> !(column in available), required)
+        isempty(missing_columns) || throw(ArgumentError(
+            "DataFrame is missing required columns: $(join(string.(missing_columns), ", "))",
+        ))
+
+        selected = DataFrame()
+        for (source, target) in mappings
+            selected[!, target] = data[!, source]
+        end
+        return selected
+    end
+
+    function transactional_upsert!(
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+        data::DataFrame,
+        conflict_columns::Vector{Symbol},
+        update_columns::Vector{Symbol};
+        select_expressions::Union{Nothing,Vector{String}}=nothing,
+    )::Int
+        nrow(data) == 0 && return 0
+
+        safe_table = validate_identifier(table_name)
+        staging_name = validate_identifier("_tiingo_$(safe_table)_$(time_ns())")
+        columns = Symbol.(names(data))
+        column_sql = join(string.(columns), ", ")
+        placeholders = join([string('$', index) for index in eachindex(columns)], ", ")
+        conflict_sql = join(string.(conflict_columns), ", ")
+        update_sql = join(
+            ["$(column) = EXCLUDED.$(column)" for column in update_columns],
+            ", ",
+        )
+        source_sql = isnothing(select_expressions) ?
+            column_sql :
+            join(select_expressions, ", ")
+
+        require_idle_transaction(pg_conn, "PostgreSQL DataFrame upsert")
+        close(LibPQ.execute(pg_conn, "BEGIN"))
+        try
+            close(LibPQ.execute(
+                pg_conn,
+                "CREATE TEMP TABLE $staging_name (LIKE $safe_table INCLUDING DEFAULTS) ON COMMIT DROP",
+            ))
+            LibPQ.load!(
+                data,
+                pg_conn,
+                "INSERT INTO $staging_name ($column_sql) VALUES ($placeholders)",
+            )
+            upsert_result = LibPQ.execute(
+                pg_conn,
+                """
+                INSERT INTO $safe_table ($column_sql)
+                SELECT $source_sql FROM $staging_name
+                ON CONFLICT ($conflict_sql) DO UPDATE SET $update_sql
+                """,
+            )
+            affected_rows = try
+                LibPQ.num_affected_rows(upsert_result)
+            finally
+                close(upsert_result)
+            end
+            close(LibPQ.execute(pg_conn, "COMMIT"))
+            @info "Upserted DataFrame into PostgreSQL" table=safe_table rows=affected_rows
+            return affected_rows
+        catch
+            try
+                close(LibPQ.execute(pg_conn, "ROLLBACK"))
+            catch
+            end
+            rethrow()
+        end
+    end
+
+    const STOCK_COLUMN_MAPPINGS = [
+        :date => :date,
+        :close => :close,
+        :high => :high,
+        :low => :low,
+        :open => :open,
+        :volume => :volume,
+        :adjClose => :adjclose,
+        :adjHigh => :adjhigh,
+        :adjLow => :adjlow,
+        :adjOpen => :adjopen,
+        :adjVolume => :adjvolume,
+        :divCash => :divcash,
+        :splitFactor => :splitfactor,
+    ]
+
+    const SECURITY_OBSERVATION_COLUMN_MAPPINGS = [
+        :perma_ticker => :perma_ticker,
+        :observed_at => :observed_at,
+        :ticker => :ticker,
+        :is_active => :is_active,
+        :is_adr => :is_adr,
+        :daily_last_updated => :daily_last_updated,
+        :exchange => :exchange,
+        :asset_type => :asset_type,
+        :price_coverage_start => :price_coverage_start,
+        :price_coverage_end => :price_coverage_end,
+        :is_leveraged => :is_leveraged,
+        :join_status => :join_status,
+    ]
+
+    const FUNDAMENTAL_METRIC_COLUMN_MAPPINGS = [
+        :perma_ticker => :perma_ticker,
+        :metric_date => :metric_date,
+        :market_cap => :market_cap,
+        :enterprise_value => :enterprise_value,
+        :pe_ratio => :pe_ratio,
+        :available_at => :available_at,
+        :fetched_at => :fetched_at,
+        :source_revision => :source_revision,
+    ]
+
+    const TICKER_UNIVERSE_COLUMN_MAPPINGS = [
+        :ticker => :ticker,
+        :exchange => :exchange,
+        :asset_type => :assettype,
+        :price_currency => :pricecurrency,
+        :start_date => :startdate,
+        :end_date => :enddate,
+    ]
+
+    function load_ticker_universe_frame!(
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+        data::DataFrame,
+    )::Nothing
+        nrow(data) == 0 && return nothing
+
+        safe_table = validate_identifier(table_name)
+        columns = Symbol.(names(data))
+        column_sql = join(string.(columns), ", ")
+        placeholders = join([string('$', index) for index in eachindex(columns)], ", ")
+        LibPQ.load!(
+            data,
+            pg_conn,
+            "INSERT INTO $safe_table ($column_sql) VALUES ($placeholders)",
+        )
+        return nothing
+    end
+
+    function postgres_table_row_count(
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+    )::Int
+        safe_table = validate_identifier(table_name)
+        result = LibPQ.execute(pg_conn, "SELECT count(*) AS row_count FROM $safe_table")
+        try
+            rows = DataFrame(result)
+            return Int(rows[1, :row_count])
+        finally
+            close(result)
+        end
+    end
+
+    """
+        replace_ticker_universe(pg_conn, all_data, filtered_data)
+
+    Atomically replace both PostgreSQL ticker-universe snapshots while retaining
+    the existing table identities. Input frames use canonical snake-case
+    columns: `ticker`, `exchange`, `asset_type`, `price_currency`,
+    `start_date`, and `end_date`.
+    """
+    function replace_ticker_universe(
+        pg_conn::PostgreSQLConnection,
+        all_data::DataFrame,
+        filtered_data::DataFrame,
+    )::NamedTuple{(:all_rows,:filtered_rows),Tuple{Int,Int}}
+        all_frame = select_upsert_columns(all_data, TICKER_UNIVERSE_COLUMN_MAPPINGS)
+        filtered_frame = select_upsert_columns(
+            filtered_data,
+            TICKER_UNIVERSE_COLUMN_MAPPINGS,
+        )
+        require_idle_transaction(pg_conn, "replace_ticker_universe")
+
+        close(LibPQ.execute(pg_conn, "BEGIN"))
+        try
+            close(LibPQ.execute(
+                pg_conn,
+                "TRUNCATE TABLE us_tickers, us_tickers_filtered",
+            ))
+            load_ticker_universe_frame!(pg_conn, "us_tickers", all_frame)
+            load_ticker_universe_frame!(
+                pg_conn,
+                "us_tickers_filtered",
+                filtered_frame,
+            )
+            all_rows = postgres_table_row_count(pg_conn, "us_tickers")
+            filtered_rows = postgres_table_row_count(pg_conn, "us_tickers_filtered")
+            close(LibPQ.execute(pg_conn, "COMMIT"))
+            return (; all_rows, filtered_rows)
+        catch
+            try
+                close(LibPQ.execute(pg_conn, "ROLLBACK"))
+            catch
+            end
+            rethrow()
+        end
+    end
+
+    """
+        upsert_stock_data(pg_conn::PostgreSQLConnection, data::DataFrame, ticker::String)::Int
+
+    Idempotently upsert one ticker's normalized EOD rows directly into
+    PostgreSQL. The operation is atomic and never replaces the full table.
+    """
+    function upsert_stock_data(
+        pg_conn::PostgreSQLConnection,
+        data::DataFrame,
+        ticker::String,
+    )::Int
+        nrow(data) == 0 && return 0
+        frame = select_upsert_columns(data, STOCK_COLUMN_MAPPINGS)
+        insertcols!(frame, 1, :ticker => fill(ticker, nrow(frame)))
+        select_expressions = [
+            "ticker",
+            "date",
+            "COALESCE(close, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(high, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(low, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(open, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(volume, 0)",
+            "COALESCE(adjclose, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(adjhigh, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(adjlow, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(adjopen, 'NaN'::DOUBLE PRECISION)",
+            "COALESCE(adjvolume, 0)",
+            "COALESCE(divcash, 0.0)",
+            "COALESCE(splitfactor, 1.0)",
+        ]
+        return transactional_upsert!(
+            pg_conn,
+            "historical_data",
+            frame,
+            [:ticker, :date],
+            Symbol.(names(frame)[3:end]);
+            select_expressions,
+        )
+    end
+
+    """
+        upsert_stock_data_bulk(pg_conn::PostgreSQLConnection, data::DataFrame, ticker::String)::Int
+
+    PostgreSQL-compatible bulk alias matching the existing DuckDB contract.
+    If `data` contains a ticker column, rows for other tickers are ignored.
+    """
+    function upsert_stock_data_bulk(
+        pg_conn::PostgreSQLConnection,
+        data::DataFrame,
+        ticker::String,
+    )::Int
+        nrow(data) == 0 && return 0
+        ticker_data = if :ticker in propertynames(data)
+            filter(
+                row -> !ismissing(row.ticker) && !isnothing(row.ticker) &&
+                    String(row.ticker) == ticker,
+                data,
+            )
+        else
+            data
+        end
+        return upsert_stock_data(pg_conn, ticker_data, ticker)
+    end
+
+    """
+        upsert_security_observations(pg_conn::PostgreSQLConnection, data::DataFrame)::Int
+
+    Idempotently upsert normalized security identity observations directly
+    into PostgreSQL.
+    """
+    function upsert_security_observations(
+        pg_conn::PostgreSQLConnection,
+        data::DataFrame,
+    )::Int
+        nrow(data) == 0 && return 0
+        frame = select_upsert_columns(data, SECURITY_OBSERVATION_COLUMN_MAPPINGS)
+        return transactional_upsert!(
+            pg_conn,
+            "security_observations",
+            frame,
+            [:perma_ticker, :observed_at],
+            Symbol.(names(frame)[3:end]),
+        )
+    end
+
+    """
+        upsert_fundamental_daily_metrics(pg_conn::PostgreSQLConnection, data::DataFrame)::Int
+
+    Idempotently upsert normalized Daily Metrics rows directly into PostgreSQL.
+    """
+    function upsert_fundamental_daily_metrics(
+        pg_conn::PostgreSQLConnection,
+        data::DataFrame,
+    )::Int
+        nrow(data) == 0 && return 0
+        frame = select_upsert_columns(data, FUNDAMENTAL_METRIC_COLUMN_MAPPINGS)
+        return transactional_upsert!(
+            pg_conn,
+            "fundamental_daily_metrics",
+            frame,
+            [:perma_ticker, :metric_date],
+            Symbol.(names(frame)[3:end]),
+        )
+    end
 
     """
         export_to_postgres(duckdb_conn::DuckDBConnection, pg_conn::PostgreSQLConnection, tables::Vector{String}; pg_host::String="127.0.0.1", pg_user::String="postgres", pg_dbname::String="tiingo")
@@ -563,6 +893,9 @@ module Postgres
 
     export PostgreSQLConnection
     export connect_postgres, close_postgres, export_to_postgres
+    export replace_ticker_universe
+    export upsert_stock_data, upsert_stock_data_bulk
+    export upsert_security_observations, upsert_fundamental_daily_metrics
     export export_table_to_postgres, export_table_to_postgres_dataframe, export_table_to_postgres_parquet
     export setup_postgres_connection, normalize_postgres_connection_string, connection_options_map, postgres_env_vars
 end

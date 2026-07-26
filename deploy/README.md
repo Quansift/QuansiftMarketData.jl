@@ -1,122 +1,129 @@
-# Server deployment (containerized pipeline)
+# Bounded integration-smoke assets
 
-The TiingoJulia pipeline runs as a **oneshot container** joined to your DB stack's
-shared Docker network, scheduled by a systemd timer. The image is built and pushed
-to GHCR by CI, so the deployment host only pulls (no heavy Julia precompile on the host).
+The files in this directory package `scripts/staging_smoke_test.jl` as a
+one-shot container and retain legacy systemd/launchd wrappers for existing
+users. They validate TiingoJulia in a real runtime; they are not the canonical
+Quansift production scheduler.
 
-Environment tiers (same image, config-only difference):
+`quansift_scheduler` owns production scheduling, cross-stage retries,
+DigitalOcean Spaces publication, DigitalOcean Managed PostgreSQL loading,
+notifications, and QuantScreener/TATSU sequencing.
 
-| Role | Image tag | Env file |
-|------|-----------|----------|
-| preprod | `staging` | `.env.staging` |
-| prod | `latest` (or version) | `.env` |
+## What the smoke validates
 
-## One-time setup on a host
+The bounded smoke can:
 
-1. **Clone / place the repo** at a deployment directory of your choice (referred to
-   below as `<deploy-dir>`), and set `WorkingDirectory` in the systemd unit to match.
+- authenticate to Tiingo;
+- download and filter the ticker universe (the reusable library boundary is
+  the sink-neutral `collect_ticker_universe`);
+- fetch a configured number of EOD stock/ETF histories;
+- persist disposable validation state in DuckDB; and
+- optionally exercise the existing PostgreSQL compatibility export.
 
-2. **Authenticate to GHCR** so the host can pull the (private) image:
+It does not run a full production ingest, publish Parquet to an object store,
+load Managed PostgreSQL, or run downstream analysis.
 
-   ```bash
-   echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
-   ```
+## Host-side smoke
 
-   `GHCR_PAT` is a GitHub PAT with `read:packages`. (Or make the GHCR package public,
-   then no login is needed.)
-
-3. **Create the env file** at the repo root. The PG host must be the **in-network
-   alias on port 5432** (not a port published on the host loopback):
-
-   ```dotenv
-   TIINGO_API_KEY=...
-   OHLCV_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
-   TIINGO_SMOKE_EXPORT_POSTGRES=true
-   ```
-
-   Use whatever alias your PostgreSQL container exposes on the shared Docker
-   network (commonly `postgres`).
-
-4. **Create the host-side systemd env file** so `docker compose` gets the right
-   image tag, app env file, and external network:
-
-   ```bash
-   sudo install -m 0644 deploy/systemd/tiingojulia-pipeline.env.example /etc/default/tiingojulia-pipeline
-   ```
-
-   Then edit `/etc/default/tiingojulia-pipeline`:
-
-   ```dotenv
-   TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia
-   TIINGO_IMAGE_TAG=staging
-   TIINGO_APP_ENV_FILE=<deploy-dir>/.env.staging
-   TIINGO_DOCKER_NETWORK=<db-network>
-   TIINGO_DB_HOST_DIR=<db-host-dir>
-   TIINGO_DB_CONTAINER_DIR=/data
-   ```
-
-5. **Smoke test the container** (verifies the whole path, incl. the PostgreSQL export):
-
-   ```bash
-   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline
-   ```
-
-   Expect `Staging PostgreSQL export completed`.
-
-   For a bounded one-off smoke run, pass overrides with `run -e`:
-
-   ```bash
-   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
-     -e TIINGO_SMOKE_TICKER_LIMIT=100 \
-     -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
-     pipeline
-   ```
-
-   Do not use `TIINGO_SMOKE_TICKER_LIMIT=100 docker compose ...` for this.
-   Prefix env vars only affect Compose interpolation and do not override values
-   loaded into the container from `TIINGO_APP_ENV_FILE`.
-
-## Schedule with systemd
+From the repository root:
 
 ```bash
-sudo cp deploy/systemd/tiingojulia-pipeline.service /etc/systemd/system/
-sudo cp deploy/systemd/tiingojulia-pipeline.timer   /etc/systemd/system/
-# edit WorkingDirectory in the .service to point at your deployment directory
-sudo systemctl daemon-reload
-sudo systemctl enable --now tiingojulia-pipeline.timer
-systemctl list-timers tiingojulia-pipeline.timer   # confirm next run
-journalctl -u tiingojulia-pipeline.service -f      # follow run logs
+cp .env.staging.example .env.staging
 ```
 
-## preprod → prod promotion
+Set `TIINGO_API_KEY`, then run a small sample without PostgreSQL:
 
-Same files. On the prod host:
+```bash
+TIINGO_SMOKE_TICKER_LIMIT=5 \
+TIINGO_SMOKE_EXPORT_POSTGRES=false \
+scripts/run_staging_smoke.sh
+```
 
-- set `TIINGO_IMAGE_TAG=latest`
-- set `TIINGO_IMAGE_REPO=ghcr.io/quansift/tiingojulia`
-- set `TIINGO_APP_ENV_FILE=<deploy-dir>/.env`
-- set `TIINGO_DOCKER_NETWORK` to the external Docker network name your prod DB stack exposes
-- set `TIINGO_DB_HOST_DIR` to the host directory that already contains `tiingo_historical_data.duckdb`
-- keep `TIINGO_DB_CONTAINER_DIR=/data`
+To test PostgreSQL integration, point `OHLCV_PG_CONNECTION` only at an isolated
+integration database and set `TIINGO_SMOKE_EXPORT_POSTGRES=true`.
 
-If the prod Docker network differs, change `TIINGO_DOCKER_NETWORK` in
-`/etc/default/tiingojulia-pipeline`; the compose file now reads it dynamically.
+The separate executable persistence gate uses
+`TIINGO_TEST_PG_CONNECTION` and creates, replaces, and drops its tables:
 
-## Notes / follow-ups
+```bash
+TIINGO_TEST_PG_CONNECTION='postgresql://user:password@localhost:5432/tiingojulia_test?sslmode=disable' \
+  julia --project=. test/test_postgres_integration.jl
+```
 
-- The scheduled command is currently `scripts/staging_smoke_test.jl` (a real but
-  bounded sync + PG export). Control production scope with `TIINGO_SMOKE_*` variables
-  in the selected app env file.
-- `OHLCV_DUCKDB_PATH` (or legacy `TIINGO_DB_PATH`) is the DuckDB file location and now comes directly from the
-  selected app env file. `TIINGO_DUCKDB_TMP` is separate and only controls DuckDB
-  scratch space. The compose file pins scratch space and downloaded ticker temp
-  files to `/tmp` inside the container.
-- On 3GB-class hosts, set `TIINGO_DUCKDB_MEMORY_LIMIT_GB=1`,
-  `TIINGO_DUCKDB_THREADS=1`, `TIINGO_DUCKDB_WORKER_THREADS=1`,
-  `TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false`, and
-  `TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500` in the app env file.
-- The compose file bind-mounts `TIINGO_DB_HOST_DIR` into `TIINGO_DB_CONTAINER_DIR`.
-  Set `OHLCV_DUCKDB_PATH` in the app env file to a path under that mounted container
-  directory, such as `/data/tiingo_historical_data.duckdb`.
-- If a persistent local DuckDB file is needed later, add a container volume for the
-  chosen `OHLCV_DUCKDB_PATH` location plus a writable directory owned by `appuser`.
+PostgreSQL-to-Parquet snapshots require DuckDB's `postgres` extension to be
+installed in the image or environment ahead of time. Runtime library calls
+only load the preinstalled extension and never download it.
+
+## One-shot container smoke
+
+The compose service joins an existing Docker network and bind-mounts a
+directory for its temporary DuckDB file. Choose values appropriate for the
+integration host:
+
+```bash
+export TIINGO_APP_ENV_FILE="$PWD/.env.staging"
+export TIINGO_DOCKER_NETWORK=integration-db-network
+export TIINGO_DB_HOST_DIR=/path/to/integration-data
+export TIINGO_DB_CONTAINER_DIR=/data
+```
+
+Set `OHLCV_DUCKDB_PATH=/data/staging_smoke.duckdb` in `.env.staging`, then run:
+
+```bash
+docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
+docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
+  -e TIINGO_SMOKE_TICKER_LIMIT=5 \
+  -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
+  pipeline
+```
+
+Pass smoke overrides with `docker compose run -e`. Prefixing the
+`docker compose` command with `TIINGO_SMOKE_*` only affects Compose
+interpolation; it does not override variables loaded from
+`TIINGO_APP_ENV_FILE`.
+
+If PostgreSQL export is enabled, use the database container's in-network host
+and port in `OHLCV_PG_CONNECTION`, for example:
+
+```dotenv
+OHLCV_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
+TIINGO_SMOKE_EXPORT_POSTGRES=true
+```
+
+## Low-resource integration hosts
+
+The following settings are suitable starting points for a small smoke
+container:
+
+```dotenv
+TIINGO_DUCKDB_MEMORY_LIMIT_GB=1
+TIINGO_DUCKDB_THREADS=1
+TIINGO_DUCKDB_WORKER_THREADS=1
+TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false
+TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=500
+```
+
+`TIINGO_DUCKDB_TMP` controls scratch space. `OHLCV_DUCKDB_PATH` controls the
+optional local DuckDB file and should resolve inside the mounted container
+directory for a container smoke.
+
+## Legacy scheduler wrappers
+
+The following files remain for backward compatibility:
+
+- `deploy/systemd/tiingojulia-pipeline.service`
+- `deploy/systemd/tiingojulia-pipeline.timer`
+- `deploy/systemd/tiingojulia-pipeline.env.example`
+- `deploy/launchd/com.example.tiingojulia.staging-smoke.plist`
+
+They schedule the same bounded smoke, not a production data pipeline. Do not
+enable them as the Quansift production scheduler. Existing users may retain
+them for periodic integration monitoring, but production workflow changes
+belong in `quansift_scheduler`.
+
+Consumers should validate externally supplied EOD payloads through
+`normalize_eod_prices` before persistence. The sink-neutral
+`collect_fundamentals` collector supports unbounded collection with
+`initial_start_date=nothing` and full Daily Metrics payloads with
+`columns=nothing`; the legacy `sync_fundamentals!` workflow retains its
+three-year initial-backfill default.

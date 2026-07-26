@@ -62,3 +62,42 @@ jobs:
                   file: lcov.info
                   token: ${{ secrets.CODECOV_TOKEN }}
                   fail_ci_if_error: false
+    postgres-integration:
+        name: PostgreSQL 17 integration - ubuntu
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            JULIA_PROJECT: "."
+            TIINGO_API_KEY: mock-api-key-for-testing
+            TIINGO_TEST_PG_CONNECTION: postgresql://postgres:postgres@localhost:5432/tiingojulia_test?sslmode=disable
+        permissions:
+            contents: read
+        services:
+            postgres:
+                image: postgres:17
+                env:
+                    POSTGRES_DB: tiingojulia_test
+                    POSTGRES_PASSWORD: postgres
+                    POSTGRES_USER: postgres
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U postgres -d tiingojulia_test"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        steps:
+            - uses: actions/checkout@v7
+            - uses: julia-actions/setup-julia@v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@v3
+            - name: Install and resolve dependencies
+              run: |
+                  julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
+            - name: Preinstall DuckDB PostgreSQL extension
+              run: |
+                  julia --project=. -e 'using DBInterface, DuckDB; conn = DBInterface.connect(DuckDB.DB); try DBInterface.execute(conn, "INSTALL postgres") finally DBInterface.close!(conn) end'
+            - name: Run PostgreSQL persistence integration
+              run: |
+                  julia --project=. test/test_postgres_integration.jl

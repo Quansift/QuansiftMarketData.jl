@@ -13,7 +13,8 @@ COPY src ./src
 COPY scripts ./scripts
 COPY README.md LICENSE config.toml config.example.toml .env.example ./
 
-RUN julia -e 'using Pkg; Pkg.precompile(); using TiingoJulia'
+RUN julia -e 'using Pkg; Pkg.precompile(); using TiingoJulia' && \
+    julia -e 'using DBInterface, DuckDB; conn = DBInterface.connect(DuckDB.DB); try DBInterface.execute(conn, "INSTALL postgres") finally DBInterface.close!(conn) end'
 
 RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app /usr/local/julia-depot

@@ -1,0 +1,381 @@
+using Test
+using CSV
+using DataFrames
+using Dates
+using TiingoJulia
+
+function _eod_fixture(date, close=100.0)
+    return DataFrame(
+        date = [date],
+        close = [close],
+        high = [101.0],
+        low = [99.0],
+        open = [100.0],
+        volume = [1_000],
+        adjClose = [close],
+        adjHigh = [101.0],
+        adjLow = [99.0],
+        adjOpen = [100.0],
+        adjVolume = [1_000],
+        divCash = [0.0],
+        splitFactor = [1.0],
+    )
+end
+
+@testset "Ticker universe collection is canonical and sink neutral" begin
+    source = DataFrame(
+        ticker = ["SPY", "AAPL", "OLD", "BRK/B", "FOREIGN"],
+        exchange = ["NYSE ARCA", "NYSE", "NASDAQ", "NYSE", "LSE"],
+        assetType = ["ETF", "Stock", "Stock", "Stock", "Stock"],
+        priceCurrency = fill("USD", 5),
+        startDate = fill("2020-01-01", 5),
+        endDate = [
+            "2024-01-03",
+            "2024-01-03",
+            "2024-01-02",
+            "2024-01-03",
+            "2024-01-03",
+        ],
+    )
+
+    result = collect_ticker_universe(source)
+
+    @test keys(result) == (:all, :filtered)
+    @test names(result.all) == [
+        "ticker",
+        "exchange",
+        "asset_type",
+        "price_currency",
+        "start_date",
+        "end_date",
+    ]
+    @test result.all.ticker == ["AAPL", "BRK/B", "FOREIGN", "OLD", "SPY"]
+    @test eltype(result.all.start_date) == Union{Missing,Date}
+    @test result.filtered.ticker == ["AAPL", "SPY"]
+    @test result.filtered.asset_type == ["Stock", "ETF"]
+
+    mktempdir() do directory
+        fixture = joinpath(directory, "supported_tickers.csv")
+        CSV.write(fixture, source)
+        from_file = collect_ticker_universe(
+            csv_file = fixture,
+            zip_file_path = joinpath(directory, "unused.zip"),
+            downloader = nothing,
+        )
+        @test from_file.all == result.all
+        @test from_file.filtered == result.filtered
+        @test isfile(fixture)
+    end
+end
+
+@testset "Historical collection is sink neutral for stocks and ETFs" begin
+    tickers = DataFrame(
+        ticker = ["AAPL", "SPY", "CURRENT", "EMPTY"],
+        asset_type = ["Stock", "ETF", "Stock", "ETF"],
+        start_date = fill(Date(2024, 1, 1), 4),
+        end_date = fill(Date(2024, 1, 3), 4),
+    )
+    fetch_calls = NamedTuple[]
+    written = Dict{String,DataFrame}()
+    fetcher = function (row; kwargs...)
+        push!(fetch_calls, (
+            ticker = String(row.ticker),
+            start_date = get(kwargs, :start_date, nothing),
+            end_date = get(kwargs, :end_date, nothing),
+        ))
+        row.ticker == "EMPTY" && return DataFrame()
+        return _eod_fixture(
+            "2024-01-03T00:00:00.000Z",
+            row.ticker == "AAPL" ? 10.0 : 20.0,
+        )
+    end
+    writer = function (ticker, frame)
+        written[ticker] = copy(frame)
+        return nrow(frame)
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        latest_dates = Dict(
+            "AAPL" => Date(2024, 1, 2),
+            "CURRENT" => Date(2024, 1, 3),
+        ),
+        fetcher,
+        writer,
+    )
+
+    @test result isa HistoricalCollectionResult
+    @test result.attempted == ["AAPL", "SPY", "CURRENT", "EMPTY"]
+    @test result.updated == ["AAPL", "SPY"]
+    @test result.unchanged == ["CURRENT"]
+    @test result.unavailable == ["EMPTY"]
+    @test isempty(result.failed)
+    @test isempty(result.failures)
+    @test result.written_rows == 2
+    @test sort!(collect(keys(written))) == ["AAPL", "SPY"]
+    @test eltype(written["AAPL"].date) == Date
+    @test names(written["AAPL"]) == names(_eod_fixture("2024-01-03"))
+    @test fetch_calls == [
+        (
+            ticker = "AAPL",
+            start_date = Date(2024, 1, 3),
+            end_date = Date(2024, 1, 3),
+        ),
+        (
+            ticker = "SPY",
+            start_date = Date(2024, 1, 1),
+            end_date = Date(2024, 1, 3),
+        ),
+        (
+            ticker = "EMPTY",
+            start_date = Date(2024, 1, 1),
+            end_date = Date(2024, 1, 3),
+        ),
+    ]
+end
+
+@testset "EOD normalization enforces schema, dates, uniqueness, and range" begin
+    later = _eod_fixture("2024-01-03T00:00:00Z", missing)
+    earlier = _eod_fixture("2024-01-02T00:00:00Z", 99.0)
+    normalized = normalize_eod_prices(
+        vcat(later, earlier);
+        start_date = Date(2024, 1, 2),
+        end_date = Date(2024, 1, 3),
+    )
+
+    @test normalized.date == [Date(2024, 1, 2), Date(2024, 1, 3)]
+    @test ismissing(normalized[2, :close])
+    @test eltype(normalized.close) == Union{Missing,Float64}
+    @test eltype(normalized.volume) == Union{Missing,Int64}
+    @test names(normalized) == [
+        "date",
+        "close",
+        "high",
+        "low",
+        "open",
+        "volume",
+        "adjClose",
+        "adjHigh",
+        "adjLow",
+        "adjOpen",
+        "adjVolume",
+        "divCash",
+        "splitFactor",
+    ]
+
+    incomplete = select(earlier, Not(:high))
+    @test_throws ArgumentError normalize_eod_prices(incomplete)
+    @test_throws ArgumentError normalize_eod_prices(vcat(earlier, earlier))
+    @test_throws ArgumentError normalize_eod_prices(
+        later;
+        end_date = Date(2024, 1, 2),
+    )
+    invalid = copy(earlier)
+    invalid[!, :volume] = [1.5]
+    @test_throws ArgumentError normalize_eod_prices(invalid)
+end
+
+@testset "Historical strict mode processes all entities and redacts failures" begin
+    tickers = DataFrame(
+        ticker = ["FAIL", "AFTER"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    fetched = String[]
+    fetcher = function (row; kwargs...)
+        ticker = String(row.ticker)
+        push!(fetched, ticker)
+        ticker == "FAIL" && error("HTTP 503 token=historical-secret")
+        return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+    end
+
+    caught = try
+        collect_historical(
+            tickers,
+            "offline-token";
+            fetcher,
+            writer = (_, frame) -> nrow(frame),
+            strict = true,
+        )
+        nothing
+    catch error
+        error
+    end
+
+    @test caught isa SyncIncompleteError
+    result = caught.result
+    @test fetched == ["FAIL", "AFTER"]
+    @test result.updated == ["AFTER"]
+    @test result.failed == ["FAIL"]
+    @test result.written_rows == 1
+    @test only(result.failures).stage == :fetch
+    @test only(result.failures).retryable
+    @test !occursin("historical-secret", only(result.failures).message)
+    @test occursin("[REDACTED]", only(result.failures).message)
+end
+
+@testset "Fundamentals collection separates normalization and writers" begin
+    as_of = Date(2024, 1, 3)
+    observed_at = DateTime(2024, 1, 3, 12)
+    meta_payload = [
+        (permaTicker = "perm-current", ticker = "CUR", isActive = true, isADR = false, dailyLastUpdated = string(observed_at)),
+        (permaTicker = "perm-empty", ticker = "EMP", isActive = true, isADR = false, dailyLastUpdated = string(observed_at)),
+        (permaTicker = "perm-new", ticker = "NEW", isActive = true, isADR = false, dailyLastUpdated = string(observed_at)),
+        (permaTicker = "perm-etf", ticker = "ETF", isActive = true, isADR = false, dailyLastUpdated = string(observed_at)),
+    ]
+    universe_payload = [
+        (ticker = "CUR", exchange = "NYSE", assetType = "Stock", startDate = "2020-01-01", endDate = string(as_of)),
+        (ticker = "EMP", exchange = "NASDAQ", assetType = "Stock", startDate = "2020-01-01", endDate = string(as_of)),
+        (ticker = "NEW", exchange = "NYSE", assetType = "Stock", startDate = "2020-01-01", endDate = string(as_of)),
+        (ticker = "ETF", exchange = "NYSE ARCA", assetType = "ETF", startDate = "2020-01-01", endDate = string(as_of)),
+    ]
+    fetch_calls = NamedTuple[]
+    metric_frames = Dict{String,DataFrame}()
+    daily_fetcher = function (perma_ticker; kwargs...)
+        push!(fetch_calls, (
+            perma_ticker,
+            start_date = kwargs[:start_date],
+            columns = kwargs[:columns],
+        ))
+        perma_ticker == "perm-empty" && return NamedTuple[]
+        return [(
+            date = string(as_of),
+            marketCap = 100.0,
+            enterpriseVal = 120.0,
+            peRatio = 15.0,
+        )]
+    end
+    metric_writer = function (perma_ticker, frame)
+        metric_frames[perma_ticker] = copy(frame)
+        return nrow(frame)
+    end
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        watermarks = Dict("perm-current" => as_of),
+        api_key = "offline-token",
+        as_of,
+        observed_at,
+        fetched_at = observed_at,
+        daily_fetcher,
+        observation_writer = nrow,
+        metric_writer,
+    )
+
+    @test result isa FundamentalCollectionResult
+    @test result.attempted == ["perm-current", "perm-empty", "perm-new"]
+    @test result.updated == ["perm-new"]
+    @test result.unchanged == ["perm-current"]
+    @test result.unavailable == ["perm-empty"]
+    @test isempty(result.failed)
+    @test result.observation_rows == 4
+    @test result.metric_rows == 1
+    @test fetch_calls == [
+        (perma_ticker = "perm-empty", start_date = nothing, columns = nothing),
+        (perma_ticker = "perm-new", start_date = nothing, columns = nothing),
+    ]
+    @test collect(keys(metric_frames)) == ["perm-new"]
+    @test only(metric_frames["perm-new"].perma_ticker) == "perm-new"
+    @test only(metric_frames["perm-new"].enterprise_value) == 120.0
+    @test only(metric_frames["perm-new"].pe_ratio) == 15.0
+    @test result.status_counts == Dict("matched" => 4)
+end
+
+@testset "Fundamentals collection supports explicit initial range and columns" begin
+    as_of = Date(2024, 1, 3)
+    initial_start_date = Date(2020, 1, 1)
+    meta_payload = [(
+        permaTicker = "perm-bounded",
+        ticker = "BOUND",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(as_of),
+    )]
+    universe_payload = [(
+        ticker = "BOUND",
+        exchange = "NYSE",
+        assetType = "Stock",
+        startDate = "2010-01-01",
+        endDate = string(as_of),
+    )]
+    calls = NamedTuple[]
+    daily_fetcher = function (perma_ticker; kwargs...)
+        push!(calls, (
+            perma_ticker,
+            start_date = kwargs[:start_date],
+            columns = kwargs[:columns],
+        ))
+        return [(date = string(as_of), marketCap = 10.0, peRatio = 11.0)]
+    end
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        initial_start_date,
+        columns = ["marketCap", "peRatio"],
+        daily_fetcher,
+    )
+
+    @test result.updated == ["perm-bounded"]
+    @test calls == [(
+        perma_ticker = "perm-bounded",
+        start_date = initial_start_date,
+        columns = ["marketCap", "peRatio"],
+    )]
+    @test_throws ArgumentError collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        as_of,
+        initial_start_date = as_of + Day(1),
+        api_key = "offline-token",
+        daily_fetcher,
+    )
+end
+
+@testset "Fundamentals strict mode retains later successes" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [
+        (permaTicker = "perm-fail", ticker = "FAIL", isActive = true, isADR = false, dailyLastUpdated = string(as_of)),
+        (permaTicker = "perm-pass", ticker = "PASS", isActive = true, isADR = false, dailyLastUpdated = string(as_of)),
+    ]
+    universe_payload = [
+        (ticker = "FAIL", exchange = "NYSE", assetType = "Stock", startDate = "2020-01-01", endDate = string(as_of)),
+        (ticker = "PASS", exchange = "NYSE", assetType = "Stock", startDate = "2020-01-01", endDate = string(as_of)),
+    ]
+    fetched = String[]
+    daily_fetcher = function (perma_ticker; kwargs...)
+        push!(fetched, perma_ticker)
+        perma_ticker == "perm-fail" &&
+            error("temporary api_key=fundamental-secret")
+        return [(date = string(as_of), marketCap = 200.0)]
+    end
+
+    caught = try
+        collect_fundamentals(
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            daily_fetcher,
+            metric_writer = (_, frame) -> nrow(frame),
+            strict = true,
+        )
+        nothing
+    catch error
+        error
+    end
+
+    @test caught isa SyncIncompleteError
+    result = caught.result
+    @test fetched == ["perm-fail", "perm-pass"]
+    @test result.updated == ["perm-pass"]
+    @test result.failed == ["perm-fail"]
+    @test result.metric_rows == 1
+    @test only(result.failures).stage == :fetch
+    @test only(result.failures).retryable
+    @test !occursin("fundamental-secret", only(result.failures).message)
+end

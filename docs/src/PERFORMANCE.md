@@ -1,279 +1,220 @@
-# TiingoJulia Performance Guide
+# TiingoJulia performance guide
 
-This guide covers the performance optimizations available in TiingoJulia, particularly for updating historical data.
+This guide covers Tiingo request concurrency and sink-specific tuning.
+TiingoJulia does not prescribe a production scheduler or storage topology.
 
-## 🚀 Performance Improvements Overview
+For Quansift production, system PostgreSQL plus Parquet is the selected path.
+DuckDB tuning applies only to consumers that choose the optional local-analysis
+or compatibility sink.
 
-TiingoJulia includes significant performance improvements for historical data updates:
+## Measure your workload
 
-### Key Optimizations
+Throughput depends on the Tiingo plan, requested date ranges, network latency,
+host memory, and destination storage. Treat benchmark results as local
+measurements, not package guarantees.
 
-1. **Parallel API Calls**: Multiple tickers are fetched concurrently instead of sequentially
-2. **Bulk Database Operations**: Data is inserted in batches rather than row-by-row
-3. **Optimized Queries**: Reduced database round-trips and improved filtering
-4. **Memory Efficiency**: Better memory management for large datasets
-5. **Database Indexing**: Automatic index creation for faster queries
+Record at least:
 
-### Performance Gains
+- requested, updated, unavailable, and failed ticker counts;
+- rows written per sink;
+- elapsed collection and persistence time;
+- peak memory;
+- HTTP retry/rate-limit counts; and
+- destination date ranges or watermarks.
 
-Based on testing with typical workloads:
-
-- **5-10x faster** API data fetching through parallel requests
-- **3-5x faster** database insertions using bulk operations
-- **50-80% less memory** usage through optimized data structures
-- **Reduced API rate limiting** through intelligent batching
-
-## 🔧 Using the Optimized Functions
-
-### Basic Usage
-
-The `update_historical()` function uses the optimized parallel implementation by default:
-
-```julia
-using TiingoJulia
-
-# Connect and optimize database
-conn = connect_duckdb()
-optimize_database(conn)  # Apply performance settings
-create_indexes(conn)     # Create performance indexes
-
-# Get tickers to update
-tickers = get_tickers_stock(conn)
-
-# Update with optimized parallel processing (default)
-updated, missing = update_historical(conn, tickers)
-```
-
-### Advanced Configuration
-
-You can fine-tune the performance parameters:
-
-```julia
-# Customize parallel processing
-updated, missing = update_historical(
-    conn,
-    tickers;
-    use_parallel = true,        # Use parallel processing (default)
-    batch_size = 50,           # Process 50 tickers per batch
-    max_concurrent = 10,       # Max 10 concurrent API calls
-    add_missing = true         # Add new tickers automatically
-)
-```
-
-### Explicit Function Calls
-
-You can also call the optimized functions directly:
-
-```julia
-# Use the parallel version explicitly
-updated, missing = update_historical_parallel(
-    conn, tickers, api_key;
-    batch_size = 100,
-    max_concurrent = 15
-)
-
-# Use bulk upsert for large datasets
-upsert_stock_data_bulk(conn, large_dataframe, "AAPL")
-```
-
-## ⚙️ Performance Tuning
-
-### Database Optimization
-
-```julia
-# Apply database optimizations (call once per session)
-optimize_database(conn)
-
-# Create performance indexes (call once after initial setup)
-create_indexes(conn)
-```
-
-### Parameter Tuning
-
-#### Batch Size
-
-- **Small datasets (< 100 tickers)**: `batch_size = 20-50`
-- **Medium datasets (100-1000 tickers)**: `batch_size = 50-100`
-- **Large datasets (> 1000 tickers)**: `batch_size = 100-200`
-
-#### Concurrent Requests
-
-- **Conservative (avoid rate limits)**: `max_concurrent = 5-10`
-- **Balanced**: `max_concurrent = 10-15`
-- **Aggressive (fast network)**: `max_concurrent = 15-25`
-
-⚠️ **Note**: Higher concurrency may trigger API rate limits. Monitor your API usage.
-
-### Memory Optimization
-
-For very large datasets:
-
-```julia
-# Process in smaller chunks to manage memory
-all_tickers = get_tickers_stock(conn)
-chunk_size = 500
-
-for i in 1:chunk_size:nrow(all_tickers)
-    end_idx = min(i + chunk_size - 1, nrow(all_tickers))
-    chunk = all_tickers[i:end_idx, :]
-
-    updated, missing = update_historical(
-        conn, chunk;
-        batch_size = 50,
-        max_concurrent = 10
-    )
-
-    @info "Processed chunk $(div(i-1, chunk_size) + 1): $(length(updated)) updated"
-end
-```
-
-## 📊 Performance Comparison
-
-### Sequential vs Parallel Processing
-
-| Method | Time (100 tickers) | Memory Usage | API Efficiency |
-|--------|-------------------|--------------|----------------|
-| Sequential | ~300 seconds | High | Poor (1 request/time) |
-| Parallel | ~45 seconds | Medium | Excellent (10 concurrent) |
-| **Improvement** | **6.7x faster** | **40% less** | **10x throughput** |
-
-### Database Operations
-
-| Operation | Original | Optimized | Improvement |
-|-----------|----------|-----------|-------------|
-| Single ticker upsert (252 days) | 0.8s | 0.15s | 5.3x faster |
-| Bulk upsert (1000 rows) | 3.2s | 0.6s | 5.3x faster |
-| Latest dates query | 0.5s | 0.1s | 5x faster |
-
-## 🛠️ Troubleshooting Performance Issues
-
-### API Rate Limiting
-
-If you encounter rate limiting:
-
-```julia
-# Reduce concurrency and increase batch processing time
-updated, missing = update_historical(
-    conn, tickers;
-    max_concurrent = 5,    # Reduce concurrent requests
-    batch_size = 25        # Smaller batches
-)
-```
-
-### Memory Issues
-
-For memory-constrained environments:
-
-```julia
-# Process smaller chunks
-chunk_size = 100
-for chunk in partition(tickers, chunk_size)
-    update_historical(conn, chunk; max_concurrent = 5)
-    GC.gc()  # Force garbage collection between chunks
-end
-```
-
-### Database Performance
-
-If database operations are slow:
-
-```julia
-# Ensure indexes are created
-create_indexes(conn)
-
-# Check database settings
-optimize_database(conn)
-
-# Consider using SSD storage for the database file
-conn = connect_duckdb("/path/to/ssd/database.duckdb")
-```
-
-## 📈 Monitoring Performance
-
-### Built-in Logging
-
-The optimized functions provide detailed logging:
-
-```julia
-using Logging
-global_logger(ConsoleLogger(stderr, Logging.Info))
-
-# This will show detailed progress information
-update_historical(conn, tickers)
-```
-
-### Custom Benchmarking
-
-```julia
-using BenchmarkTools
-
-# Benchmark your specific workload
-@time updated, missing = update_historical(conn, your_tickers)
-
-# More detailed benchmarking
-result = @timed update_historical(conn, your_tickers)
-println("Time: $(result.time)s, Memory: $(result.bytes ÷ 1024^2)MB")
-```
-
-## 🎯 Best Practices
-
-1. **Always call `optimize_database(conn)` after connecting**
-2. **Create indexes once with `create_indexes(conn)`**
-3. **Use parallel processing for > 10 tickers**
-4. **Monitor API rate limits and adjust concurrency accordingly**
-5. **Process large datasets in chunks to manage memory**
-6. **Use bulk operations for inserting large amounts of data**
-7. **Consider using SSD storage for better I/O performance**
-
-## 🔍 Performance Testing
-
-Run the included performance comparison script:
+Run the repository comparison script from the repository root:
 
 ```bash
-julia examples/performance_comparison.jl
+julia --project=. test/performance_comparison.jl
 ```
 
-This script will:
+The script is a benchmark aid rather than part of the hermetic unit-test suite.
 
-- Compare sequential vs parallel processing
-- Benchmark bulk vs row-by-row database operations
-- Provide recommendations for your specific environment
+## Tiingo collection concurrency
 
-## 📚 Advanced Topics
+Build the stock/ETF input universe with the sink-neutral
+`collect_ticker_universe` boundary. Validate EOD payloads through
+`normalize_eod_prices` before measuring or persisting them so rejected rows are
+not counted as sink throughput.
 
-### Custom Parallel Processing
-
-For specialized use cases, you can implement custom parallel processing:
+For the backward-compatible DuckDB workflow, `update_historical` can fetch
+multiple tickers concurrently:
 
 ```julia
-using Base.Threads
+update_historical(
+    conn,
+    tickers;
+    use_parallel=true,
+    batch_size=50,
+    max_concurrent=10,
+    add_missing=true,
+)
+```
 
-function custom_parallel_update(conn, tickers, api_key)
-    # Split tickers across available threads
-    chunks = partition(tickers, Threads.nthreads())
+Start conservatively:
 
-    @threads for chunk in chunks
-        for ticker_row in eachrow(chunk)
-            # Process each ticker
-            data = get_ticker_data(ticker_row; api_key=api_key)
-            upsert_stock_data_bulk(conn, data, ticker_row.ticker)
-        end
-    end
+| Workload | Suggested `batch_size` | Suggested `max_concurrent` |
+|---|---:|---:|
+| Small validation | 10–25 | 2–5 |
+| Routine collection | 25–50 | 5–10 |
+| Measured high-capacity host | 50–100 | 10–15 |
+
+Higher concurrency is not automatically faster. It can increase rate-limit
+responses, memory pressure, and contention in a selected sink. Tune against the
+actual Tiingo plan and fail the calling job when required entities remain
+incomplete.
+
+`TIINGO_API_MAX_RETRIES` and `TIINGO_API_RETRY_DELAY` control retries within a
+Tiingo HTTP request. Job-level retry policy belongs to the consuming scheduler.
+
+## PostgreSQL sink
+
+Production callers can write normalized frames directly with the PostgreSQL
+overloads:
+
+```julia
+pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
+try
+    create_tables(pg)
+    upsert_stock_data_bulk(pg, prices, "AAPL")
+finally
+    close_postgres(pg)
 end
 ```
 
-### Database Connection Pooling
+For best results:
 
-For high-throughput applications:
+1. Keep one connection open for a bounded batch instead of reconnecting for
+   every ticker.
+2. Prefer `upsert_stock_data_bulk` for multi-row frames.
+3. Keep transaction and job boundaries bounded so a failed batch can be
+   retried idempotently.
+4. Measure database locks, write latency, and row counts at the consumer.
+
+TiingoJulia provides the persistence primitive. Connection pooling, job
+parallelism, retry scheduling, and replica/publication policy remain consumer
+responsibilities.
+
+## Parquet sink
+
+`write_parquet` verifies a temporary frame or PostgreSQL-table snapshot before
+publishing it atomically to a local file:
 
 ```julia
-# Use multiple database connections
-connections = [connect_duckdb() for _ in 1:4]
-
-# Distribute work across connections
-# (Implementation depends on your specific use case)
+result = write_parquet(
+    prices,
+    "exports/aapl.parquet";
+    overwrite=false,
+    compression=:zstd,
+)
 ```
 
----
+Use the returned `ParquetWriteResult` fields (`path`, `rows`, `columns`,
+`bytes`) for logging and downstream validation.
 
-For more information, see the [main README](../../README.md) or run the performance comparison script.
+Practical guidance:
+
+- keep `overwrite=false` unless replacement is intentional;
+- write to storage with enough free space for the temporary and final file;
+- compare `:zstd` with the other supported compression settings using your
+  real columns and downstream readers; and
+- let the consuming scheduler upload files and publish remote manifests only
+  after required writes succeed.
+
+Remote object-store performance and retention are outside TiingoJulia.
+PostgreSQL snapshots require DuckDB's `postgres` extension to be preinstalled
+for the matching DuckDB version and platform. Runtime collection only executes
+`LOAD postgres` and does not download extensions.
+
+## Fundamentals collection bounds
+
+`collect_fundamentals` uses `initial_start_date=nothing` by default for an
+unbounded initial collection and `columns=nothing` for the complete Daily
+Metrics payload. Set an explicit initial date and column selection when
+benchmarking bounded production workloads. The legacy `sync_fundamentals!`
+workflow keeps its three-year initial-backfill default for compatibility.
+
+## Optional DuckDB sink
+
+Create and tune a local DuckDB connection only when the consumer selects it:
+
+```julia
+conn = connect_duckdb("analysis.duckdb")
+try
+    optimize_database(conn)
+    create_indexes(conn)
+    upsert_stock_data_bulk(conn, prices, "AAPL")
+finally
+    close_duckdb(conn)
+end
+```
+
+Useful environment controls include:
+
+```dotenv
+TIINGO_DUCKDB_TMP=/tmp/duckdb
+TIINGO_DUCKDB_MEMORY_LIMIT_GB=4
+TIINGO_DUCKDB_THREADS=4
+TIINGO_DUCKDB_WORKER_THREADS=3
+TIINGO_DUCKDB_PRESERVE_INSERTION_ORDER=false
+TIINGO_DUCKDB_UPSERT_CHUNK_SIZE=1000
+```
+
+On a memory-constrained host, begin with one query thread, one worker thread,
+and a smaller upsert chunk. Increase one setting at a time and remeasure.
+
+Do not open multiple writers against the same DuckDB file. Use a single writer,
+close it reliably, and keep the file bounded to the consumer's local analysis
+needs. DuckDB is not the Quansift production full-history source of record.
+
+## Memory-conscious collection
+
+For a large universe, process bounded slices and release references between
+slices:
+
+```julia
+chunk_size = 250
+
+for first_index in 1:chunk_size:nrow(tickers)
+    last_index = min(first_index + chunk_size - 1, nrow(tickers))
+    batch = tickers[first_index:last_index, :]
+
+    update_historical(
+        conn,
+        batch;
+        use_parallel=true,
+        batch_size=25,
+        max_concurrent=5,
+    )
+
+    GC.gc()
+end
+```
+
+Use this legacy DuckDB example only when DuckDB is the selected sink. A
+PostgreSQL-first consumer should instead collect a bounded frame and pass it to
+the PostgreSQL overload without introducing a persistent DuckDB dependency.
+
+## Troubleshooting
+
+If requests are throttled:
+
+- reduce `max_concurrent`;
+- shorten or split large date ranges; and
+- inspect request retry and failure counts before increasing job retries.
+
+If memory grows:
+
+- reduce collection and upsert batch sizes;
+- lower DuckDB thread counts when DuckDB is in use;
+- avoid retaining completed frames; and
+- measure peak resident memory outside Julia as well as allocations.
+
+If persistence is slow:
+
+- determine whether collection or the selected sink is the bottleneck;
+- verify PostgreSQL indexes and lock activity;
+- use the bulk upsert overload for multi-row frames; and
+- benchmark Parquet compression separately from collection.
+
+For API and responsibility details, see the repository's main README.

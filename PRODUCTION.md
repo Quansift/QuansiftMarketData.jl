@@ -44,6 +44,24 @@ Before releasing or consuming a TiingoJulia build:
    - if a consumer uses DuckDB, run the same validation against a temporary
      DuckDB file.
 
+   `write_parquet(frame, ...)` is a generic sink and faithfully persists the
+   supplied frame, including duplicate rows. Canonical Fundamentals duplicate
+   keys are rejected by normalization and by the dedicated DuckDB/PostgreSQL
+   upsert primitives before those sinks mutate state.
+
+   PostgreSQL ticker-universe tables are exact, replaceable snapshots. The
+   canonical schema intentionally does not make full-history price or
+   Fundamentals tables children of those snapshots, so delisting a ticker from
+   the latest universe never deletes its historical rows. Consumer-added
+   foreign keys targeting a universe table are outside this contract: an exact
+   replacement fails and rolls back atomically while the foreign key exists.
+   Do not add `CASCADE` to work around that failure.
+
+   For downloaded ticker metadata, the validated CSV is the canonical
+   downstream artifact and the retained ZIP is ancillary input. Each is
+   replaced atomically from a same-directory temporary file, but the two-file
+   publication is not crash-transactional as a pair.
+
 4. Validate `HistoricalCollectionResult` and `FundamentalCollectionResult`
    handling. Strict consumers should use strict mode so incomplete required
    work raises `SyncIncompleteError`; the external scheduler then decides
@@ -135,6 +153,8 @@ A production consumer should:
   configured;
 - treat each persistence result as a stage result and record row counts or
   watermarks;
+- pass the scheduler-owned split scan range to `find_split_refresh_targets`;
+  the library returns deterministic targets but stores no cross-run watermark;
 - publish Parquet or other downstream artifacts only after required collection
   and PostgreSQL upserts succeed;
 - make object-store publication atomic from a reader's perspective; and

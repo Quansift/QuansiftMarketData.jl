@@ -4,6 +4,10 @@ using DataFrames
 using Dates
 using TiingoJulia
 
+struct _UnstringifiableTicker
+    secret::String
+end
+
 function _eod_fixture(date, close=100.0)
     return DataFrame(
         date = [date],
@@ -133,6 +137,119 @@ end
             end_date = Date(2024, 1, 3),
         ),
     ]
+end
+
+@testset "Historical collection isolates row normalization failures" begin
+    secret = "row-label-secret"
+    tickers = DataFrame(
+        ticker = Any[
+            missing,
+            _UnstringifiableTicker(secret),
+            "MISSING-END",
+            "INVALID-END",
+            "MISSING-START",
+            "INVALID-START",
+            "AFTER",
+        ],
+        start_date = Any[
+            Date(2024, 1, 1),
+            Date(2024, 1, 1),
+            Date(2024, 1, 1),
+            Date(2024, 1, 1),
+            missing,
+            "not-a-date",
+            Date(2024, 1, 1),
+        ],
+        end_date = Any[
+            Date(2024, 1, 2),
+            Date(2024, 1, 2),
+            missing,
+            "not-a-date",
+            Date(2024, 1, 2),
+            Date(2024, 1, 2),
+            Date(2024, 1, 2),
+        ],
+    )
+    fetched = String[]
+    fetcher = function (row; kwargs...)
+        push!(fetched, String(row.ticker))
+        return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+    )
+
+    @test result.attempted == [
+        "row[1]",
+        "row[2]",
+        "MISSING-END",
+        "INVALID-END",
+        "MISSING-START",
+        "INVALID-START",
+        "AFTER",
+    ]
+    @test result.failed == result.attempted[1:6]
+    @test result.updated == ["AFTER"]
+    @test fetched == ["AFTER"]
+    @test result.written_rows == 1
+    @test length(result.failures) == 6
+    @test all(failure -> failure.stage == :normalize, result.failures)
+    @test all(failure -> !failure.retryable, result.failures)
+    @test all(failure -> !occursin(secret, failure.message), result.failures)
+
+    empty!(fetched)
+    caught = try
+        collect_historical(
+            tickers,
+            "offline-token";
+            fetcher,
+            writer = (_, frame) -> nrow(frame),
+            continue_on_error = false,
+            strict = true,
+        )
+        nothing
+    catch error
+        error
+    end
+    @test caught isa SyncIncompleteError
+    @test caught.result.attempted == result.attempted
+    @test caught.result.failed == result.failed
+    @test caught.result.updated == ["AFTER"]
+    @test fetched == ["AFTER"]
+
+    empty!(fetched)
+    @test_throws ArgumentError collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        continue_on_error = false,
+        strict = false,
+    )
+    @test isempty(fetched)
+end
+
+@testset "Historical collection preserves absent date-column defaults" begin
+    tickers = DataFrame(ticker = ["LEGACY"])
+    fetch_kwargs = NamedTuple[]
+    fetcher = function (row; kwargs...)
+        push!(fetch_kwargs, (; kwargs...))
+        return DataFrame()
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+    )
+
+    @test result.unavailable == ["LEGACY"]
+    @test isempty(result.failed)
+    @test fetch_kwargs == [(api_key = "offline-token",)]
 end
 
 @testset "EOD normalization enforces schema, dates, uniqueness, and range" begin

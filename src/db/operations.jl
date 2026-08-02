@@ -11,6 +11,39 @@ module Operations
     # single set-based upsert. Registered just before the INSERT and removed
     # immediately after, so it never collides across calls on one connection.
     const UPSERT_SOURCE_VIEW = "_tiingo_upsert_source"
+    const FUNDAMENTAL_DAILY_METRICS_KEY = [:perma_ticker, :metric_date]
+
+    """
+        validate_fundamental_daily_metrics_keys(data; require_columns=true)
+
+    Reject duplicate canonical Daily Metrics persistence keys before a sink
+    starts writing. When `require_columns=false`, non-metric frames are ignored
+    so generic sinks can retain their independent DataFrame contract.
+    """
+    function validate_fundamental_daily_metrics_keys(
+        data::DataFrame;
+        require_columns::Bool=true,
+    )::Nothing
+        available_columns = propertynames(data)
+        missing_columns = filter(
+            column -> column ∉ available_columns,
+            FUNDAMENTAL_DAILY_METRICS_KEY,
+        )
+        if !isempty(missing_columns)
+            require_columns && throw(ArgumentError(
+                "fundamental_daily_metrics is missing persistence key columns: " *
+                join(String.(missing_columns), ", "),
+            ))
+            return nothing
+        end
+
+        duplicate_rows = findall(nonunique(data, FUNDAMENTAL_DAILY_METRICS_KEY))
+        isempty(duplicate_rows) || throw(ArgumentError(
+            "fundamental_daily_metrics contains duplicate persistence key " *
+            "(perma_ticker, metric_date) at rows: " * join(duplicate_rows, ", "),
+        ))
+        return nothing
+    end
 
     """
         execute_upsert_set_based(conn, data, ticker)
@@ -178,6 +211,7 @@ module Operations
         data::DataFrame,
     )::Int
         nrow(data) == 0 && return 0
+        validate_fundamental_daily_metrics_keys(data)
 
         DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
         try
@@ -283,6 +317,7 @@ module Operations
     end
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics
+    export validate_fundamental_daily_metrics_keys
     export get_tickers_all, get_tickers_etf, get_tickers_stock
     export get_table_count, get_latest_dates, get_latest_date
 end

@@ -111,11 +111,28 @@ module DB
     atexit(cleanup_logging)
 
     # Wrapper functions that call Schema.create_tables with proper connection
-    function connect_duckdb(path::String = Config.DB.DEFAULT_DUCKDB_PATH)
-        conn = Core.connect_duckdb(path)
-        Schema.create_tables(conn)
-        return conn
+    function initialize_owned_duckdb(
+        path::String;
+        connector::Function=Core.connect_duckdb,
+        initializer::Function=Schema.create_tables,
+        closer::Function=Core.close_duckdb,
+    )
+        conn = connector(path)
+        try
+            initializer(conn)
+            return conn
+        catch
+            try
+                closer(conn)
+            catch close_error
+                @warn "Failed to close DuckDB after initialization error" exception=(close_error, catch_backtrace())
+            end
+            rethrow()
+        end
     end
+
+    connect_duckdb(path::String = Config.DB.DEFAULT_DUCKDB_PATH) =
+        initialize_owned_duckdb(path)
 
     # Re-export all functions from submodules
     for name in names(Core, all=false)
@@ -183,6 +200,7 @@ module Sync
     export download_tickers_duckdb, download_latest_tickers
     export process_tickers_csv, generate_filtered_tickers
     export collect_ticker_universe, collect_historical, normalize_eod_prices
+    export find_split_refresh_targets
     export update_historical, update_historical_parallel, update_historical_sequential
     export update_split_ticker, add_historical_data, update_us_tickers
 end
@@ -198,6 +216,7 @@ export get_api_key
 export get_ticker_data
 export download_tickers_duckdb, download_latest_tickers, process_tickers_csv, generate_filtered_tickers
 export collect_ticker_universe, collect_historical, normalize_eod_prices, collect_fundamentals
+export find_split_refresh_targets
 export connect_duckdb, close_duckdb, update_us_tickers
 export upsert_stock_data, upsert_stock_data_bulk
 export upsert_security_observations, upsert_fundamental_daily_metrics

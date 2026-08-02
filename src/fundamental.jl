@@ -8,6 +8,30 @@ using DuckDB
 using DBInterface
 using ZipFile
 
+function _fundamental_headers(api_key::String)::Dict{String,String}
+    return Dict(
+        "Content-Type" => "application/json",
+        "Authorization" => "Token $api_key",
+    )
+end
+
+function _call_fundamental_fetcher(
+    fetcher::Function,
+    url::String,
+    query::Dict,
+    headers::Dict,
+)
+    try
+        return fetcher(url, query, headers)
+    catch error
+        error isa InterruptException && rethrow()
+        original_message = sprint(showerror, error)
+        sanitized_message = API._redact_api_error(original_message)
+        sanitized_message == original_message && rethrow()
+        throw(ErrorException(sanitized_message))
+    end
+end
+
 """
     get_fundamental_meta(; api_key=get_api_key(), columns=nothing)
 
@@ -21,12 +45,12 @@ function get_fundamental_meta(;
     columns::Union{Nothing,AbstractVector{<:AbstractString}} = nothing,
     fetcher::Function = _fetch_fundamental_meta_data,
 )
-    headers = Dict("Content-Type" => "application/json")
-    query = Dict("token" => api_key)
+    headers = _fundamental_headers(api_key)
+    query = Dict{String,String}()
     if !isnothing(columns)
         query["columns"] = join(columns, ",")
     end
-    data = fetcher("$base_url/meta", query, headers)
+    data = _call_fundamental_fetcher(fetcher, "$base_url/meta", query, headers)
     if return_type == "original"
         return data
     elseif return_type == "dataframe"
@@ -58,9 +82,9 @@ function get_daily_fundamental(
         throw(ArgumentError("start_date must be on or before end_date"))
     end
 
-    headers = Dict("Content-Type" => "application/json")
+    headers = _fundamental_headers(api_key)
     url = "$base_url/$ticker/daily"
-    query = Dict("token" => api_key)
+    query = Dict{String,String}()
     if !isnothing(start_date)
         query["startDate"] = Dates.format(start_date, "yyyy-mm-dd")
     end
@@ -71,7 +95,7 @@ function get_daily_fundamental(
         query["columns"] = join(columns, ",")
     end
 
-    data = fetcher(url, query, headers)
+    data = _call_fundamental_fetcher(fetcher, url, query, headers)
     if return_type == "original"
         return data
     elseif return_type == "dataframe"

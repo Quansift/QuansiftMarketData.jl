@@ -7,6 +7,7 @@ module Parquet
     using ..Core: validate_identifier, validate_file_path
     using ..Postgres: PostgreSQLConnection
     using ..Postgres: connection_options_map, postgres_env_vars, with_temporary_env
+    using ..Schema: quote_postgres_identifier
 
     const PARQUET_SOURCE_VIEW = "_tiingo_parquet_source"
     const SUPPORTED_COMPRESSIONS = Set([:zstd, :snappy, :gzip, :uncompressed])
@@ -96,38 +97,38 @@ module Parquet
         end
 
         mkpath(dirname(destination))
-        temporary = joinpath(
-            dirname(destination),
-            ".$(basename(destination)).tmp.$(time_ns())",
-        )
-
-        verification_conn = DBInterface.connect(DuckDB.DB)
-        try
-            write_temporary(temporary)
-            isfile(temporary) || error("Parquet writer did not create: $temporary")
-
-            actual_rows = parquet_row_count(verification_conn, temporary)
-            actual_columns = parquet_schema(verification_conn, temporary)
-            actual_rows == expected_rows || error(
-                "Parquet row-count verification failed: expected $expected_rows, got $actual_rows",
-            )
-            actual_columns == expected_columns || error(
-                "Parquet schema verification failed: expected $(expected_columns), got $(actual_columns)",
-            )
-
-            publish_parquet_file(temporary, destination; overwrite)
-            return ParquetWriteResult(
-                destination,
-                actual_rows,
-                length(actual_columns),
-                filesize(destination),
-            )
-        finally
+        return mktempdir(
+            dirname(destination);
+            prefix=".tiingojulia-parquet-",
+        ) do temporary_directory
+            temporary = joinpath(temporary_directory, basename(destination))
+            verification_conn = DBInterface.connect(DuckDB.DB)
             try
-                DBInterface.close!(verification_conn)
-            catch
+                write_temporary(temporary)
+                isfile(temporary) || error("Parquet writer did not create: $temporary")
+
+                actual_rows = parquet_row_count(verification_conn, temporary)
+                actual_columns = parquet_schema(verification_conn, temporary)
+                actual_rows == expected_rows || error(
+                    "Parquet row-count verification failed: expected $expected_rows, got $actual_rows",
+                )
+                actual_columns == expected_columns || error(
+                    "Parquet schema verification failed: expected $(expected_columns), got $(actual_columns)",
+                )
+
+                publish_parquet_file(temporary, destination; overwrite)
+                return ParquetWriteResult(
+                    destination,
+                    actual_rows,
+                    length(actual_columns),
+                    filesize(destination),
+                )
+            finally
+                try
+                    DBInterface.close!(verification_conn)
+                catch
+                end
             end
-            isfile(temporary) && rm(temporary; force=true)
         end
     end
 
@@ -192,6 +193,8 @@ module Parquet
         compression::Symbol=:zstd,
     )::ParquetWriteResult
         safe_table = validate_identifier(String(table_name))
+        quoted_table = quote_postgres_identifier(lowercase(safe_table))
+        qualified_source = "\"postgres_source\".\"public\".$quoted_table"
         compression_sql = validated_compression(compression)
         conn = DBInterface.connect(DuckDB.DB)
         attached = false
@@ -217,12 +220,12 @@ module Parquet
 
             source_rows = DBInterface.execute(
                 conn,
-                "SELECT count(*) AS row_count FROM postgres_source.$safe_table",
+                "SELECT count(*) AS row_count FROM $qualified_source",
             ) |> DataFrame
             expected_rows = Int(source_rows[1, :row_count])
             source_schema = DBInterface.execute(
                 conn,
-                "DESCRIBE SELECT * FROM postgres_source.$safe_table",
+                "DESCRIBE SELECT * FROM $qualified_source",
             ) |> DataFrame
             expected_columns = String.(source_schema.column_name)
 
@@ -235,7 +238,7 @@ module Parquet
                 DBInterface.execute(
                     conn,
                     """
-                    COPY (SELECT * FROM postgres_source.$safe_table)
+                    COPY (SELECT * FROM $qualified_source)
                     TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
                     """,
                 )

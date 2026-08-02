@@ -8,6 +8,17 @@ module Schema
     using ..Config
     using ..Core: DuckDBConnection, DatabaseQueryError, validate_identifier
 
+    const POSTGRES_CANONICAL_SCHEMA = "public"
+
+    """Quote and schema-qualify a canonical PostgreSQL relation identifier."""
+    function qualified_postgres_identifier(
+        identifier::AbstractString;
+        schema::AbstractString=POSTGRES_CANONICAL_SCHEMA,
+    )::String
+        return quote_postgres_identifier(lowercase(String(schema))) * "." *
+               quote_postgres_identifier(lowercase(String(identifier)))
+    end
+
     """
         create_tables(conn::DuckDBConnection)
 
@@ -115,7 +126,7 @@ module Schema
 
         statements = [
             """
-            CREATE TABLE IF NOT EXISTS us_tickers (
+            CREATE TABLE IF NOT EXISTS "public"."us_tickers" (
                 ticker VARCHAR,
                 exchange VARCHAR,
                 assettype VARCHAR,
@@ -125,7 +136,7 @@ module Schema
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS us_tickers_filtered (
+            CREATE TABLE IF NOT EXISTS "public"."us_tickers_filtered" (
                 ticker VARCHAR,
                 exchange VARCHAR,
                 assettype VARCHAR,
@@ -135,7 +146,7 @@ module Schema
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS historical_data (
+            CREATE TABLE IF NOT EXISTS "public"."historical_data" (
                 ticker VARCHAR NOT NULL,
                 date DATE NOT NULL,
                 close DOUBLE PRECISION,
@@ -154,7 +165,7 @@ module Schema
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS security_observations (
+            CREATE TABLE IF NOT EXISTS "public"."security_observations" (
                 perma_ticker VARCHAR NOT NULL,
                 observed_at TIMESTAMP NOT NULL,
                 ticker VARCHAR NOT NULL,
@@ -171,7 +182,7 @@ module Schema
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS fundamental_daily_metrics (
+            CREATE TABLE IF NOT EXISTS "public"."fundamental_daily_metrics" (
                 perma_ticker VARCHAR NOT NULL,
                 metric_date DATE NOT NULL,
                 market_cap DOUBLE PRECISION,
@@ -183,16 +194,16 @@ module Schema
                 PRIMARY KEY (perma_ticker, metric_date)
             )
             """,
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON us_tickers (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON us_tickers_filtered (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_assettype ON us_tickers_filtered (assettype)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_historical_ticker_date ON historical_data (ticker, date)",
-            "CREATE INDEX IF NOT EXISTS idx_historical_ticker ON historical_data (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data (date)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_security_observations_key ON security_observations (perma_ticker, observed_at)",
-            "CREATE INDEX IF NOT EXISTS idx_security_observations_ticker ON security_observations (ticker)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_fundamental_daily_metrics_key ON fundamental_daily_metrics (perma_ticker, metric_date)",
-            "CREATE INDEX IF NOT EXISTS idx_fundamental_daily_metrics_date ON fundamental_daily_metrics (metric_date)",
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON \"public\".\"us_tickers\" (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON \"public\".\"us_tickers_filtered\" (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_assettype ON \"public\".\"us_tickers_filtered\" (assettype)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_historical_ticker_date ON \"public\".\"historical_data\" (ticker, date)",
+            "CREATE INDEX IF NOT EXISTS idx_historical_ticker ON \"public\".\"historical_data\" (ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_historical_date ON \"public\".\"historical_data\" (date)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_security_observations_key ON \"public\".\"security_observations\" (perma_ticker, observed_at)",
+            "CREATE INDEX IF NOT EXISTS idx_security_observations_ticker ON \"public\".\"security_observations\" (ticker)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_fundamental_daily_metrics_key ON \"public\".\"fundamental_daily_metrics\" (perma_ticker, metric_date)",
+            "CREATE INDEX IF NOT EXISTS idx_fundamental_daily_metrics_date ON \"public\".\"fundamental_daily_metrics\" (metric_date)",
         ]
 
         close(LibPQ.execute(conn, "BEGIN"))
@@ -275,6 +286,8 @@ module Schema
     function create_or_replace_table(pg_conn::LibPQ.Connection, table_name::String, create_table_query::String)
         safe_name = validate_identifier(table_name)
         backup_name = validate_identifier("$(table_name)_backup")
+        qualified_name = qualified_postgres_identifier(safe_name)
+        qualified_backup = qualified_postgres_identifier(backup_name)
 
         # Check if the table exists in PostgreSQL (use parameterized query for value)
         table_exists_pg = LibPQ.execute(
@@ -289,12 +302,24 @@ module Schema
             @info "Created table $safe_name in PostgreSQL"
         else
             # If the table exists, rename it as a backup
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $backup_name;")
-            LibPQ.execute(pg_conn, "CREATE TABLE $backup_name AS TABLE $safe_name;")
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_name;")
+            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_backup;")
+            LibPQ.execute(pg_conn, "CREATE TABLE $qualified_backup AS TABLE $qualified_name;")
+            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_name;")
             LibPQ.execute(pg_conn, create_table_query)
             @info "Created new table $safe_name in PostgreSQL, old table is stored as $backup_name"
         end
+    end
+
+    """
+        quote_postgres_identifier(identifier::AbstractString)::String
+
+    Quote a PostgreSQL identifier. Embedded double quotes are duplicated and
+    NUL bytes are rejected because PostgreSQL strings cannot contain them.
+    """
+    function quote_postgres_identifier(identifier::AbstractString)::String
+        occursin('\0', identifier) &&
+            throw(ArgumentError("PostgreSQL identifiers cannot contain NUL bytes"))
+        return "\"" * replace(identifier, "\"" => "\"\"") * "\""
     end
 
     """
@@ -303,28 +328,38 @@ module Schema
     Generate a CREATE TABLE query for PostgreSQL based on the DuckDB schema.
     Converts all column names to lowercase to avoid case-sensitivity issues.
     """
-    function generate_create_table_query(table_name::String, schema::DataFrame)
-        query = "CREATE TABLE IF NOT EXISTS $(lowercase(table_name)) ("
-        columns = []
+    function generate_create_table_query(
+        table_name::String,
+        schema::DataFrame;
+        base_table_name::Union{Nothing,String}=nothing,
+    )
+        logical_table_name = lowercase(table_name)
+        quoted_table_name = qualified_postgres_identifier(logical_table_name)
+        query = "CREATE TABLE IF NOT EXISTS $quoted_table_name ("
+        columns = String[]
         for row in eachrow(schema)
             column_name = lowercase(row.column_name)
             data_type = row.column_type
             pg_type = map_duckdb_to_postgres_type(data_type)
-            push!(columns, "$(column_name) $(pg_type)")
+            quoted_column_name = quote_postgres_identifier(column_name)
+            push!(columns, "$quoted_column_name $pg_type")
         end
         query *= join(columns, ", ")
 
         # Match the logical table name even when building a staging table so
         # the swapped-in table keeps the key that ON CONFLICT upserts rely on.
         # PRIMARY KEY also makes it discoverable by get_primary_key_columns.
-        base_name = replace(lowercase(table_name), r"_staging$" => "")
+        base_name = isnothing(base_table_name) ?
+            replace(logical_table_name, r"_staging$" => "") :
+            lowercase(validate_identifier(base_table_name))
         primary_keys = Dict(
             "historical_data" => ("ticker", "date"),
             "security_observations" => ("perma_ticker", "observed_at"),
             "fundamental_daily_metrics" => ("perma_ticker", "metric_date"),
         )
         if haskey(primary_keys, base_name)
-            query *= ", PRIMARY KEY ($(join(primary_keys[base_name], ", ")))"
+            quoted_primary_keys = quote_postgres_identifier.(primary_keys[base_name])
+            query *= ", PRIMARY KEY ($(join(quoted_primary_keys, ", ")))"
         end
 
         query *= ")"
@@ -337,24 +372,24 @@ module Schema
     Map DuckDB data types to PostgreSQL data types.
     """
     function map_duckdb_to_postgres_type(duckdb_type::String)
-        type_mapping = Dict(
+        type_mapping = Dict{String,String}(
             "VARCHAR" => "VARCHAR",
             "INTEGER" => "INTEGER",
             "BIGINT" => "BIGINT",
+            "FLOAT" => "REAL",
             "DOUBLE" => "DOUBLE PRECISION",
             "BOOLEAN" => "BOOLEAN",
             "DATE" => "DATE",
             "TIMESTAMP" => "TIMESTAMP"
         )
 
-        for (key, value) in type_mapping
-            if occursin(key, uppercase(duckdb_type))
-                return value
-            end
-        end
-
-        return duckdb_type  # Use the same type if no specific mapping
+        normalized_type = uppercase(strip(duckdb_type))
+        haskey(type_mapping, normalized_type) || throw(ArgumentError(
+            "Unsupported DuckDB type for PostgreSQL export: '$duckdb_type'",
+        ))
+        return type_mapping[normalized_type]
     end
     export create_tables, create_indexes, create_or_replace_table, list_tables
     export generate_create_table_query, map_duckdb_to_postgres_type
+    export quote_postgres_identifier, qualified_postgres_identifier
 end

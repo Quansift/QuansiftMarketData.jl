@@ -6,6 +6,20 @@ using DBInterface
 using TiingoJulia
 using TiingoJulia.DB.Schema: generate_create_table_query
 
+function _fundamental_metrics_fixture(metric_dates)
+    row_count = length(metric_dates)
+    return DataFrame(
+        perma_ticker = fill("perm-aapl", row_count),
+        metric_date = collect(metric_dates),
+        market_cap = fill(10.0e9, row_count),
+        enterprise_value = fill(9.0e9, row_count),
+        pe_ratio = fill(20.0, row_count),
+        available_at = Union{Missing,DateTime}[missing for _ in 1:row_count],
+        fetched_at = fill(DateTime(2026, 8, 1, 12), row_count),
+        source_revision = Union{Missing,String}[missing for _ in 1:row_count],
+    )
+end
+
 @testset "Fundamental persistence schema and keys" begin
     conn = connect_duckdb(":memory:")
     try
@@ -56,11 +70,102 @@ using TiingoJulia.DB.Schema: generate_create_table_query
         historical_query = generate_create_table_query("historical_data_staging", historical_schema)
         security_query = generate_create_table_query("security_observations_staging", security_schema)
         metrics_query = generate_create_table_query("fundamental_daily_metrics_staging", metrics_schema)
-        @test occursin("PRIMARY KEY (ticker, date)", historical_query)
-        @test occursin("PRIMARY KEY (perma_ticker, observed_at)", security_query)
-        @test occursin("PRIMARY KEY (perma_ticker, metric_date)", metrics_query)
+        @test occursin("PRIMARY KEY (\"ticker\", \"date\")", historical_query)
+        @test occursin(
+            "PRIMARY KEY (\"perma_ticker\", \"observed_at\")",
+            security_query,
+        )
+        @test occursin(
+            "PRIMARY KEY (\"perma_ticker\", \"metric_date\")",
+            metrics_query,
+        )
     finally
         close_duckdb(conn)
+    end
+end
+
+@testset "Duplicate Daily Metrics keys fail before collection writer execution" begin
+    as_of = Date(2024, 1, 2)
+    meta_payload = [(
+        permaTicker = "perm-aapl",
+        ticker = "AAPL",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(as_of),
+    )]
+    universe_payload = [(
+        ticker = "AAPL",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "2024-01-01",
+        endDate = string(as_of),
+    )]
+    metric_writer_calls = Ref(0)
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        initial_start_date = Date(2024, 1, 1),
+        daily_fetcher = (perma_ticker; kwargs...) -> [
+            (date = "2024-01-02", marketCap = 10.0e9),
+            (date = "2024-01-02", marketCap = 11.0e9),
+        ],
+        metric_writer = (_, frame) -> begin
+            metric_writer_calls[] += 1
+            nrow(frame)
+        end,
+    )
+
+    @test metric_writer_calls[] == 0
+    @test result.failed == ["perm-aapl"]
+    @test result.updated == String[]
+    @test only(result.failures).stage == :normalize
+    @test !only(result.failures).retryable
+end
+
+@testset "Daily Metrics database keys and generic Parquet compatibility" begin
+    duplicate = _fundamental_metrics_fixture(fill(Date(2024, 1, 2), 2))
+    duplicate.perma_ticker .= "api_key=duplicate-secret"
+    unique_rows = _fundamental_metrics_fixture([
+        Date(2024, 1, 1),
+        Date(2024, 1, 2),
+    ])
+
+    conn = connect_duckdb(":memory:")
+    try
+        @test upsert_fundamental_daily_metrics(conn, unique_rows) == 2
+        duplicate_error = try
+            upsert_fundamental_daily_metrics(conn, duplicate)
+            nothing
+        catch error
+            error
+        end
+        @test duplicate_error isa ArgumentError
+        @test sprint(showerror, duplicate_error) ==
+            "ArgumentError: fundamental_daily_metrics contains duplicate " *
+            "persistence key (perma_ticker, metric_date) at rows: 2"
+        @test !occursin("duplicate-secret", sprint(showerror, duplicate_error))
+        stored = DBInterface.execute(
+            conn,
+            "SELECT count(*) AS row_count FROM fundamental_daily_metrics",
+        ) |> DataFrame
+        @test only(stored.row_count) == 2
+    finally
+        close_duckdb(conn)
+    end
+
+    mktempdir() do directory
+        duplicate_path = joinpath(directory, "duplicate.parquet")
+        duplicate_result = write_parquet(duplicate, duplicate_path)
+        @test duplicate_result.rows == 2
+        @test isfile(duplicate_path)
+
+        unique_path = joinpath(directory, "unique.parquet")
+        result = write_parquet(unique_rows, unique_path)
+        @test result.rows == 2
+        @test isfile(unique_path)
     end
 end
 

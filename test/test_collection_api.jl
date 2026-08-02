@@ -2,6 +2,7 @@ using Test
 using CSV
 using DataFrames
 using Dates
+using Logging
 using TiingoJulia
 
 struct _UnstringifiableTicker
@@ -252,6 +253,50 @@ end
     @test fetch_kwargs == [(api_key = "offline-token",)]
 end
 
+@testset "Historical latest-date frames skip missing lookup rows" begin
+    latest_dates = DataFrame(
+        ticker=Any["MISSING-DATE", "NOTHING-DATE", missing, nothing, "VALID"],
+        latest_date=Any[
+            missing,
+            nothing,
+            Date(2024, 1, 1),
+            Date(2024, 1, 1),
+            Date(2024, 1, 2),
+        ],
+    )
+    lookup = TiingoJulia.Sync.build_latest_date_lookup(latest_dates)
+    @test lookup == Dict("VALID" => Date(2024, 1, 2))
+
+    tickers = DataFrame(
+        ticker=["MISSING-DATE", "NOTHING-DATE", "VALID"],
+        start_date=fill(Date(2024, 1, 1), 3),
+        end_date=fill(Date(2024, 1, 3), 3),
+    )
+    fetch_calls = NamedTuple[]
+    fetcher = function (row; kwargs...)
+        push!(fetch_calls, (
+            ticker=String(row.ticker),
+            start_date=kwargs[:start_date],
+        ))
+        return _eod_fixture("2024-01-03T00:00:00Z", 30.0)
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        latest_dates,
+        fetcher,
+    )
+
+    @test result.updated == ["MISSING-DATE", "NOTHING-DATE", "VALID"]
+    @test isempty(result.failed)
+    @test fetch_calls == [
+        (ticker="MISSING-DATE", start_date=Date(2024, 1, 1)),
+        (ticker="NOTHING-DATE", start_date=Date(2024, 1, 1)),
+        (ticker="VALID", start_date=Date(2024, 1, 3)),
+    ]
+end
+
 @testset "EOD normalization enforces schema, dates, uniqueness, and range" begin
     later = _eod_fixture("2024-01-03T00:00:00Z", missing)
     earlier = _eod_fixture("2024-01-02T00:00:00Z", 99.0)
@@ -330,6 +375,115 @@ end
     @test only(result.failures).retryable
     @test !occursin("historical-secret", only(result.failures).message)
     @test occursin("[REDACTED]", only(result.failures).message)
+end
+
+@testset "Historical fetch failures warn with sanitized result data before continuing" begin
+    secret = "fetch-warning-secret"
+    tickers = DataFrame(
+        ticker=["FAIL", "AFTER"],
+        start_date=fill(Date(2024, 1, 1), 2),
+        end_date=fill(Date(2024, 1, 2), 2),
+    )
+    fetcher = function (row; kwargs...)
+        row.ticker == "FAIL" && error("HTTP 503 token=$secret")
+        return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+    end
+
+    for (continue_on_error, strict) in ((true, false), (false, true))
+        log_buffer = IOBuffer()
+        caught = with_logger(SimpleLogger(log_buffer, Logging.Warn)) do
+            try
+                collect_historical(
+                    tickers,
+                    "offline-token";
+                    fetcher,
+                    writer=(_, frame) -> nrow(frame),
+                    continue_on_error,
+                    strict,
+                )
+            catch error
+                error
+            end
+        end
+        result = caught isa SyncIncompleteError ? caught.result : caught
+        failure = only(result.failures)
+        warning = String(take!(log_buffer))
+
+        @test result.updated == ["AFTER"]
+        @test result.failed == ["FAIL"]
+        @test failure.stage == :fetch
+        @test occursin("FAIL", warning)
+        @test occursin(failure.message, warning)
+        @test occursin("[REDACTED]", warning)
+        @test !occursin(secret, warning)
+        @test !occursin("Stacktrace", warning)
+        @test strict ? caught isa SyncIncompleteError : caught === result
+    end
+
+    immediate_buffer = IOBuffer()
+    immediate = with_logger(SimpleLogger(immediate_buffer, Logging.Warn)) do
+        try
+            collect_historical(
+                tickers,
+                "offline-token";
+                fetcher,
+                continue_on_error=false,
+                strict=false,
+            )
+            nothing
+        catch error
+            error
+        end
+    end
+    @test immediate isa ErrorException
+    @test isempty(String(take!(immediate_buffer)))
+
+    unavailable_buffer = IOBuffer()
+    unavailable = with_logger(SimpleLogger(unavailable_buffer, Logging.Warn)) do
+        collect_historical(
+            tickers[1:1, :],
+            "offline-token";
+            fetcher=(row; kwargs...) -> error("HTTP 404 ticker not found"),
+        )
+    end
+    @test unavailable.unavailable == ["FAIL"]
+    @test isempty(String(take!(unavailable_buffer)))
+end
+
+@testset "Historical fetch cancellation is rethrown immediately" begin
+    tickers = DataFrame(
+        ticker = ["CANCEL", "AFTER"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+
+    for continue_on_error in (false, true), strict in (false, true)
+        fetched = String[]
+        cancellation = InterruptException()
+        fetcher = function (row; kwargs...)
+            ticker = String(row.ticker)
+            push!(fetched, ticker)
+            ticker == "CANCEL" && throw(cancellation)
+            return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+        end
+
+        caught = try
+            collect_historical(
+                tickers,
+                "offline-token";
+                fetcher,
+                writer=(_, frame) -> nrow(frame),
+                continue_on_error,
+                strict,
+            )
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+        @test fetched == ["CANCEL"]
+    end
 end
 
 @testset "Fundamentals collection separates normalization and writers" begin

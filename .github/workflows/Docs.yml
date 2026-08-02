@@ -8,17 +8,80 @@ on:
     workflow_dispatch:
 
 jobs:
+    release-gate:
+        name: Classify tag and verify release preflight
+        runs-on: ubuntu-latest
+        permissions:
+            actions: read
+            contents: read
+            statuses: read
+        outputs:
+            eligible: ${{ steps.classify.outputs.eligible }}
+        steps:
+            - uses: actions/checkout@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+              with:
+                  fetch-depth: 0
+            - name: Allow non-tag events and stable release tags
+              id: classify
+              shell: bash
+              run: |
+                  if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  elif [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  else
+                    echo "eligible=false" >> "${GITHUB_OUTPUT}"
+                  fi
+            - name: Verify exact tag commit release preflight
+              if: github.ref_type == 'tag' && steps.classify.outputs.eligible == 'true'
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  tag_commit="$(git rev-parse 'HEAD^{commit}')"
+                  context="tiingojulia/release-preflight/${GITHUB_REF_NAME}"
+                  expected_title="Release preflight ${GITHUB_REF_NAME} @ ${tag_commit}"
+                  status_fields="$(gh api \
+                    -H 'Accept: application/vnd.github+json' \
+                    "/repos/${GITHUB_REPOSITORY}/commits/${tag_commit}/statuses?per_page=100" \
+                    --jq "(map(select(.context == \"${context}\"))[0] // {}) |
+                      [.state // \"\", .creator.login // \"\", .target_url // \"\"] |
+                      @tsv")"
+                  IFS=$'\t' read -r state creator target_url <<< "${status_fields}"
+                  [[ "${state}" == "success" ]]
+                  [[ "${creator}" == "github-actions[bot]" ]]
+                  run_url_prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+                  [[ "${target_url}" == "${run_url_prefix}"* ]]
+                  run_id="${target_url#"${run_url_prefix}"}"
+                  [[ "${run_id}" =~ ^[1-9][0-9]*$ ]]
+                  [[ "${target_url}" == "${run_url_prefix}${run_id}" ]]
+                  verified_run_id="$(gh api \
+                    -H 'Accept: application/vnd.github+json' \
+                    "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                    --jq "select(
+                      (.id | tostring) == \"${run_id}\" and
+                      .path == \".github/workflows/release-preflight.yml@main\" and
+                      .display_title == \"${expected_title}\" and
+                      .head_sha == \"${tag_commit}\" and
+                      .event == \"workflow_dispatch\" and
+                      .status == \"completed\" and
+                      .conclusion == \"success\"
+                    ) | .id")"
+                  [[ "${verified_run_id}" == "${run_id}" ]]
     build:
+        needs: release-gate
+        if: >-
+            needs.release-gate.result == 'success' &&
+            needs.release-gate.outputs.eligible == 'true'
         runs-on: ubuntu-latest
         permissions:
             contents: write
-            statuses: write
         steps:
-            - uses: actions/checkout@v7
-            - uses: julia-actions/setup-julia@v3
+            - uses: actions/checkout@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@v3
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
             - name: Install docs dependencies
               run: |
                   julia --project=docs -e '

@@ -78,6 +78,72 @@ Before releasing or consuming a TiingoJulia build:
    The test creates, replaces, and drops TiingoJulia tables. Never point it at
    a shared or production database.
 
+## PostgreSQL schema migration safety
+
+TiingoJulia exposes a forward-only PostgreSQL schema contract through
+`POSTGRES_SCHEMA_VERSION`, `postgres_schema_version`, and `migrate_postgres!`.
+The current schema version is `1`. PostgreSQL `create_tables(pg_conn)` delegates
+to this migration path, so existing databases receive the same validation as
+fresh databases.
+
+Before the first migration of an existing database, take and verify an
+operator-owned backup. TiingoJulia validates and migrates known layouts, but it
+does not create, retain, or restore database backups. Exercise the exact
+upgrade first against a restored copy or other isolated database:
+
+```julia
+pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
+try
+    current = postgres_schema_version(pg)
+    result = migrate_postgres!(
+        pg;
+        target_version=POSTGRES_SCHEMA_VERSION,
+        lock_timeout_seconds=30,
+    )
+    @info "PostgreSQL migration complete" current result
+finally
+    close_postgres(pg)
+end
+```
+
+`migrate_postgres!` requires an idle, caller-owned connection; do not wrap it
+in another transaction. It begins one transaction, sets a transaction-local
+lock timeout, and acquires PostgreSQL advisory lock `(1414089038, 1)`. A lock
+timeout, validation error, or cancellation rolls the transaction back.
+`InterruptException` remains a cancellation signal and is rethrown.
+
+The ledger is `public.tiingojulia_schema_migrations`. Ledger versions must be
+contiguous and their names and checksums must match this package's finite
+migration catalog. A corrupt or newer ledger, a requested downgrade, an
+unknown pre-ledger schema, or legacy historical rows with null/duplicate
+`(ticker, date)` keys is rejected without guessing or dropping data. Stop,
+preserve the database, and repair or restore it explicitly; do not edit the
+ledger to bypass validation.
+
+`postgres_schema_version(pg)` is read-only and returns `0` when no ledger
+exists. `migrate_postgres!` returns `PostgresMigrationResult` with
+`from_version`, `to_version`, and `applied_versions`; record those fields in
+deployment logs.
+
+## Deterministic performance evidence
+
+The independent `benchmark/` project exercises current sink-neutral
+normalization and persistence APIs with seeded synthetic data. It never calls
+Tiingo or requires a Tiingo secret. Run `micro`, `load`, and `soak` only with
+finite environment bounds documented in
+[`docs/src/PERFORMANCE.md`](docs/src/PERFORMANCE.md).
+
+Timing, allocation, and resident-memory observations are report-only. A run
+fails only for correctness, idempotency, cleanup, configuration bounds, or
+timeout violations. PostgreSQL benchmarks require an isolated disposable
+database plus the explicit acknowledgement environment variable; never point
+them at shared or production PostgreSQL.
+
+CI runs one Linux/Julia 1.12 one-sample PR smoke. The scheduled/manual
+performance workflow runs its bounded local smoke, PostgreSQL 17 load, and
+local soak as separate jobs with independent timeouts and metadata-only JSON
+artifacts.
+
 For PostgreSQL-to-Parquet snapshots, preinstall DuckDB's `postgres` extension
 while building the image or environment. Runtime code only executes
 `LOAD postgres`; it fails closed instead of downloading an extension. The
@@ -88,6 +154,30 @@ bundled `docker/Dockerfile` installs the matching extension at build time.
 Metrics columns. Production consumers should set explicit bounds when their
 Tiingo plan or retention policy requires them. The legacy `sync_fundamentals!`
 workflow retains its three-year initial-backfill default.
+
+## Advisory zero-persistence live canary
+
+`scripts/live_canary.jl` checks a real Tiingo response through
+`collect_historical` without selecting PostgreSQL, DuckDB, or Parquet. A
+mandatory in-memory observer receives each normalized frame, records only its
+ticker, row count, and date bounds, and reports zero persisted rows.
+
+The canary is restricted to the `AAPL`/`SPY` allowlist, defaults to 14 trailing
+days, permits at most 30 days, and ends before the current UTC day. Run it with
+the API key only in the environment:
+
+```bash
+TIINGO_API_KEY="$TIINGO_API_KEY" \
+TIINGO_CANARY_TICKERS=AAPL,SPY \
+TIINGO_CANARY_WINDOW_DAYS=14 \
+  julia --project=. scripts/live_canary.jl
+```
+
+The scheduled/manual `live-canary.yml` workflow is advisory operational
+evidence. Missing credentials, quota exhaustion, unavailable symbols, or a
+Tiingo outage may make that run fail, but it is never a PR, release-preflight,
+Registrator, or package-release gate. Hermetic fake-fetcher tests enforce the
+canary contract without live credentials.
 
 ## Bounded live integration smoke
 

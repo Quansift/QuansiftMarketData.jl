@@ -22,13 +22,88 @@ Record at least:
 - HTTP retry/rate-limit counts; and
 - destination date ranges or watermarks.
 
-Run the repository comparison script from the repository root:
+The repository benchmark is an independent Julia project. Instantiate it from
+the repository root:
 
 ```bash
-julia --project=. test/performance_comparison.jl
+julia --project=benchmark -e \
+  'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 ```
 
-The script is a benchmark aid rather than part of the hermetic unit-test suite.
+It uses seeded synthetic EOD frames and current normalization/persistence APIs.
+It does not call Tiingo, read a Tiingo key, or depend on market payloads.
+
+### Micro smoke
+
+This is the exact one-sample local smoke used by pull-request CI and release
+preflight. The `local` sink exercises both DuckDB and Parquet:
+
+```bash
+TIINGO_BENCH_TICKERS=1 \
+TIINGO_BENCH_DAYS=2 \
+TIINGO_BENCH_SAMPLES=1 \
+TIINGO_BENCH_ITERATIONS=1 \
+TIINGO_BENCH_MAX_ELAPSED_SECONDS=90 \
+TIINGO_BENCH_SINK=local \
+TIINGO_BENCH_OUTPUT=benchmark/micro-result.json \
+  julia --project=benchmark benchmark/run.jl micro
+```
+
+### PostgreSQL load
+
+Use only a dedicated disposable database. The runner refuses PostgreSQL unless
+both the isolation flag and exact destructive-test acknowledgement are set:
+
+```bash
+TIINGO_BENCH_TICKERS=25 \
+TIINGO_BENCH_DAYS=252 \
+TIINGO_BENCH_ITERATIONS=2 \
+TIINGO_BENCH_MAX_ELAPSED_SECONDS=600 \
+TIINGO_BENCH_SINK=postgres \
+TIINGO_BENCH_OUTPUT=benchmark/postgres-load-result.json \
+TIINGO_BENCH_PG_CONNECTION="$DISPOSABLE_PG_CONNECTION" \
+TIINGO_BENCH_POSTGRES_ISOLATED=true \
+TIINGO_BENCH_POSTGRES_DISPOSABLE=I_ACKNOWLEDGE_THIS_DATABASE_IS_DISPOSABLE \
+  julia --project=benchmark benchmark/run.jl load
+```
+
+The run invokes `migrate_postgres!`, writes only synthetic `SYN...` tickers,
+checks repeat-write idempotency, and removes those owned rows in `finally`.
+The acknowledgement is a guard, not a substitute for database isolation.
+
+### Local soak
+
+The bounded local soak repeatedly exercises DuckDB and Parquet and always
+performs at least one repeat:
+
+```bash
+TIINGO_BENCH_TICKERS=10 \
+TIINGO_BENCH_DAYS=60 \
+TIINGO_BENCH_ITERATIONS=20 \
+TIINGO_BENCH_MAX_ELAPSED_SECONDS=900 \
+TIINGO_BENCH_SINK=local \
+TIINGO_BENCH_OUTPUT=benchmark/local-soak-result.json \
+  julia --project=benchmark benchmark/run.jl soak
+```
+
+The modes also accept explicit `duckdb` or `parquet` sinks. Configuration
+fails closed outside these hard limits: 1–250 tickers, 1–5,000 trading days,
+1–20 samples, 1–500 iterations, and 1–3,600 elapsed seconds.
+
+### Interpreting results
+
+Result schema version `1` contains status, git SHA, environment/dependency
+versions, finite configuration, metrics, and correctness facts. It contains no
+credentials, ticker values, or market rows. Timing, allocations, and RSS are
+marked `observations_report_only=true`: compare them across stable Linux runner
+history, but do not interpret them as package guarantees or release
+thresholds. Correctness, idempotency, cleanup, configuration bounds, and the
+elapsed timeout are enforced and may fail the run.
+
+The scheduled/manual performance workflow keeps the local micro, PostgreSQL 17
+load, and local soak in separate jobs with independent timeouts. Their
+metadata-only JSON artifacts are retained for 14 days. PR CI has exactly one
+Linux/Julia 1.12 micro smoke rather than duplicating the scheduled suite.
 
 ## Tiingo collection concurrency
 
@@ -37,32 +112,25 @@ Build the stock/ETF input universe with the sink-neutral
 `normalize_eod_prices` before measuring or persisting them so rejected rows are
 not counted as sink throughput.
 
-For the backward-compatible DuckDB workflow, `update_historical` can fetch
-multiple tickers concurrently:
+Persist through an explicit writer while keeping collection sink-neutral:
 
 ```julia
-update_historical(
-    conn,
-    tickers;
-    use_parallel=true,
-    batch_size=50,
-    max_concurrent=10,
-    add_missing=true,
+writer = (ticker, frame) -> upsert_stock_data_bulk(pg, frame, ticker)
+result = collect_historical(
+    tickers,
+    ENV["TIINGO_API_KEY"];
+    latest_dates=watermarks,
+    writer=writer,
+    strict=true,
 )
 ```
 
-Start conservatively:
-
-| Workload | Suggested `batch_size` | Suggested `max_concurrent` |
-|---|---:|---:|
-| Small validation | 10–25 | 2–5 |
-| Routine collection | 25–50 | 5–10 |
-| Measured high-capacity host | 50–100 | 10–15 |
-
-Higher concurrency is not automatically faster. It can increase rate-limit
-responses, memory pressure, and contention in a selected sink. Tune against the
-actual Tiingo plan and fail the calling job when required entities remain
-incomplete.
+`collect_historical` processes the supplied frame deterministically and records
+per-ticker failures while continuing by default. Select bounded ticker slices
+at the caller and treat `strict=true` as the job boundary when incomplete work
+must fail. Cross-batch concurrency, rate limiting, and retry scheduling belong
+to the consuming scheduler; do not introduce new callers of the deprecated
+DuckDB-first parallel update functions.
 
 `TIINGO_API_MAX_RETRIES` and `TIINGO_API_RETRY_DELAY` control retries within a
 Tiingo HTTP request. Job-level retry policy belongs to the consuming scheduler.
@@ -179,21 +247,20 @@ for first_index in 1:chunk_size:nrow(tickers)
     last_index = min(first_index + chunk_size - 1, nrow(tickers))
     batch = tickers[first_index:last_index, :]
 
-    update_historical(
-        conn,
-        batch;
-        use_parallel=true,
-        batch_size=25,
-        max_concurrent=5,
+    result = collect_historical(
+        batch,
+        ENV["TIINGO_API_KEY"];
+        latest_dates=watermarks,
+        writer=(ticker, frame) -> upsert_stock_data_bulk(pg, frame, ticker),
+        strict=true,
     )
 
     GC.gc()
 end
 ```
 
-Use this legacy DuckDB example only when DuckDB is the selected sink. A
-PostgreSQL-first consumer should instead collect a bounded frame and pass it to
-the PostgreSQL overload without introducing a persistent DuckDB dependency.
+The writer may instead target Parquet or optional DuckDB primitives. The
+collection API itself does not introduce a persistent DuckDB dependency.
 
 ## Troubleshooting
 

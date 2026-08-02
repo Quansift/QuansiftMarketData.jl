@@ -139,26 +139,78 @@ Here is how you do it:
 
 ## Making a new release
 
-To create a new release, you can follow these simple steps:
+Release validation has three intentionally different modes.
 
-- Create a branch `release-x.y.z`
-- Update `version` in `Project.toml`
-- Update the `CHANGELOG.md`:
-    - Rename the section "Unreleased" to "[x.y.z] - yyyy-mm-dd" (i.e., version under brackets, dash, and date in ISO format)
-    - Add a new section on top of it named "Unreleased"
-    - Add a new link in the bottom for version "x.y.z"
-    - Change the "[unreleased]" link to use the latest version - end of line, `vx.y.z ... HEAD`.
-- Keep general docs version-neutral (avoid hardcoding the current package version in docs pages). Only include version numbers in release/changelog/"what changed" style documentation.
-- Create a commit "Release vx.y.z", push, create a PR, wait for it to pass, merge the PR.
-- Go back to main screen and click on the latest commit (link: <https://github.com/Quansift/TiingoJulia/commit/main>)
-- At the bottom, write `@JuliaRegistrator register`
+- Development mode runs in ordinary CI and directly with
+  `julia --project=. scripts/ci/validate_release_hygiene.jl`. It requires
+  coherent project compatibility, an `[Unreleased]` changelog, development CFF
+  metadata, valid config, no tracked secret env files, and valid migration
+  metadata.
+- Strict preflight mode runs manually before Registrator. It requires a stable
+  `X.Y.Z` version, the exact current merged `main` SHA, matching Project,
+  changelog, and CFF release metadata, and an empty retained `[Unreleased]`
+  section. It also runs hermetic tests, PostgreSQL 17 integration, docs/link
+  checks, the one-sample benchmark smoke, and an image build.
+- Post-tag mode is verification after registration. Only an exact stable
+  `vX.Y.Z` tag receives release behavior; prerelease, build, malformed, and
+  unrelated tags are not treated as releases.
 
-After that, you only need to wait and verify:
+The live Tiingo canary is not part of any of these gates. Its scheduled/manual
+result is advisory and may be affected by credentials, quota, upstream status,
+or symbol availability. Performance timing, allocation, and RSS measurements
+are also report-only; benchmark correctness, cleanup, bounds, and timeout
+checks remain enforceable.
 
-- Wait for the bot to comment (should take < 1m) with a link to a RP to the registry
-- Follow the link and wait for a comment on the auto-merge
-- The comment should said all is well and auto-merge should occur shortly
-- After the merge happens, TagBot will trigger and create a new GitHub tag. Check on <https://github.com/Quansift/TiingoJulia/releases>
-- After the release is create, a "docs" GitHub action will start for the tag.
-- After it passes, a deploy action will run.
-- After that runs, the stable docs should be updated. Check them and look for the version number.
+### Release stop conditions
+
+Do not prepare or register a package release until maintainers have resolved
+the permanent package-name/repository-URL decision against current Julia
+General AutoMerge guidance. Immediately before release, also recheck General
+by package name and UUID, remote tags, and GitHub Releases. Never reuse a
+version found in any of those locations. Verify the Registrator App and the
+write-enabled `DOCUMENTER_KEY` before creating the release commit.
+
+The current repository state remains development metadata under
+`[Unreleased]`; it is not authorization to register or tag a release.
+
+### Preflight to registration sequence
+
+1. Create a `release-x.y.z` branch only after the stop conditions are resolved.
+2. Set the selected stable version in `Project.toml`. Move release changes from
+   `[Unreleased]` into a dated changelog section, advance compare links, and set
+   the same `version` and ISO `date-released` in `CITATION.cff`. Keep a new,
+   empty `[Unreleased]` section. Keep general documentation version-neutral.
+3. Run the development checks, PostgreSQL 17 migration integration, docs,
+   links, benchmark smoke, and image build in the release PR. Merge the exact
+   release commit into `main` and wait for required CI to pass.
+4. Set `RELEASE_VERSION` to the selected `X.Y.Z` and `RELEASE_REF` to the full
+   lowercase 40-character SHA at the current tip of `origin/main`. Dispatch
+   strict preflight on that same commit:
+
+   ```bash
+   gh workflow run release-preflight.yml --ref main \
+     -f release_version="$RELEASE_VERSION" \
+     -f release_ref="$RELEASE_REF"
+   ```
+
+5. Confirm every preflight job passed and its verified SHA equals
+   `RELEASE_REF`. Any failure blocks registration. The preflight intentionally
+   contains no live canary and requires no Tiingo secret.
+6. Only then invoke Registrator on that exact merged commit:
+
+   ```bash
+   gh api --method POST \
+     "repos/Quansift/TiingoJulia/commits/$RELEASE_REF/comments" \
+     -f body='@JuliaRegistrator register'
+   ```
+
+7. Review the generated General Registry pull request and wait for it to merge.
+   If a correction is required, make a new commit and repeat preflight and
+   Registrator; never move or overwrite an accepted version.
+8. After General merges, allow TagBot to create the Git tag and GitHub Release.
+   Do not create a competing tag before registration. The required order is
+   **preflight → Registrator → General → TagBot**.
+9. Treat tag CI as post-registration verification. Verify the General entry
+   and `Pkg.add`, exact tag and GitHub Release, stable Documenter site, and GHCR
+   version/SHA tags and digest. A later advisory canary result cannot change or
+   invalidate the package release.

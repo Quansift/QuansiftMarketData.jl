@@ -57,7 +57,7 @@ jobs:
                 # Hardcoding `x64` broke macos-latest after GitHub migrated the
                 # default macOS runner to Apple Silicon.
         steps:
-            - uses: actions/checkout@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: ${{ matrix.version }}
@@ -121,7 +121,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 5
         steps:
-            - uses: actions/checkout@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
@@ -154,7 +154,7 @@ jobs:
             TIINGO_BENCH_SINK: local
             TIINGO_BENCH_OUTPUT: benchmark/micro-result.json
         steps:
-            - uses: actions/checkout@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"

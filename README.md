@@ -25,9 +25,15 @@ QuantScreener/TATSU sequencing.
 The Quansift production workflow selects system PostgreSQL as its authoritative
 relational store and Parquet as its full-history interchange/archive format.
 `quansift_scheduler` owns the ordered workflow and publishes Parquet to
-DigitalOcean Spaces and a rolling dataset to DigitalOcean Managed PostgreSQL.
-DuckDB remains available for local analysis and backward compatibility; it is
-not a required production source of record.
+DigitalOcean Spaces and a rolling three-year dataset to DigitalOcean Managed
+PostgreSQL. DuckDB remains available for local analysis and backward
+compatibility; it is not a required production source of record.
+
+The rolling three-year rule applies only to DigitalOcean Managed PostgreSQL
+publication. System PostgreSQL and Parquet retain full history, and TiingoJulia
+imposes no DuckDB retention period — consumers bound local DuckDB state to their
+own analysis needs. A separate three-year default exists for the `sync_fundamentals!`
+initial backfill window; it is unrelated to the Managed PostgreSQL publication rule.
 
 ## Installation
 
@@ -238,6 +244,23 @@ end
 
 For production applications, bound any local DuckDB data to the consumer's
 analysis needs. Do not treat it as an additional required full-history archive.
+
+#### Deprecated: the DuckDB-first full-history path
+
+System PostgreSQL is the source of record and Parquet is the full-history
+archive, so routing full history through DuckDB duplicates both. These entry
+points are deprecated and targeted for removal in 2.0.0:
+
+| Deprecated | Replacement |
+| --- | --- |
+| `update_historical`, `update_historical_parallel`, `update_historical_sequential` | `collect_historical` with a caller-supplied writer |
+| `download_tickers_duckdb` | `collect_ticker_universe` + `replace_ticker_universe` |
+| `export_to_postgres` | `upsert_*` overloads for ingest, `write_parquet` for archive |
+| `add_historical_data`, `update_split_ticker` | `collect_historical` with a caller-supplied writer |
+
+DuckDB itself is not deprecated. `connect_duckdb`, `close_duckdb`,
+`create_tables`, `create_indexes`, `optimize_database`, the DuckDB `upsert_*`
+overloads, and `get_tickers_*` remain supported for optional local analysis.
 
 ## Bounded integration smoke
 

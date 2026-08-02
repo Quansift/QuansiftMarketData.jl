@@ -1,74 +1,5 @@
 # AGENTS.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-
-```text
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
 Codex in this repository acts as an **orchestrator, not an implementer**.
 Top priorities are "conversation quality" and "context conservation".
 
@@ -152,6 +83,17 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
   sequencing.
 - DuckDB is optional internal analysis state. This repository does not impose a
   DuckDB retention period or use DuckDB as the production full-history source.
+  The rolling three-year rule belongs exclusively to Managed PostgreSQL
+  publication and must not be restated as a DuckDB requirement.
+- The DuckDB-first full-history path is deprecated and targeted for removal in
+  2.0.0: `export_to_postgres`, `update_historical`,
+  `update_historical_parallel`, `update_historical_sequential`,
+  `download_tickers_duckdb`, `add_historical_data`, and `update_split_ticker`.
+  Do not add new callers. New work uses `collect_historical` with a
+  caller-supplied writer, `collect_ticker_universe` with
+  `replace_ticker_universe`, the PostgreSQL `upsert_*` overloads, and
+  `write_parquet`. DuckDB connection, schema, upsert, and query primitives are
+  not deprecated.
 - PostgreSQL changes must pass the opt-in PostgreSQL 17 integration test in
   `test/test_postgres_integration.jl`; CI provides the required service.
 - PostgreSQL-to-Parquet requires DuckDB's `postgres` extension to be installed

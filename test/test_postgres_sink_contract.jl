@@ -1,6 +1,8 @@
 using Test
 using DataFrames
 using Dates
+using DBInterface
+using DuckDB
 using LibPQ
 using TiingoJulia
 
@@ -76,6 +78,65 @@ end
         pop!(ENV, variable, nothing)
     else
         ENV[variable] = original
+    end
+end
+
+@testset "DuckDB PostgreSQL extension setup is load-only and fail-closed" begin
+    postgres_module = TiingoJulia.DB.Postgres
+    postgres_source = read(
+        joinpath(@__DIR__, "..", "src", "db", "postgres.jl"),
+        String,
+    )
+    @test !occursin(
+        r"DBInterface\.execute\(duckdb_conn,\s*\"INSTALL postgres;?\"\)"s,
+        postgres_source,
+    )
+
+    load_calls = Tuple{Any,String}[]
+    @test isnothing(postgres_module.load_postgres_extension!(
+        :test_connection;
+        execute=(conn, sql) -> push!(load_calls, (conn, sql)),
+    ))
+    @test load_calls == [(:test_connection, "LOAD postgres")]
+
+    secret = "postgresql://alice:load-secret@example.invalid/app"
+    load_error = try
+        postgres_module.load_postgres_extension!(
+            :test_connection;
+            execute=(_, _) -> error("extension failure for $secret"),
+        )
+        nothing
+    catch error
+        error
+    end
+    @test load_error isa ErrorException
+    load_message = sprint(showerror, load_error)
+    @test occursin("build time", lowercase(load_message))
+    @test occursin("runtime downloads are disabled", lowercase(load_message))
+    @test !occursin("alice", load_message)
+    @test !occursin("load-secret", load_message)
+
+    duckdb_conn = DBInterface.connect(DuckDB.DB)
+    pg_conn = LibPQ.Connection(
+        "host=127.0.0.1 port=1 dbname=unavailable connect_timeout=1";
+        throw_error=false,
+    )
+    setup_calls = String[]
+    try
+        @test isnothing(postgres_module.setup_postgres_connection(
+            duckdb_conn,
+            pg_conn;
+            connection_string="host=example.invalid dbname=app user=reader",
+            execute=(_, sql) -> push!(setup_calls, sql),
+        ))
+        @test setup_calls == [
+            "LOAD postgres",
+            "ATTACH '' AS postgres_db (TYPE postgres);",
+        ]
+        @test all(sql -> !occursin("INSTALL", uppercase(sql)), setup_calls)
+    finally
+        LibPQ.close(pg_conn)
+        DBInterface.close!(duckdb_conn)
     end
 end
 

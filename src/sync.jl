@@ -195,43 +195,65 @@ end
     """
         download_latest_tickers(url::String, zip_file_path::String, csv_file::String)
 
-    Helper function to download and unzip a file.
+    Download and validate the ticker universe. The CSV is the canonical
+    downstream artifact and the ZIP is ancillary retained input. Each file is
+    replaced atomically from a same-directory temporary file after validation;
+    the two replacements are not a crash-transactional pair.
     """
     function download_latest_tickers(
         url::String = Config.API.TICKERS_URL,
         zip_file_path::String = Config.DB.ZIP_FILE_PATH,
-        csv_file::String = Config.DB.DEFAULT_CSV_FILE
+        csv_file::String = Config.DB.DEFAULT_CSV_FILE;
+        downloader::Function = HTTP.download,
     )
-        HTTP.download(url, zip_file_path)
+        abspath(zip_file_path) == abspath(csv_file) &&
+            throw(ArgumentError("ZIP and CSV destinations must be different files"))
+        zip_dir = dirname(abspath(zip_file_path))
+        csv_dir = dirname(abspath(csv_file))
+        mkpath(zip_dir)
+        mkpath(csv_dir)
+        target_basename = basename(csv_file)
 
-        target_path = csv_file
-        target_basename = basename(target_path)
-        target_dir = dirname(target_path)
-        if target_dir != "." && !isempty(target_dir)
-            mkpath(target_dir)
-        end
+        return mktempdir(zip_dir; prefix=".tiingojulia-tickers-zip-") do zip_temporary_directory
+            mktempdir(csv_dir; prefix=".tiingojulia-tickers-csv-") do csv_temporary_directory
+                temporary_zip = joinpath(zip_temporary_directory, "download.zip")
+                temporary_csv = joinpath(csv_temporary_directory, target_basename)
+                downloader(url, temporary_zip)
+                isfile(temporary_zip) && filesize(temporary_zip) > 0 ||
+                    error("Ticker download did not produce a non-empty ZIP archive")
 
-        found = false
-        reader = ZipFile.Reader(zip_file_path)
-        try
-            for f in reader.files
-                if basename(f.name) == target_basename
-                    open(target_path, "w") do io
-                        write(io, read(f))
+                found = false
+                reader = ZipFile.Reader(temporary_zip)
+                try
+                    for file in reader.files
+                        if basename(file.name) == target_basename
+                            open(temporary_csv, "w") do io
+                                write(io, read(file))
+                            end
+                            found = true
+                            break
+                        end
                     end
-                    found = true
-                    break
+                finally
+                    close(reader)
                 end
+
+                found || error(
+                    "CSV file '$target_basename' not found in downloaded zip archive",
+                )
+                parsed = CSV.read(temporary_csv, DataFrame)
+                required_columns = Set(["ticker", "exchange", "assetType", "endDate"])
+                missing_columns = sort!(collect(setdiff(required_columns, Set(names(parsed)))))
+                isempty(missing_columns) || error(
+                    "Downloaded ticker CSV is missing required columns: $(join(missing_columns, ", "))",
+                )
+
+                Base.Filesystem.rename(temporary_zip, zip_file_path)
+                Base.Filesystem.rename(temporary_csv, csv_file)
+                @info "Downloaded and unzipped: $target_basename"
+                return nothing
             end
-        finally
-            close(reader)
         end
-
-        if !found
-            error("CSV file '$target_basename' not found in zip archive: $zip_file_path")
-        end
-
-        @info "Downloaded and unzipped: $target_basename"
     end
 
     """
@@ -564,7 +586,106 @@ end
         message = lowercase(sprint(showerror, error))
         return occursin("no data returned", message) ||
             occursin("no data retrieved", message) ||
-            occursin("no new data", message)
+            occursin("no new data", message) ||
+            occursin(r"\bhttp (?:404|410)\b", message)
+    end
+
+    """
+        find_split_refresh_targets(frame; start_date=nothing, end_date=nothing)
+
+    Find securities with a non-unit split factor in a canonical observation
+    frame. The optional date range is inclusive. Missing ticker, date, or split
+    factor values are ignored, and the latest split date is returned for each
+    ticker in stable ticker order. This function owns no cross-run watermark or
+    persistence state.
+    """
+    function find_split_refresh_targets(
+        frame::DataFrame;
+        start_date::Union{Date,Nothing}=nothing,
+        end_date::Union{Date,Nothing}=nothing,
+    )::DataFrame
+        !isnothing(start_date) && !isnothing(end_date) && start_date > end_date &&
+            throw(ArgumentError("start_date must be on or before end_date"))
+
+        required_columns = [:ticker, :date, :splitFactor]
+        missing_columns = filter(
+            column -> column ∉ propertynames(frame),
+            required_columns,
+        )
+        isempty(missing_columns) || throw(ArgumentError(
+            "split observations are missing required columns: " *
+            join(String.(missing_columns), ", "),
+        ))
+
+        latest_by_ticker = Dict{String,Date}()
+        for (row_index, row) in enumerate(eachrow(frame))
+            values = (row.ticker, row.date, row.splitFactor)
+            any(value -> ismissing(value) || isnothing(value), values) && continue
+
+            ticker = try
+                String(row.ticker)
+            catch
+                throw(ArgumentError("ticker at row $row_index must be convertible to String"))
+            end
+            split_date = row.date isa Date ? row.date : throw(ArgumentError(
+                "date at row $row_index must be a Date",
+            ))
+            split_factor = row.splitFactor isa Real ? row.splitFactor : throw(ArgumentError(
+                "splitFactor at row $row_index must be numeric",
+            ))
+            split_factor == 1 && continue
+            !isnothing(start_date) && split_date < start_date && continue
+            !isnothing(end_date) && split_date > end_date && continue
+
+            latest_by_ticker[ticker] = max(
+                split_date,
+                get(latest_by_ticker, ticker, split_date),
+            )
+        end
+
+        tickers = sort!(collect(keys(latest_by_ticker)))
+        return DataFrame(
+            ticker=tickers,
+            split_date=[latest_by_ticker[ticker] for ticker in tickers],
+        )
+    end
+
+    _historical_row_label(row_index::Integer)::String = "row[$row_index]"
+
+    function _historical_symbol(row::DataFrameRow)::String
+        haskey(row, :ticker) || throw(ArgumentError("ticker is required"))
+        value = row.ticker
+        (ismissing(value) || isnothing(value)) &&
+            throw(ArgumentError("ticker is required"))
+        symbol = try
+            String(value)
+        catch
+            throw(ArgumentError("ticker must be convertible to String"))
+        end
+        isempty(strip(symbol)) && throw(ArgumentError("ticker cannot be empty"))
+        return symbol
+    end
+
+    function _historical_date(
+        row::DataFrameRow,
+        aliases::Tuple,
+        field_name::String,
+        default::Union{Date,Nothing},
+    )::Union{Date,Nothing}
+        for alias in aliases
+            haskey(row, alias) || continue
+            value = row[alias]
+            (ismissing(value) || isnothing(value)) &&
+                throw(ArgumentError("$field_name is required"))
+            try
+                value isa Date && return value
+                value isa DateTime && return Date(value)
+                return Date(first(String(value), 10))
+            catch
+                throw(ArgumentError("$field_name must be a valid date"))
+            end
+        end
+        return default
     end
 
     """
@@ -596,12 +717,26 @@ end
         failures = SyncFailure[]
         written_rows = 0
 
-        for row in eachrow(tickers)
-            symbol = String(row.ticker)
+        for (row_index, row) in enumerate(eachrow(tickers))
+            symbol = _historical_row_label(row_index)
+            try
+                symbol = _historical_symbol(row)
+            catch error
+                push!(attempted, symbol)
+                push!(failed, symbol)
+                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                (!continue_on_error && !strict) && rethrow()
+                continue
+            end
             push!(attempted, symbol)
 
             ticker_end_date = try
-                resolve_ticker_end_date(row)
+                _historical_date(
+                    row,
+                    (:end_date, :endDate),
+                    "end_date",
+                    Date(now()) - Day(1),
+                )
             catch error
                 push!(failed, symbol)
                 push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
@@ -617,9 +752,26 @@ end
                 continue
             end
 
-            start_date = isnothing(latest_date) ?
-                resolve_ticker_start_date(row) :
+            start_date = if isnothing(latest_date)
+                try
+                    _historical_date(
+                        row,
+                        (:start_date, :startDate),
+                        "start_date",
+                        nothing,
+                    )
+                catch error
+                    push!(failed, symbol)
+                    push!(
+                        failures,
+                        _sync_failure(symbol, :normalize, error; retryable=false),
+                    )
+                    (!continue_on_error && !strict) && rethrow()
+                    continue
+                end
+            else
                 latest_date + Day(1)
+            end
             payload = try
                 if isnothing(start_date)
                     fetcher(row; api_key)
@@ -954,103 +1106,124 @@ end
         @info "Historical data update completed" updated_count=length(updated_tickers) missing_count=length(missing_tickers) error_count=length(error_tickers)
     end
 
+    function _empty_historical_collection_result()::HistoricalCollectionResult
+        return HistoricalCollectionResult(
+            String[],
+            String[],
+            String[],
+            String[],
+            String[],
+            SyncFailure[],
+            0,
+        )
+    end
+
+    function _collect_split_historical(
+        conn::DuckDBConnection,
+        split_tickers::DataFrame,
+        tickers::DataFrame,
+        api_key::String;
+        fetcher = get_ticker_data,
+    )::HistoricalCollectionResult
+        nrow(split_tickers) == 0 && return _empty_historical_collection_result()
+
+        ticker_lookup = build_ticker_row_lookup(tickers)
+        refresh_rows = tickers[1:0, :]
+        attempted = String[]
+        missing_ticker_info = String[]
+        missing_failures = SyncFailure[]
+
+        for row in eachrow(split_tickers)
+            symbol = String(row.ticker)
+            push!(attempted, symbol)
+            ticker_info = get(ticker_lookup, symbol, nothing)
+            if isnothing(ticker_info)
+                push!(missing_ticker_info, symbol)
+                push!(
+                    missing_failures,
+                    _sync_failure(
+                        symbol,
+                        :normalize,
+                        ErrorException("No ticker info found for $symbol");
+                        retryable=false,
+                    ),
+                )
+                continue
+            end
+            push!(refresh_rows, ticker_info)
+        end
+
+        collected = collect_historical(
+            refresh_rows,
+            api_key;
+            latest_dates=Dict{String,Date}(),
+            fetcher,
+            writer=(ticker, frame) -> Operations.upsert_stock_data(conn, frame, ticker),
+            continue_on_error=true,
+            strict=false,
+        )
+        updated = Set(collected.updated)
+        unchanged = Set(collected.unchanged)
+        unavailable = Set(collected.unavailable)
+        failed = Set(vcat(collected.failed, missing_ticker_info))
+        failure_by_ticker = Dict(
+            failure.entity => failure
+            for failure in vcat(collected.failures, missing_failures)
+        )
+        ordered_failures = SyncFailure[
+            failure_by_ticker[ticker]
+            for ticker in attempted
+            if haskey(failure_by_ticker, ticker)
+        ]
+
+        return HistoricalCollectionResult(
+            attempted,
+            [ticker for ticker in attempted if ticker in updated],
+            [ticker for ticker in attempted if ticker in unchanged],
+            [ticker for ticker in attempted if ticker in unavailable],
+            [ticker for ticker in attempted if ticker in failed],
+            ordered_failures,
+            collected.written_rows,
+        )
+    end
+
     """
         update_split_ticker(conn::DuckDBConnection, tickers::DataFrame, api_key::String)
 
-    Update data for tickers that have undergone a split.
+    Recollect complete history for split tickers and return a structured result.
+    This deprecated compatibility wrapper accepts `max_concurrent` for source
+    compatibility; collection is isolated sequentially through
+    `collect_historical` so one unavailable ticker cannot abort later tickers.
     """
     function update_split_ticker(
         conn::DuckDBConnection,
         tickers::DataFrame, # all tickers is best
         api_key::String = get_api_key();
-        max_concurrent::Int = 4
-    )
-        # Handle empty tickers DataFrame
+        max_concurrent::Int = 4,
+    )::HistoricalCollectionResult
         if nrow(tickers) == 0
             @info "No tickers to process for split updates"
-            return
+            return _empty_historical_collection_result()
         end
 
         end_date = maximum(skipmissing(tickers.end_date))
         split_tickers = get_split_refresh_targets(conn, end_date)
         if nrow(split_tickers) == 0
             @info "No split tickers found for refresh" end_date
-            return
+            return _empty_historical_collection_result()
         end
 
-        ticker_lookup = build_ticker_row_lookup(tickers)
-        split_count = nrow(split_tickers)
-        worker_count = max(1, min(max_concurrent, split_count))
-        jobs = Channel{Int}(worker_count)
-        results = Channel{Tuple{String,Bool,Union{Exception,Nothing}}}(split_count)
-        write_queue = Channel{Tuple{String,Union{DataFrame,Nothing},Union{Exception,Nothing}}}(split_count)
-
-        @sync begin
-            @async begin
-                for (ticker, data, error) in write_queue
-                    if data === nothing
-                        put!(results, (ticker, false, error))
-                        continue
-                    end
-                    try
-                        Operations.upsert_stock_data(conn, data, ticker)
-                        put!(results, (ticker, true, nothing))
-                    catch e
-                        put!(results, (ticker, false, e))
-                    end
-                end
-                close(results)
-            end
-
-            @async begin
-                for i in 1:split_count
-                    put!(jobs, i)
-                end
-                close(jobs)
-            end
-
-            worker_tasks = Task[]
-            for _ in 1:worker_count
-                task = @async begin
-                    for job_idx in jobs
-                        row = split_tickers[job_idx, :]
-                        symbol = row.ticker
-                        ticker_info = get(ticker_lookup, symbol, nothing)
-                        if isnothing(ticker_info)
-                            put!(write_queue, (symbol, nothing, ErrorException("No ticker info found for $symbol")))
-                            continue
-                        end
-                        try
-                            @info "$job_idx: Updating split ticker $symbol from $(ticker_info.start_date) to $end_date" split_date=row.split_date
-                            ticker_data = get_ticker_data(ticker_info; api_key=api_key)
-                            put!(write_queue, (symbol, ticker_data, nothing))
-                        catch e
-                            put!(write_queue, (symbol, nothing, e))
-                        end
-                    end
-                end
-                push!(worker_tasks, task)
-            end
-
-            @async begin
-                for task in worker_tasks
-                    wait(task)
-                end
-                close(write_queue)
-            end
-        end
-
-        failed_tickers = String[]
-        for (ticker, success, error) in results
-            if !success
-                push!(failed_tickers, ticker)
-                if !isnothing(error)
-                    @warn "Failed to refresh split ticker: $ticker" exception=error
-                end
-            end
-        end
-
-        @info "Updated split tickers" refreshed_count=split_count failed_count=length(failed_tickers)
+        result = _collect_split_historical(conn, split_tickers, tickers, api_key)
+        @info(
+            "Split ticker refresh completed",
+            attempted_count=length(result.attempted),
+            updated_count=length(result.updated),
+            unchanged_count=length(result.unchanged),
+            unavailable_count=length(result.unavailable),
+            failed_count=length(result.failed),
+            written_rows=result.written_rows,
+        )
+        return result
     end
 
     """

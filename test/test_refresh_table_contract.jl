@@ -7,6 +7,43 @@ using TiingoJulia
 refresh_script = joinpath(@__DIR__, "..", "scripts", "refresh_postgres_via_duckdb.jl")
 include(refresh_script)
 
+@testset "Compatibility refresh PostgreSQL attachment is load-only" begin
+    refresh_source = read(refresh_script, String)
+    @test !occursin(
+        r"DBInterface\.execute\(conn,\s*\"INSTALL postgres;?\"\)"s,
+        refresh_source,
+    )
+
+    calls = String[]
+    @test isnothing(attach_postgres_readonly!(
+        :test_connection,
+        "host=example.invalid dbname=app user=reader";
+        execute=(_, sql) -> push!(calls, sql),
+    ))
+    @test calls == [
+        "LOAD postgres",
+        "ATTACH '' AS pg_src (TYPE POSTGRES, READ_ONLY);",
+    ]
+    @test all(sql -> !occursin("INSTALL", uppercase(sql)), calls)
+
+    secret = "password=refresh-secret"
+    attach_error = try
+        attach_postgres_readonly!(
+            :test_connection,
+            "host=example.invalid dbname=app user=reader";
+            execute=(_, sql) -> sql == "LOAD postgres" ? error(secret) : nothing,
+        )
+        nothing
+    catch error
+        error
+    end
+    @test attach_error isa ErrorException
+    attach_message = sprint(showerror, attach_error)
+    @test occursin("build time", lowercase(attach_message))
+    @test occursin("runtime downloads are disabled", lowercase(attach_message))
+    @test !occursin("refresh-secret", attach_message)
+end
+
 @testset "Fundamentals entitlement probe falls back across current candidates" begin
     observations = DataFrame(
         perma_ticker = ["perm-empty", "perm-ok"],
@@ -84,8 +121,9 @@ end
     source_path = tempname() * ".duckdb"
     source = DBInterface.connect(DuckDB.DB, source_path)
     try
+        DBInterface.execute(source, "CREATE SCHEMA public")
         DBInterface.execute(source, """
-            CREATE TABLE security_observations (
+            CREATE TABLE public.security_observations (
                 perma_ticker VARCHAR,
                 observed_at TIMESTAMP,
                 ticker VARCHAR,
@@ -101,14 +139,14 @@ end
             )
         """)
         DBInterface.execute(source, """
-            INSERT INTO security_observations VALUES (
+            INSERT INTO public.security_observations VALUES (
                 'perm-aapl', '2026-07-19 12:00:00', 'AAPL', true, false,
                 '2026-07-18 12:00:00', 'NASDAQ', 'Stock', '1980-12-12',
                 '2026-07-19', NULL, 'matched'
             )
         """)
         DBInterface.execute(source, """
-            CREATE TABLE fundamental_daily_metrics (
+            CREATE TABLE public.fundamental_daily_metrics (
                 perma_ticker VARCHAR,
                 metric_date DATE,
                 market_cap DOUBLE,
@@ -120,7 +158,7 @@ end
             )
         """)
         DBInterface.execute(source, """
-            INSERT INTO fundamental_daily_metrics VALUES (
+            INSERT INTO public.fundamental_daily_metrics VALUES (
                 'perm-aapl', '2024-01-31', 1.0e10, NULL, NULL,
                 NULL, '2026-07-19 12:00:00', 'rev-1'
             )
@@ -172,15 +210,24 @@ end
     source_path = tempname() * ".duckdb"
     source = connect_duckdb(source_path)
     try
+        DBInterface.execute(source, "CREATE SCHEMA public")
         DBInterface.execute(source, """
-            INSERT INTO security_observations (
+            CREATE TABLE public.security_observations AS
+            SELECT * FROM main.security_observations WHERE false
+        """)
+        DBInterface.execute(source, """
+            CREATE TABLE public.fundamental_daily_metrics AS
+            SELECT * FROM main.fundamental_daily_metrics WHERE false
+        """)
+        DBInterface.execute(source, """
+            INSERT INTO public.security_observations (
                 perma_ticker, observed_at, ticker, is_active, exchange, join_status
             ) VALUES
                 ('perm-existing', '2026-07-19 12:00:00', 'OLD', true, 'PG', 'matched'),
                 ('perm-new', '2026-07-20 12:00:00', 'NEW', true, 'PG', 'matched')
         """)
         DBInterface.execute(source, """
-            INSERT INTO fundamental_daily_metrics (
+            INSERT INTO public.fundamental_daily_metrics (
                 perma_ticker, metric_date, market_cap, fetched_at
             ) VALUES
                 ('perm-existing', '2026-07-18', 10.0, '2026-07-19 12:00:00'),

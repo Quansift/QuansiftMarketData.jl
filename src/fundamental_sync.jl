@@ -298,6 +298,7 @@ function normalize_fundamental_daily_metrics(
         ))
     end
     sort!(result, :metric_date)
+    DB.Operations.validate_fundamental_daily_metrics_keys(result)
     return result
 end
 

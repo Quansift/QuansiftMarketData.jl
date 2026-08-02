@@ -9,7 +9,12 @@ module Postgres
     using ..Core: DuckDBConnection, validate_identifier, validate_file_path
     import ..Operations: upsert_stock_data, upsert_stock_data_bulk
     import ..Operations: upsert_security_observations, upsert_fundamental_daily_metrics
-    using ..Schema: create_or_replace_table, generate_create_table_query
+    using ..Operations: validate_fundamental_daily_metrics_keys
+    using ..Schema:
+        create_or_replace_table,
+        generate_create_table_query,
+        qualified_postgres_identifier,
+        quote_postgres_identifier
 
     const PostgreSQLConnection = LibPQ.Connection
     const LIBPQ_CONNINFO_ORDER = [
@@ -53,6 +58,7 @@ module Postgres
         "target_session_attrs" => "PGTARGETSESSIONATTRS",
     )
     const TEMPORARY_ENV_LOCK = ReentrantLock()
+    const POSTGRES_STAGE_COUNTER = Threads.Atomic{UInt64}(0)
 
     normalize_conninfo_value(value) = value === nothing || value === missing ? nothing : strip(String(value))
 
@@ -61,8 +67,37 @@ module Postgres
         return "'$escaped'"
     end
 
+    function parse_postgres_connection_options(connection_string::String)
+        error_pointer = Ref{Ptr{UInt8}}(C_NULL)
+        options_pointer = LibPQ.libpq_c.PQconninfoParse(
+            connection_string,
+            error_pointer,
+        )
+
+        if error_pointer[] != C_NULL
+            LibPQ.libpq_c.PQfreemem(error_pointer[])
+            options_pointer != C_NULL &&
+                LibPQ.libpq_c.PQconninfoFree(options_pointer)
+            throw(ArgumentError(
+                "Invalid PostgreSQL connection string (libpq parse failure)",
+            ))
+        elseif options_pointer == C_NULL
+            throw(ArgumentError(
+                "Invalid PostgreSQL connection string (libpq allocation failure)",
+            ))
+        end
+
+        try
+            return LibPQ.conninfo(options_pointer)
+        finally
+            LibPQ.libpq_c.PQconninfoFree(options_pointer)
+        end
+    end
+
     function connection_options_map(connection::Union{String, PostgreSQLConnection})::Dict{String,String}
-        raw_options = connection isa PostgreSQLConnection ? LibPQ.conninfo(connection) : LibPQ.conninfo(connection)
+        raw_options = connection isa PostgreSQLConnection ?
+            LibPQ.conninfo(connection) :
+            parse_postgres_connection_options(connection)
         options = Dict{String,String}()
 
         for option in raw_options
@@ -85,11 +120,7 @@ module Postgres
     end
 
     function normalize_postgres_connection_string(connection_string::String; timeout_seconds::Int=30)::String
-        options = try
-            connection_options_map(connection_string)
-        catch e
-            throw(ArgumentError("Invalid PostgreSQL connection string: $e"))
-        end
+        options = connection_options_map(connection_string)
 
         if timeout_seconds > 0 && !haskey(options, "connect_timeout")
             options["connect_timeout"] = string(timeout_seconds)
@@ -130,6 +161,23 @@ module Postgres
         end
     end
 
+    const POSTGRES_EXTENSION_LOAD_ERROR =
+        "DuckDB PostgreSQL extension is not preinstalled. " *
+        "Preinstall it at build time with `INSTALL postgres`, then retry; " *
+        "runtime downloads are disabled."
+
+    function load_postgres_extension!(
+        conn;
+        execute::Function=DBInterface.execute,
+    )::Nothing
+        try
+            execute(conn, "LOAD postgres")
+        catch
+            throw(ErrorException(POSTGRES_EXTENSION_LOAD_ERROR))
+        end
+        return nothing
+    end
+
     function require_idle_transaction(
         pg_conn::PostgreSQLConnection,
         operation::AbstractString,
@@ -144,7 +192,44 @@ module Postgres
 
     function drop_postgres_table_if_exists(pg_conn::PostgreSQLConnection, table_name::String)
         safe_name = validate_identifier(table_name)
-        LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_name;")
+        LibPQ.execute(pg_conn, generate_drop_postgres_table_query(safe_name))
+    end
+
+    function generate_drop_postgres_table_query(table_name::String)::String
+        safe_name = validate_identifier(table_name)
+        return "DROP TABLE IF EXISTS $(qualified_postgres_identifier(safe_name));"
+    end
+
+    function next_postgres_staging_name()::String
+        sequence = Threads.atomic_add!(POSTGRES_STAGE_COUNTER, UInt64(1))
+        token = string(time_ns(); base=16, pad=16) *
+                string(UInt64(getpid()); base=16, pad=8) *
+                string(sequence; base=16, pad=16)
+        return validate_identifier("_tiingo_stage_$token")
+    end
+
+    function build_postgres_export_plans(tables::Vector{String})
+        isempty(tables) && throw(ArgumentError("tables must contain at least one table name"))
+
+        safe_tables = validate_identifier.(tables)
+        logical_tables = lowercase.(safe_tables)
+        length(unique(logical_tables)) == length(logical_tables) ||
+            throw(ArgumentError("tables must not contain duplicate PostgreSQL table names"))
+
+        return [
+            (target=table_name, staging=next_postgres_staging_name())
+            for table_name in safe_tables
+        ]
+    end
+
+    function prepare_single_postgres_export(
+        pg_conn,
+        table_name::String;
+        require_idle::Function=require_idle_transaction,
+    )
+        plan = only(build_postgres_export_plans([table_name]))
+        require_idle(pg_conn, "single-table PostgreSQL export")
+        return plan
     end
 
     """
@@ -155,11 +240,12 @@ module Postgres
     """
     function is_fk_referenced(pg_conn::PostgreSQLConnection, table_name::String)::Bool
         safe_name = validate_identifier(table_name)
+        qualified_name = qualified_postgres_identifier(safe_name)
         result = LibPQ.execute(pg_conn, """
             SELECT EXISTS (
                 SELECT 1 FROM pg_constraint
                 WHERE contype = 'f'
-                  AND confrelid = '$safe_name'::regclass
+                  AND confrelid = '$qualified_name'::regclass
             )
         """)
         df = DataFrame(result)
@@ -174,11 +260,12 @@ module Postgres
     """
     function get_primary_key_columns(pg_conn::PostgreSQLConnection, table_name::String)::Vector{String}
         safe_name = validate_identifier(table_name)
+        qualified_name = qualified_postgres_identifier(safe_name)
         result = LibPQ.execute(pg_conn, """
             SELECT a.attname
             FROM pg_index i
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE i.indrelid = '$safe_name'::regclass
+            WHERE i.indrelid = '$qualified_name'::regclass
               AND i.indisprimary
             ORDER BY a.attnum
         """)
@@ -186,9 +273,54 @@ module Postgres
         return String.(df[!, :attname])
     end
 
-    function replace_postgres_table!(pg_conn::PostgreSQLConnection, target_table::String, staging_table::String)
+    function generate_refresh_upsert_query(
+        target_table::String,
+        staging_table::String,
+        all_columns::AbstractVector{<:AbstractString},
+        primary_key_columns::AbstractVector{<:AbstractString},
+    )::String
+        logical_columns = lowercase.(all_columns)
+        logical_primary_keys = lowercase.(primary_key_columns)
+        non_primary_columns = filter(
+            column -> !(column in logical_primary_keys),
+            logical_columns,
+        )
+
+        quoted_target = qualified_postgres_identifier(target_table)
+        quoted_staging = qualified_postgres_identifier(staging_table)
+        quoted_columns = quote_postgres_identifier.(logical_columns)
+        quoted_primary_keys = quote_postgres_identifier.(logical_primary_keys)
+        columns_sql = join(quoted_columns, ", ")
+        primary_keys_sql = join(quoted_primary_keys, ", ")
+
+        conflict_action = if isempty(non_primary_columns)
+            "DO NOTHING"
+        else
+            updates = [
+                begin
+                    quoted_column = quote_postgres_identifier(column)
+                    "$quoted_column = EXCLUDED.$quoted_column"
+                end
+                for column in non_primary_columns
+            ]
+            "DO UPDATE SET $(join(updates, ", "))"
+        end
+
+        return "INSERT INTO $quoted_target ($columns_sql) " *
+               "SELECT $columns_sql FROM $quoted_staging " *
+               "ON CONFLICT ($primary_keys_sql) $conflict_action"
+    end
+
+    function publish_postgres_table!(
+        pg_conn::PostgreSQLConnection,
+        target_table::String,
+        staging_table::String,
+    )::Nothing
         safe_target = validate_identifier(target_table)
         safe_staging = validate_identifier(staging_table)
+        qualified_target = qualified_postgres_identifier(safe_target)
+        qualified_staging = qualified_postgres_identifier(safe_staging)
+        quoted_target_name = quote_postgres_identifier(lowercase(safe_target))
 
         # Check if the target table exists and is referenced by foreign keys
         target_exists = false
@@ -220,51 +352,78 @@ module Postgres
                 ORDER BY ordinal_position
             """)
             all_cols = String.(DataFrame(col_result)[!, :column_name])
-            non_pk_cols = filter(c -> !(c in pk_cols), all_cols)
-
-            cols_sql = join(all_cols, ", ")
-            pk_sql = join(pk_cols, ", ")
-            update_sql = join(["$c = EXCLUDED.$c" for c in non_pk_cols], ", ")
-
-            upsert_query = if isempty(non_pk_cols)
-                "INSERT INTO $safe_target ($cols_sql) SELECT $cols_sql FROM $safe_staging ON CONFLICT ($pk_sql) DO NOTHING"
-            else
-                "INSERT INTO $safe_target ($cols_sql) SELECT $cols_sql FROM $safe_staging ON CONFLICT ($pk_sql) DO UPDATE SET $update_sql"
-            end
+            upsert_query = generate_refresh_upsert_query(
+                safe_target,
+                safe_staging,
+                all_cols,
+                pk_cols,
+            )
 
             @info "Table $safe_target is FK-referenced; using upsert instead of drop+rename"
-            LibPQ.execute(pg_conn, "BEGIN")
-            try
-                LibPQ.execute(pg_conn, upsert_query)
-                LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_staging;")
-                LibPQ.execute(pg_conn, "COMMIT")
-            catch e
-                try
-                    LibPQ.execute(pg_conn, "ROLLBACK")
-                catch
-                end
-                try
-                    drop_postgres_table_if_exists(pg_conn, safe_staging)
-                catch
-                end
-                @error "Failed to upsert into FK-referenced PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
-                rethrow(e)
-            end
+            LibPQ.execute(pg_conn, upsert_query)
+            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;")
         else
             # Fast path: drop + rename (no FK dependents)
-            LibPQ.execute(pg_conn, "BEGIN")
+            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_target;")
+            LibPQ.execute(
+                pg_conn,
+                "ALTER TABLE $qualified_staging RENAME TO $quoted_target_name;",
+            )
+        end
+        return nothing
+    end
+
+    function replace_postgres_table!(
+        pg_conn::PostgreSQLConnection,
+        target_table::String,
+        staging_table::String,
+    )::Nothing
+        safe_target = validate_identifier(target_table)
+        safe_staging = validate_identifier(staging_table)
+        require_idle_transaction(pg_conn, "PostgreSQL table replacement")
+
+        LibPQ.execute(pg_conn, "BEGIN")
+        try
+            publish_postgres_table!(pg_conn, safe_target, safe_staging)
+            LibPQ.execute(pg_conn, "COMMIT")
+            return nothing
+        catch e
             try
-                LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $safe_target;")
-                LibPQ.execute(pg_conn, "ALTER TABLE $safe_staging RENAME TO $safe_target;")
-                LibPQ.execute(pg_conn, "COMMIT")
-            catch e
-                try
-                    LibPQ.execute(pg_conn, "ROLLBACK")
-                catch
-                end
-                @error "Failed to atomically replace PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
-                rethrow(e)
+                LibPQ.execute(pg_conn, "ROLLBACK")
+            catch
             end
+            try
+                drop_postgres_table_if_exists(pg_conn, safe_staging)
+            catch
+            end
+            @error "Failed to atomically replace PostgreSQL table" target_table=safe_target staging_table=safe_staging exception=(e, catch_backtrace())
+            rethrow(e)
+        end
+    end
+
+    function publish_postgres_tables!(
+        pg_conn,
+        plans::AbstractVector;
+        require_idle::Function=require_idle_transaction,
+        execute::Function=LibPQ.execute,
+        publish::Function=publish_postgres_table!,
+    )::Nothing
+        isempty(plans) && throw(ArgumentError("plans must contain at least one table"))
+        require_idle(pg_conn, "PostgreSQL batch table replacement")
+
+        execute(pg_conn, "BEGIN")
+        try
+            for plan in plans
+                publish(pg_conn, plan.target, plan.staging)
+            end
+            execute(pg_conn, "COMMIT")
+            return nothing
+        catch
+            try
+                execute(pg_conn, "ROLLBACK")
+            catch
+            end
+            rethrow()
         end
     end
 
@@ -273,6 +432,32 @@ module Postgres
 
     Connect to the PostgreSQL database with retry logic and timeout.
     """
+    function validate_postgres_connection(conn)::Nothing
+        result = execute(conn, "SELECT 1")
+        close(result)
+        return nothing
+    end
+
+    function open_validated_postgres_connection(
+        connection_string::String;
+        opener::Function=LibPQ.Connection,
+        validator::Function=validate_postgres_connection,
+        closer::Function=LibPQ.close,
+    )
+        conn = opener(connection_string)
+        try
+            validator(conn)
+            return conn
+        catch
+            try
+                closer(conn)
+            catch close_error
+                @warn "Failed to close PostgreSQL connection after validation error" exception=(close_error, catch_backtrace())
+            end
+            rethrow()
+        end
+    end
+
     function connect_postgres(connection_string::String;
                              timeout_seconds::Int=30,
                              max_retries::Int=3,
@@ -287,17 +472,14 @@ module Postgres
             try
                 conn_str = normalize_postgres_connection_string(connection_string; timeout_seconds=timeout_seconds)
 
-                conn = LibPQ.Connection(conn_str)
-
-                # Test connection with simple query
-                result = execute(conn, "SELECT 1")
-                close(result)
+                conn = open_validated_postgres_connection(conn_str)
 
                 @info "Connected to PostgreSQL successfully" attempt=attempt
                 return conn
             catch e
-                last_error = e
-                @warn "PostgreSQL connection attempt $attempt/$max_retries failed" exception=(e, catch_backtrace())
+                safe_error = sanitize_postgres_connection_error(e)
+                last_error = safe_error
+                @warn "PostgreSQL connection attempt $attempt/$max_retries failed" exception=(safe_error, catch_backtrace())
 
                 if attempt < max_retries
                     @info "Retrying in $retry_delay seconds..."
@@ -308,6 +490,23 @@ module Postgres
 
         @error "Failed to connect to PostgreSQL after $max_retries attempts"
         throw(last_error)
+    end
+
+    function sanitize_postgres_connection_error(error)::Exception
+        error isa ArgumentError &&
+            startswith(error.msg, "Invalid PostgreSQL connection string") &&
+            return error
+        message = sprint(showerror, error)
+        message = replace(
+            message,
+            r"(?i)(postgres(?:ql)?://)[^@\s]+@" => s"\1[REDACTED]@",
+        )
+        message = replace(
+            message,
+            r"(?i)((?:user|password|passfile|pgpassword)\s*=\s*)(?:'[^']*'|\S+)" =>
+                s"\1[REDACTED]",
+        )
+        return ErrorException(message)
     end
 
     """
@@ -348,12 +547,25 @@ module Postgres
         safe_table = validate_identifier(table_name)
         staging_name = validate_identifier("_tiingo_$(safe_table)_$(time_ns())")
         columns = Symbol.(names(data))
-        column_sql = join(string.(columns), ", ")
+        quoted_columns = quote_postgres_identifier.(string.(columns))
+        column_sql = join(quoted_columns, ", ")
         placeholders = join([string('$', index) for index in eachindex(columns)], ", ")
-        conflict_sql = join(string.(conflict_columns), ", ")
+        conflict_sql = join(quote_postgres_identifier.(string.(conflict_columns)), ", ")
         update_sql = join(
-            ["$(column) = EXCLUDED.$(column)" for column in update_columns],
+            [
+                begin
+                    quoted_column = quote_postgres_identifier(string(column))
+                    "$quoted_column = EXCLUDED.$quoted_column"
+                end
+                for column in update_columns
+            ],
             ", ",
+        )
+        qualified_table = qualified_postgres_identifier(safe_table)
+        quoted_staging = quote_postgres_identifier(staging_name)
+        qualified_staging = qualified_postgres_identifier(
+            staging_name;
+            schema="pg_temp",
         )
         source_sql = isnothing(select_expressions) ?
             column_sql :
@@ -364,18 +576,19 @@ module Postgres
         try
             close(LibPQ.execute(
                 pg_conn,
-                "CREATE TEMP TABLE $staging_name (LIKE $safe_table INCLUDING DEFAULTS) ON COMMIT DROP",
+                "CREATE TEMP TABLE $quoted_staging " *
+                "(LIKE $qualified_table INCLUDING DEFAULTS) ON COMMIT DROP",
             ))
             LibPQ.load!(
                 data,
                 pg_conn,
-                "INSERT INTO $staging_name ($column_sql) VALUES ($placeholders)",
+                "INSERT INTO $qualified_staging ($column_sql) VALUES ($placeholders)",
             )
             upsert_result = LibPQ.execute(
                 pg_conn,
                 """
-                INSERT INTO $safe_table ($column_sql)
-                SELECT $source_sql FROM $staging_name
+                INSERT INTO $qualified_table ($column_sql)
+                SELECT $source_sql FROM $qualified_staging
                 ON CONFLICT ($conflict_sql) DO UPDATE SET $update_sql
                 """,
             )
@@ -456,12 +669,13 @@ module Postgres
 
         safe_table = validate_identifier(table_name)
         columns = Symbol.(names(data))
-        column_sql = join(string.(columns), ", ")
+        column_sql = join(quote_postgres_identifier.(string.(columns)), ", ")
         placeholders = join([string('$', index) for index in eachindex(columns)], ", ")
         LibPQ.load!(
             data,
             pg_conn,
-            "INSERT INTO $safe_table ($column_sql) VALUES ($placeholders)",
+            "INSERT INTO $(qualified_postgres_identifier(safe_table)) " *
+            "($column_sql) VALUES ($placeholders)",
         )
         return nothing
     end
@@ -471,7 +685,10 @@ module Postgres
         table_name::String,
     )::Int
         safe_table = validate_identifier(table_name)
-        result = LibPQ.execute(pg_conn, "SELECT count(*) AS row_count FROM $safe_table")
+        result = LibPQ.execute(
+            pg_conn,
+            generate_postgres_table_row_count_query(safe_table),
+        )
         try
             rows = DataFrame(result)
             return Int(rows[1, :row_count])
@@ -479,6 +696,16 @@ module Postgres
             close(result)
         end
     end
+
+    function generate_postgres_table_row_count_query(table_name::String)::String
+        safe_table = validate_identifier(table_name)
+        return "SELECT count(*) AS row_count FROM " *
+               qualified_postgres_identifier(safe_table)
+    end
+
+    const POSTGRES_TRUNCATE_TICKER_UNIVERSE_SQL =
+        "TRUNCATE TABLE \"public\".\"us_tickers\", " *
+        "\"public\".\"us_tickers_filtered\""
 
     """
         replace_ticker_universe(pg_conn, all_data, filtered_data)
@@ -504,7 +731,7 @@ module Postgres
         try
             close(LibPQ.execute(
                 pg_conn,
-                "TRUNCATE TABLE us_tickers, us_tickers_filtered",
+                POSTGRES_TRUNCATE_TICKER_UNIVERSE_SQL,
             ))
             load_ticker_universe_frame!(pg_conn, "us_tickers", all_frame)
             load_ticker_universe_frame!(
@@ -621,6 +848,7 @@ module Postgres
     )::Int
         nrow(data) == 0 && return 0
         frame = select_upsert_columns(data, FUNDAMENTAL_METRIC_COLUMN_MAPPINGS)
+        validate_fundamental_daily_metrics_keys(frame)
         return transactional_upsert!(
             pg_conn,
             "fundamental_daily_metrics",
@@ -628,6 +856,83 @@ module Postgres
             [:perma_ticker, :metric_date],
             Symbol.(names(frame)[3:end]),
         )
+    end
+
+    function cleanup_postgres_stages!(
+        pg_conn,
+        staging_tables::AbstractVector{<:AbstractString};
+        drop_table::Function=drop_postgres_table_if_exists,
+    )::Nothing
+        cleanup_errors = Exception[]
+        for staging_table in unique(String.(staging_tables))
+            try
+                drop_table(pg_conn, staging_table)
+            catch e
+                push!(cleanup_errors, e)
+            end
+        end
+        isempty(cleanup_errors) || throw(CompositeException(cleanup_errors))
+        return nothing
+    end
+
+    function cleanup_postgres_stages_after_failure!(
+        cleanup::Function,
+        pg_conn,
+        staging_tables::AbstractVector{<:AbstractString},
+    )::Nothing
+        try
+            cleanup(pg_conn, staging_tables)
+        catch cleanup_error
+            @error "Failed to clean deprecated PostgreSQL export staging tables" staging_tables exception=(cleanup_error, catch_backtrace())
+        end
+        return nothing
+    end
+
+    function execute_postgres_export_plans!(
+        duckdb_conn,
+        pg_conn,
+        plans::AbstractVector;
+        max_retries::Int,
+        retry_delay::Int,
+        stage::Function,
+        publish::Function,
+        cleanup::Function,
+        retry_operation::Function=retry_with_exponential_backoff,
+    )::Nothing
+        isempty(plans) && throw(ArgumentError("plans must contain at least one table"))
+        staging_tables = String[plan.staging for plan in plans]
+
+        try
+            for plan in plans
+                retry_operation(max_retries, retry_delay) do
+                    cleanup(pg_conn, [plan.staging])
+                    try
+                        stage(duckdb_conn, pg_conn, plan)
+                    catch
+                        cleanup_postgres_stages_after_failure!(
+                            cleanup,
+                            pg_conn,
+                            [plan.staging],
+                        )
+                        rethrow()
+                    end
+                end
+            end
+
+            retry_operation(max_retries, retry_delay) do
+                publish(pg_conn, plans)
+            end
+        catch
+            cleanup_postgres_stages_after_failure!(
+                cleanup,
+                pg_conn,
+                staging_tables,
+            )
+            rethrow()
+        end
+
+        cleanup(pg_conn, staging_tables)
+        return nothing
     end
 
     """
@@ -649,19 +954,40 @@ module Postgres
         use_dataframe::Union{Bool, Nothing}=nothing,
         max_rows_for_dataframe::Int = 1_000_000
     )
-        for table_name in tables
-            retry_with_exponential_backoff(max_retries, retry_delay) do
-                export_table_to_postgres(
-                    duckdb_conn, pg_conn, table_name, parquet_file;
-                    pg_host=pg_host,
-                    pg_user=pg_user,
-                    pg_dbname=pg_dbname,
-                    pg_connection_string=pg_connection_string,
-                    use_dataframe=use_dataframe, max_rows_for_dataframe=max_rows_for_dataframe
-                )
-                @info "Successfully exported $table_name from DuckDB to PostgreSQL"
-            end
+        plans = build_postgres_export_plans(tables)
+        require_idle_transaction(pg_conn, "deprecated PostgreSQL export")
+        stage = function (source_conn, destination_conn, plan)
+            stage_table_to_postgres!(
+                source_conn,
+                destination_conn,
+                plan.target,
+                plan.staging,
+                parquet_file;
+                pg_host,
+                pg_user,
+                pg_dbname,
+                pg_connection_string,
+                use_dataframe,
+                max_rows_for_dataframe,
+            )
         end
+        publish = (destination_conn, staged_plans) ->
+            publish_postgres_tables!(destination_conn, staged_plans)
+
+        execute_postgres_export_plans!(
+            duckdb_conn,
+            pg_conn,
+            plans;
+            max_retries,
+            retry_delay,
+            stage,
+            publish,
+            cleanup=cleanup_postgres_stages!,
+        )
+        for plan in plans
+            @info "Successfully exported $(plan.target) from DuckDB to PostgreSQL"
+        end
+        return nothing
     end
 
     # Helper function for retrying with exponential backoff
@@ -698,91 +1024,179 @@ module Postgres
         use_dataframe::Union{Bool, Nothing}=nothing,
         max_rows_for_dataframe::Int = 1_000_000
     )
-        safe_name = validate_identifier(table_name)
-        @info "Exporting table $safe_name to PostgreSQL"
-
-        # Check if the table exists in DuckDB
-        table_exists = DBInterface.execute(
-            duckdb_conn,
-            """
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'main' AND table_name = ?;
-            """,
-            [safe_name]
-        ) |> DataFrame
-
-        if isempty(table_exists)
-            error("Table $safe_name does not exist in DuckDB")
-        end
-
-        # Get row count
-        row_count = DBInterface.execute(duckdb_conn, "SELECT COUNT(*) FROM $safe_name") |> DataFrame
-        row_count = row_count[1, 1]
-
-        # Determine whether to use DataFrame or Parquet
-        use_df = if isnothing(use_dataframe)
-            row_count <= max_rows_for_dataframe
-        else
-            use_dataframe
-        end
-
-        if use_df
-            export_table_to_postgres_dataframe(duckdb_conn, pg_conn, table_name)
-        else
-            export_table_to_postgres_parquet(
+        plan = prepare_single_postgres_export(pg_conn, table_name)
+        try
+            stage_table_to_postgres!(
                 duckdb_conn,
                 pg_conn,
-                table_name,
+                plan.target,
+                plan.staging,
                 parquet_file;
-                pg_host=pg_host,
-                pg_user=pg_user,
-                pg_dbname=pg_dbname,
-                pg_connection_string=pg_connection_string,
+                pg_host,
+                pg_user,
+                pg_dbname,
+                pg_connection_string,
+                use_dataframe,
+                max_rows_for_dataframe,
+            )
+            replace_postgres_table!(pg_conn, plan.target, plan.staging)
+            return nothing
+        catch e
+            @error "Error exporting table $(plan.target)" exception=(e, catch_backtrace())
+            rethrow(e)
+        finally
+            cleanup_postgres_stages_after_failure!(
+                cleanup_postgres_stages!,
+                pg_conn,
+                [plan.staging],
             )
         end
+    end
+
+    function stage_table_to_postgres_dataframe!(
+        duckdb_conn::DuckDBConnection,
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+        staging_name::String,
+    )::Int
+        safe_name = validate_identifier(table_name)
+        safe_staging = validate_identifier(staging_name)
+        @info "Exporting table $safe_name to PostgreSQL using DataFrames"
+
+        df = DBInterface.execute(duckdb_conn, "SELECT * FROM $safe_name") |> DataFrame
+        @info "Loaded $safe_name into DataFrame with $(nrow(df)) rows"
+
+        schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
+        create_table_query = generate_create_table_query(
+            safe_staging,
+            schema;
+            base_table_name=safe_name,
+        )
+        drop_postgres_table_if_exists(pg_conn, safe_staging)
+        LibPQ.execute(pg_conn, create_table_query)
+
+        insert_query = generate_dataframe_insert_query(safe_staging, names(df))
+        LibPQ.load!(df, pg_conn, insert_query)
+        @info "Loaded $(nrow(df)) rows into PostgreSQL staging table $safe_staging"
+        return nrow(df)
     end
 
     function export_table_to_postgres_dataframe(
         duckdb_conn::DuckDBConnection,
         pg_conn::PostgreSQLConnection,
-        table_name::String
+        table_name::String,
     )
-        safe_name = validate_identifier(table_name)
-        staging_name = validate_identifier("$(safe_name)_staging")
-        @info "Exporting table $safe_name to PostgreSQL using DataFrames"
-
+        plan = prepare_single_postgres_export(pg_conn, table_name)
         try
-            # Read the entire table into a DataFrame
-            df = DBInterface.execute(duckdb_conn, "SELECT * FROM $safe_name") |> DataFrame
-            @info "Loaded $safe_name into DataFrame with $(nrow(df)) rows"
-
-            # Create and load a staging table before swapping it into place.
-            schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
-            create_table_query = generate_create_table_query(staging_name, schema)
-            drop_postgres_table_if_exists(pg_conn, staging_name)
-            LibPQ.execute(pg_conn, create_table_query)
-
-            # Insert data into PostgreSQL
-            columns = join(lowercase.(names(df)), ", ")
-            placeholders = join([string('$', i) for i in 1:ncol(df)], ", ")
-            insert_query = "INSERT INTO $staging_name ($columns) VALUES ($placeholders)"
-
-            LibPQ.load!(
-                df,
+            rows = stage_table_to_postgres_dataframe!(
+                duckdb_conn,
                 pg_conn,
-                insert_query
+                plan.target,
+                plan.staging,
             )
-
-            replace_postgres_table!(pg_conn, safe_name, staging_name)
-            @info "Inserted $(nrow(df)) rows into PostgreSQL table $safe_name"
-
+            replace_postgres_table!(pg_conn, plan.target, plan.staging)
+            @info "Inserted $rows rows into PostgreSQL table $(plan.target)"
+            return nothing
         catch e
-            try
-                drop_postgres_table_if_exists(pg_conn, staging_name)
-            catch
-            end
-            @error "Error exporting table $safe_name using DataFrames" exception=(e, catch_backtrace())
+            @error "Error exporting table $(plan.target) using DataFrames" exception=(e, catch_backtrace())
             rethrow(e)
+        finally
+            cleanup_postgres_stages_after_failure!(
+                cleanup_postgres_stages!,
+                pg_conn,
+                [plan.staging],
+            )
+        end
+    end
+
+    function generate_dataframe_insert_query(
+        table_name::String,
+        column_names::AbstractVector{<:AbstractString},
+    )::String
+        quoted_table = qualified_postgres_identifier(table_name)
+        quoted_columns = quote_postgres_identifier.(lowercase.(column_names))
+        placeholders = [string('$', i) for i in eachindex(column_names)]
+        return "INSERT INTO $quoted_table ($(join(quoted_columns, ", "))) " *
+               "VALUES ($(join(placeholders, ", ")))"
+    end
+
+    function with_owned_parquet_file(f::Function, parquet_file::String)
+        safe_hint = validate_file_path(abspath(parquet_file))
+        return mktempdir(
+            dirname(safe_hint);
+            prefix=".tiingojulia-parquet-",
+        ) do temporary_directory
+            temporary_parquet = validate_file_path(
+                joinpath(temporary_directory, "bridge.parquet"),
+            )
+            return f(temporary_parquet)
+        end
+    end
+
+    function stage_table_to_postgres_parquet!(
+        duckdb_conn::DuckDBConnection,
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+        staging_name::String,
+        parquet_file::String;
+        pg_host::Union{Nothing,String}=nothing,
+        pg_user::Union{Nothing,String}=nothing,
+        pg_dbname::Union{Nothing,String}=nothing,
+        pg_connection_string::Union{Nothing,String}=nothing
+    )::Int
+        safe_name = validate_identifier(table_name)
+        safe_staging = validate_identifier(staging_name)
+        postgres_duckdb_staging = "\"postgres_db\".\"public\"." *
+                                  quote_postgres_identifier(lowercase(safe_staging))
+        @info "Exporting table $safe_name to PostgreSQL using Parquet"
+
+        return with_owned_parquet_file(parquet_file) do temporary_parquet
+            attached = false
+            try
+                # Export to a library-owned temporary parquet file.
+                DBInterface.execute(
+                    duckdb_conn,
+                    """COPY $safe_name TO '$temporary_parquet';""",
+                )
+                @info "Exported $safe_name to temporary parquet file"
+
+                # Create and load a staging table before swapping it into place.
+                schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
+                create_table_query = generate_create_table_query(
+                    safe_staging,
+                    schema;
+                    base_table_name=safe_name,
+                )
+                drop_postgres_table_if_exists(pg_conn, safe_staging)
+                LibPQ.execute(pg_conn, create_table_query)
+
+                # Copy data from parquet to PostgreSQL
+                setup_postgres_connection(
+                    duckdb_conn,
+                    pg_conn;
+                    connection_string=pg_connection_string,
+                    pg_host=pg_host,
+                    pg_user=pg_user,
+                    pg_dbname=pg_dbname,
+                )
+                attached = true
+                DBInterface.execute(
+                    duckdb_conn,
+                    """COPY $postgres_duckdb_staging FROM '$temporary_parquet';""",
+                )
+                DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
+                attached = false
+                row_count = postgres_table_row_count(pg_conn, safe_staging)
+                @info "Copied $row_count rows from Parquet into PostgreSQL staging table $safe_staging"
+                return row_count
+            finally
+                if attached
+                    try
+                        DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
+                    catch
+                    end
+                end
+            end
         end
     end
 
@@ -794,57 +1208,91 @@ module Postgres
         pg_host::Union{Nothing,String}=nothing,
         pg_user::Union{Nothing,String}=nothing,
         pg_dbname::Union{Nothing,String}=nothing,
-        pg_connection_string::Union{Nothing,String}=nothing
+        pg_connection_string::Union{Nothing,String}=nothing,
     )
-        safe_name = validate_identifier(table_name)
-        staging_name = validate_identifier("$(safe_name)_staging")
-        safe_parquet = validate_file_path(parquet_file)
-        @info "Exporting table $safe_name to PostgreSQL using Parquet"
-
+        plan = prepare_single_postgres_export(pg_conn, table_name)
         try
-            # Export to parquet
-            DBInterface.execute(duckdb_conn, """COPY $safe_name TO '$safe_parquet';""")
-            @info "Exported $safe_name to parquet file"
-
-            # Create and load a staging table before swapping it into place.
-            schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
-            create_table_query = generate_create_table_query(staging_name, schema)
-            drop_postgres_table_if_exists(pg_conn, staging_name)
-            LibPQ.execute(pg_conn, create_table_query)
-
-            # Copy data from parquet to PostgreSQL
-            setup_postgres_connection(
+            stage_table_to_postgres_parquet!(
                 duckdb_conn,
-                pg_conn;
-                connection_string=pg_connection_string,
-                pg_host=pg_host,
-                pg_user=pg_user,
-                pg_dbname=pg_dbname,
+                pg_conn,
+                plan.target,
+                plan.staging,
+                parquet_file;
+                pg_host,
+                pg_user,
+                pg_dbname,
+                pg_connection_string,
             )
-            DBInterface.execute(
-                duckdb_conn,
-                """COPY postgres_db.$staging_name FROM '$safe_parquet';"""
-            )
-            DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-            replace_postgres_table!(pg_conn, safe_name, staging_name)
-            @info "Copied data from parquet file to PostgreSQL table $safe_name"
+            replace_postgres_table!(pg_conn, plan.target, plan.staging)
+            @info "Copied data from Parquet into PostgreSQL table $(plan.target)"
+            return nothing
         catch e
-            try
-                drop_postgres_table_if_exists(pg_conn, staging_name)
-            catch
-            end
-            @error "Error exporting table $safe_name using Parquet" exception=(e, catch_backtrace())
+            @error "Error exporting table $(plan.target) using Parquet" exception=(e, catch_backtrace())
             rethrow(e)
         finally
-            try
-                DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-            catch
-            end
-            if isfile(parquet_file)
-                rm(parquet_file)
-                @info "Removed temporary parquet file for $table_name"
-            end
+            cleanup_postgres_stages_after_failure!(
+                cleanup_postgres_stages!,
+                pg_conn,
+                [plan.staging],
+            )
         end
+    end
+
+    function stage_table_to_postgres!(
+        duckdb_conn::DuckDBConnection,
+        pg_conn::PostgreSQLConnection,
+        table_name::String,
+        staging_name::String,
+        parquet_file::String;
+        pg_host::Union{Nothing,String}=nothing,
+        pg_user::Union{Nothing,String}=nothing,
+        pg_dbname::Union{Nothing,String}=nothing,
+        pg_connection_string::Union{Nothing,String}=nothing,
+        use_dataframe::Union{Bool,Nothing}=nothing,
+        max_rows_for_dataframe::Int=1_000_000,
+    )::Int
+        safe_name = validate_identifier(table_name)
+        safe_staging = validate_identifier(staging_name)
+        @info "Staging table $safe_name for PostgreSQL publication"
+
+        table_exists = DBInterface.execute(
+            duckdb_conn,
+            """
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'main' AND table_name = ?;
+            """,
+            [safe_name],
+        ) |> DataFrame
+        isempty(table_exists) && error("Table $safe_name does not exist in DuckDB")
+
+        row_count_result = DBInterface.execute(
+            duckdb_conn,
+            "SELECT COUNT(*) FROM $safe_name",
+        ) |> DataFrame
+        row_count = Int(row_count_result[1, 1])
+        use_df = isnothing(use_dataframe) ?
+            row_count <= max_rows_for_dataframe :
+            use_dataframe
+
+        if use_df
+            return stage_table_to_postgres_dataframe!(
+                duckdb_conn,
+                pg_conn,
+                safe_name,
+                safe_staging,
+            )
+        end
+        return stage_table_to_postgres_parquet!(
+            duckdb_conn,
+            pg_conn,
+            safe_name,
+            safe_staging,
+            parquet_file;
+            pg_host,
+            pg_user,
+            pg_dbname,
+            pg_connection_string,
+        )
     end
 
     """
@@ -858,7 +1306,8 @@ module Postgres
         connection_string::Union{Nothing,String}=nothing,
         pg_host::Union{Nothing,String}=nothing,
         pg_user::Union{Nothing,String}=nothing,
-        pg_dbname::Union{Nothing,String}=nothing
+        pg_dbname::Union{Nothing,String}=nothing,
+        execute::Function=DBInterface.execute,
     )
         try
             options = if !isnothing(connection_string) && !isempty(strip(connection_string))
@@ -880,9 +1329,8 @@ module Postgres
             env_vars = postgres_env_vars(options)
 
             with_temporary_env(env_vars) do
-                DBInterface.execute(duckdb_conn, "INSTALL postgres;")
-                DBInterface.execute(duckdb_conn, "LOAD postgres;")
-                DBInterface.execute(duckdb_conn, "ATTACH '' AS postgres_db (TYPE postgres);")
+                load_postgres_extension!(duckdb_conn; execute)
+                execute(duckdb_conn, "ATTACH '' AS postgres_db (TYPE postgres);")
             end
             @info "Successfully set up PostgreSQL connection in DuckDB"
         catch e
@@ -897,5 +1345,6 @@ module Postgres
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics
     export export_table_to_postgres, export_table_to_postgres_dataframe, export_table_to_postgres_parquet
-    export setup_postgres_connection, normalize_postgres_connection_string, connection_options_map, postgres_env_vars
+    export setup_postgres_connection, load_postgres_extension!
+    export normalize_postgres_connection_string, connection_options_map, postgres_env_vars
 end

@@ -18,8 +18,9 @@ using DataFrames
 using Logging
 using Dates
 
-# Reuse the package's postgres ATTACH mechanism (src/db/postgres.jl:525-556)
-import TiingoJulia.DB.Postgres: connection_options_map, postgres_env_vars, with_temporary_env
+# Reuse the package's PostgreSQL extension and ATTACH mechanisms.
+import TiingoJulia.DB.Postgres: connection_options_map, load_postgres_extension!
+import TiingoJulia.DB.Postgres: postgres_env_vars, with_temporary_env
 import TiingoJulia.DB.Core: validate_identifier
 
 const DEFAULT_PG_CONN_STR = "postgresql://postgres@127.0.0.1:5432/tiingo?sslmode=disable"
@@ -98,13 +99,16 @@ end
 Attach PostgreSQL as a read-only source in DuckDB using the same env-var
 mechanism as `setup_postgres_connection` (src/db/postgres.jl:525-556).
 """
-function attach_postgres_readonly!(conn::DBInterface.Connection, pg_conn_str::String)::Nothing
+function attach_postgres_readonly!(
+    conn,
+    pg_conn_str::String;
+    execute::Function=DBInterface.execute,
+)::Nothing
     options = connection_options_map(pg_conn_str)
     env_vars = postgres_env_vars(options)
     with_temporary_env(env_vars) do
-        DBInterface.execute(conn, "INSTALL postgres;")
-        DBInterface.execute(conn, "LOAD postgres;")
-        DBInterface.execute(conn, "ATTACH '' AS pg_src (TYPE POSTGRES, READ_ONLY);")
+        load_postgres_extension!(conn; execute)
+        execute(conn, "ATTACH '' AS pg_src (TYPE POSTGRES, READ_ONLY);")
     end
     @info "Attached PostgreSQL as pg_src (read-only)"
     return nothing
@@ -176,7 +180,9 @@ function attached_postgres_table_exists(
         """
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_catalog = 'pg_src' AND table_name = ?
+        WHERE table_catalog = 'pg_src'
+          AND table_schema = 'public'
+          AND table_name = ?
         """,
         (safe_name,),
     ) |> DataFrame
@@ -198,13 +204,13 @@ function hydrate_attached_table!(
     end
 
     pg_count = Int((
-        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.$safe_name") |> DataFrame
+        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.public.$safe_name") |> DataFrame
     )[1, 1])
     @info "Hydrating table" table=safe_name rows=pg_count
     DBInterface.execute(conn, """
         INSERT INTO $safe_name ($(join(target_columns, ", ")))
         SELECT $(join(source_columns, ", "))
-        FROM pg_src.$safe_name
+        FROM pg_src.public.$safe_name
     """)
 
     duck_count = Int((
@@ -239,12 +245,12 @@ function merge_attached_table!(
     end
 
     pg_count = Int((
-        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.$safe_name") |> DataFrame
+        DBInterface.execute(conn, "SELECT count(*) FROM pg_src.public.$safe_name") |> DataFrame
     )[1, 1])
     DBInterface.execute(conn, """
         INSERT INTO $safe_name ($(join(target_columns, ", ")))
         SELECT $(join(source_columns, ", "))
-        FROM pg_src.$safe_name
+        FROM pg_src.public.$safe_name
         ON CONFLICT ($(join(validated_keys, ", "))) DO NOTHING
     """)
 
@@ -257,7 +263,7 @@ function merge_attached_table!(
     )
     missing_source_keys = Int((DBInterface.execute(conn, """
         SELECT count(*)
-        FROM pg_src.$safe_name AS source_row
+        FROM pg_src.public.$safe_name AS source_row
         WHERE NOT EXISTS (
             SELECT 1
             FROM $safe_name AS local_row
@@ -360,6 +366,10 @@ function main()
             @info "Ticker list capped for validation" limit=ticker_limit
         end
         @info "Loaded tickers" count=nrow(tickers)
+        # TODO(2.0): migrate this compatibility refresh to `collect_historical`
+        # with an explicit DuckDB writer and gate its typed result before export.
+        # This script also owns hydration and multi-table publication, so that
+        # migration is intentionally separate from the staging-smoke gate.
         updated, missing_t = update_historical(conn, tickers, api_key;
             use_parallel=true, batch_size=100, max_concurrent=10, add_missing=false)
         @info "Incremental update done" updated=length(updated) skipped=length(missing_t)

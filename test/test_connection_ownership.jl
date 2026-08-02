@@ -1,6 +1,16 @@
 using Test
 using TiingoJulia
 
+struct CallablePostgresOpener
+    connection
+    events::Vector{Symbol}
+end
+
+function (opener::CallablePostgresOpener)(::String)
+    push!(opener.events, :open)
+    return opener.connection
+end
+
 @testset "Owned DuckDB initialization closes only on failure" begin
     events = Symbol[]
     connection = Ref(:duckdb_connection)
@@ -37,10 +47,7 @@ end
 @testset "Owned PostgreSQL validation closes failed attempts" begin
     events = Symbol[]
     connection = Ref(:postgres_connection)
-    opener = _ -> begin
-        push!(events, :open)
-        connection
-    end
+    opener = CallablePostgresOpener(connection, events)
     closer = conn -> begin
         @test conn === connection
         push!(events, :close)

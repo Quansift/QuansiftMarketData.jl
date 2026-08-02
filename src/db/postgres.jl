@@ -440,7 +440,7 @@ module Postgres
 
     function open_validated_postgres_connection(
         connection_string::String;
-        opener::Function=LibPQ.Connection,
+        opener=LibPQ.Connection,
         validator::Function=validate_postgres_connection,
         closer::Function=LibPQ.close,
     )

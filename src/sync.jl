@@ -408,10 +408,12 @@ end
         latest_dates_lookup = Dict{String,Date}()
         for row in eachrow(latest_dates_df)
             ticker = row.ticker
-            if ismissing(ticker) || ticker === nothing
+            latest_date = row.latest_date
+            if ismissing(ticker) || isnothing(ticker) ||
+               ismissing(latest_date) || isnothing(latest_date)
                 continue
             end
-            latest_dates_lookup[String(ticker)] = row.latest_date
+            latest_dates_lookup[String(ticker)] = Date(latest_date)
         end
         return latest_dates_lookup
     end
@@ -784,13 +786,21 @@ end
                     )
                 end
             catch error
+                error isa InterruptException && rethrow()
                 if _is_unavailable_historical_error(error)
                     push!(unavailable, symbol)
                     continue
                 end
                 push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :fetch, error))
+                failure = _sync_failure(symbol, :fetch, error)
+                push!(failures, failure)
                 (!continue_on_error && !strict) && rethrow()
+                @warn(
+                    "Historical fetch failed for $symbol; continuing",
+                    failure_stage=failure.stage,
+                    failure_message=failure.message,
+                    retryable=failure.retryable,
+                )
                 continue
             end
 

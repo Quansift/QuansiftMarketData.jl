@@ -1,0 +1,176 @@
+name: Deterministic performance evidence
+
+on:
+    schedule:
+        - cron: "17 5 * * 0"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: performance-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    smoke:
+        name: Linux / Julia 1.12 / one-sample smoke
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - name: Instantiate independent benchmark environment
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+            - name: Run deterministic local micro smoke
+              env:
+                  TIINGO_BENCH_TICKERS: "1"
+                  TIINGO_BENCH_DAYS: "2"
+                  TIINGO_BENCH_SAMPLES: "1"
+                  TIINGO_BENCH_ITERATIONS: "1"
+                  TIINGO_BENCH_MAX_ELAPSED_SECONDS: "90"
+                  TIINGO_BENCH_SINK: local
+                  TIINGO_BENCH_OUTPUT: benchmark/micro-result.json
+              run: julia --project=benchmark benchmark/run.jl micro
+            - name: Upload metadata-only micro result
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: benchmark-micro-${{ github.run_id }}
+                  path: benchmark/micro-result.json
+                  if-no-files-found: error
+                  retention-days: 14
+
+    resolver-floor-smoke:
+        name: Linux / Julia 1.9 / resolver floor smoke
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+              with:
+                  version: "1.9"
+            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - name: Resolve independent benchmark environment at Julia floor
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+            - name: Run deterministic Julia floor micro smoke
+              env:
+                  TIINGO_BENCH_TICKERS: "1"
+                  TIINGO_BENCH_DAYS: "2"
+                  TIINGO_BENCH_SAMPLES: "1"
+                  TIINGO_BENCH_ITERATIONS: "1"
+                  TIINGO_BENCH_MAX_ELAPSED_SECONDS: "90"
+                  TIINGO_BENCH_SINK: local
+                  TIINGO_BENCH_OUTPUT: benchmark/micro-result-julia-1.9.json
+              run: julia --project=benchmark benchmark/run.jl micro
+            - name: Upload metadata-only Julia floor result
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: benchmark-micro-julia-1.9-${{ github.run_id }}
+                  path: benchmark/micro-result-julia-1.9.json
+                  if-no-files-found: error
+                  retention-days: 14
+
+    postgres-load:
+        name: PostgreSQL 17 bounded load
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        services:
+            postgres:
+                image: postgres:17
+                env:
+                    POSTGRES_USER: postgres
+                    POSTGRES_PASSWORD: postgres
+                    POSTGRES_DB: tiingojulia_benchmark
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U postgres -d tiingojulia_benchmark"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - name: Instantiate independent benchmark environment
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+            - name: Mark disposable benchmark database
+              env:
+                  PGPASSWORD: postgres
+              run: >-
+                  psql --host=localhost --username=postgres
+                  --dbname=tiingojulia_benchmark --set=ON_ERROR_STOP=1
+                  --command="COMMENT ON DATABASE tiingojulia_benchmark
+                  IS 'tiingojulia-disposable-benchmark-v1'"
+            - name: Run disposable PostgreSQL regression
+              env:
+                  TIINGO_TEST_BENCH_PG_CONNECTION: postgresql://postgres:postgres@localhost:5432/tiingojulia_benchmark?sslmode=disable
+                  TIINGO_TEST_BENCH_PG_DATABASE: tiingojulia_benchmark
+              run: julia --project=benchmark test/test_benchmark_contract.jl
+            - name: Run bounded synthetic PostgreSQL load
+              env:
+                  TIINGO_BENCH_TICKERS: "25"
+                  TIINGO_BENCH_DAYS: "252"
+                  TIINGO_BENCH_ITERATIONS: "2"
+                  TIINGO_BENCH_MAX_ELAPSED_SECONDS: "600"
+                  TIINGO_BENCH_SINK: postgres
+                  TIINGO_BENCH_OUTPUT: benchmark/postgres-load-result.json
+                  TIINGO_BENCH_PG_CONNECTION: postgresql://postgres:postgres@localhost:5432/tiingojulia_benchmark?sslmode=disable
+                  TIINGO_BENCH_PG_DATABASE: tiingojulia_benchmark
+                  TIINGO_BENCH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+                  TIINGO_BENCH_POSTGRES_ISOLATED: "true"
+                  TIINGO_BENCH_POSTGRES_DISPOSABLE: I_ACKNOWLEDGE_THIS_DATABASE_IS_DISPOSABLE
+              run: julia --project=benchmark benchmark/run.jl load
+            - name: Upload metadata-only PostgreSQL result
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: benchmark-postgres-load-${{ github.run_id }}
+                  path: benchmark/postgres-load-result.json
+                  if-no-files-found: error
+                  retention-days: 14
+
+    local-soak:
+        name: Local sinks bounded soak
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - name: Instantiate independent benchmark environment
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+            - name: Run bounded synthetic local soak
+              env:
+                  TIINGO_BENCH_TICKERS: "10"
+                  TIINGO_BENCH_DAYS: "60"
+                  TIINGO_BENCH_ITERATIONS: "20"
+                  TIINGO_BENCH_MAX_ELAPSED_SECONDS: "900"
+                  TIINGO_BENCH_SINK: local
+                  TIINGO_BENCH_OUTPUT: benchmark/local-soak-result.json
+              run: julia --project=benchmark benchmark/run.jl soak
+            - name: Upload metadata-only local soak result
+              if: always()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: benchmark-local-soak-${{ github.run_id }}
+                  path: benchmark/local-soak-result.json
+                  if-no-files-found: error
+                  retention-days: 14

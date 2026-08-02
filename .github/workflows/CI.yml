@@ -7,12 +7,34 @@ on:
     pull_request:
     workflow_dispatch:
 jobs:
+    release-tag-policy:
+        name: Classify release tag
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        outputs:
+            eligible: ${{ steps.classify.outputs.eligible }}
+        steps:
+            - name: Allow non-tag events and stable release tags
+              id: classify
+              shell: bash
+              run: |
+                  if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  elif [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  else
+                    echo "eligible=false" >> "${GITHUB_OUTPUT}"
+                  fi
     test:
         name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ github.event_name }}
+        needs: release-tag-policy
+        if: needs.release-tag-policy.outputs.eligible == 'true'
         runs-on: ${{ matrix.os }}
         timeout-minutes: 60
         env:
             TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY || 'mock-api-key-for-testing' }}
+            TIINGO_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
             JULIA_NUM_THREADS: "auto"
             JULIA_PROJECT: "."
         permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
@@ -35,24 +57,30 @@ jobs:
                 # Hardcoding `x64` broke macos-latest after GitHub migrated the
                 # default macOS runner to Apple Silicon.
         steps:
-            - uses: actions/checkout@v7
-            - uses: julia-actions/setup-julia@v3
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: ${{ matrix.version }}
                   # arch omitted; setup-julia auto-detects the runner architecture.
-            - name: Validate release hygiene
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Resolve dependencies for the active Julia version
               run: |
-                  julia --project=. scripts/ci/validate_release_hygiene.jl
-            - uses: julia-actions/cache@v3
-            - uses: julia-actions/julia-buildpkg@v1
+                  julia --project=. -e '
+                    import Pkg
+                    manifest_path = joinpath(dirname(Base.active_project()), "Manifest.toml")
+                    if VERSION < v"1.12" && isfile(manifest_path)
+                        rm(manifest_path)
+                    end
+                    Pkg.resolve(); Pkg.instantiate(); Pkg.precompile()'
+            - uses: julia-actions/julia-buildpkg@e3eb439fad4f9aba7da2667e7510e4a46ebc46e1 # v1
             - name: Setup test environment
               run: |
                   # Ensure a directory exists for temporary DuckDB files
                   mkdir -p .duckdb_temp
-            - name: Install and resolve dependencies
-              run: |
-                  julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.resolve(); Pkg.precompile()'
-                  julia --project=. -e 'using TimeSeries; println("TimeSeries loaded successfully")'
+            - name: Verify resolved dependency environment
+              run: julia --project=. -e 'using TimeSeries; println("TimeSeries loaded successfully")'
+            - name: Validate release hygiene
+              run: julia --project=. scripts/ci/validate_release_hygiene.jl
             - name: Verify test environment
               run: |
                   julia --code-coverage=user --project=. test/runtests.jl
@@ -60,14 +88,16 @@ jobs:
               if: runner.os == 'Linux' && matrix.version == '1.12'
               run: |
                   docker build -f docker/Dockerfile .
-            - uses: julia-actions/julia-processcoverage@v1
-            - uses: codecov/codecov-action@v7
+            - uses: julia-actions/julia-processcoverage@03114f09f119417c3242a9fb6e0b722676aedf38 # v1
+            - uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
               with:
                   file: lcov.info
                   token: ${{ secrets.CODECOV_TOKEN }}
                   fail_ci_if_error: false
     postgres-integration:
         name: PostgreSQL 17 integration - ubuntu
+        needs: release-tag-policy
+        if: needs.release-tag-policy.outputs.eligible == 'true'
         runs-on: ubuntu-latest
         timeout-minutes: 30
         env:
@@ -91,11 +121,11 @@ jobs:
                     --health-timeout 5s
                     --health-retries 5
         steps:
-            - uses: actions/checkout@v7
-            - uses: julia-actions/setup-julia@v3
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@v3
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
             - name: Install and resolve dependencies
               run: |
                   julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
@@ -105,3 +135,33 @@ jobs:
             - name: Run PostgreSQL persistence integration
               run: |
                   julia --project=. test/test_postgres_integration.jl
+    benchmark-smoke:
+        name: One-sample benchmark smoke - Julia 1.12 - ubuntu
+        needs: release-tag-policy
+        if: >-
+            github.event_name == 'pull_request' &&
+            needs.release-tag-policy.outputs.eligible == 'true'
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        env:
+            TIINGO_BENCH_TICKERS: "1"
+            TIINGO_BENCH_DAYS: "2"
+            TIINGO_BENCH_SAMPLES: "1"
+            TIINGO_BENCH_ITERATIONS: "1"
+            TIINGO_BENCH_MAX_ELAPSED_SECONDS: "90"
+            TIINGO_BENCH_SINK: local
+            TIINGO_BENCH_OUTPUT: benchmark/micro-result.json
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate benchmark environment
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+            - name: Run one-sample benchmark smoke
+              run: julia --project=benchmark benchmark/run.jl micro

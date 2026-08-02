@@ -5,6 +5,8 @@ message: >-
   If you use this software, please cite it using the
   metadata from this file.
 type: software
+repository-code: https://github.com/Quansift/TiingoJulia
+license: MIT
 authors:
   - given-names: Kojiroh
     email: kojiroh.homma@gmail.com

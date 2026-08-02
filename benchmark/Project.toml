@@ -1,0 +1,20 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+DuckDB = "d2f5444f-75bc-4fdf-ac35-56f514c445e1"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+LibPQ = "194296ae-ab2e-5f79-8cd4-7183a0a5a0d1"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+TiingoJulia = "1316d3df-ea13-4eef-8810-037e2b70086f"
+
+[compat]
+BenchmarkTools = "1"
+DBInterface = "2"
+DataFrames = "1"
+DuckDB = "1"
+JSON3 = "1"
+LibPQ = "1"
+TiingoJulia = "1.1"
+julia = "1.9"

@@ -6,6 +6,8 @@ using DuckDB
 using LibPQ
 using TiingoJulia
 
+const MigrationSchemaIntegration = TiingoJulia.DB.Schema
+
 function _pg_integration_query(conn::LibPQ.Connection, sql::String)::DataFrame
     result = LibPQ.execute(conn, sql)
     try
@@ -25,6 +27,7 @@ function _pg_integration_cleanup(conn::LibPQ.Connection)
         "legacy_atomic_child",
         "legacy_atomic_second",
         "legacy_atomic_first",
+        "tiingojulia_schema_migrations",
         "fundamental_daily_metrics",
         "security_observations",
         "historical_data",
@@ -33,6 +36,86 @@ function _pg_integration_cleanup(conn::LibPQ.Connection)
     )
         _pg_integration_command(conn, "DROP TABLE IF EXISTS $table CASCADE")
     end
+end
+
+function _pg_integration_create_v1_relation(conn, name::String)
+    statements = Dict(
+        "us_tickers" => """
+            CREATE TABLE public.us_tickers (
+                ticker VARCHAR, exchange VARCHAR, assettype VARCHAR,
+                pricecurrency VARCHAR, startdate DATE, enddate DATE
+            )
+        """,
+        "us_tickers_filtered" => """
+            CREATE TABLE public.us_tickers_filtered (
+                ticker VARCHAR, exchange VARCHAR, assettype VARCHAR,
+                pricecurrency VARCHAR, startdate DATE, enddate DATE
+            )
+        """,
+        "historical_data" => """
+            CREATE TABLE public.historical_data (
+                ticker VARCHAR, date DATE, close FLOAT, high FLOAT, low FLOAT,
+                open FLOAT, volume BIGINT, adjclose FLOAT, adjhigh FLOAT,
+                adjlow FLOAT, adjopen FLOAT, adjvolume BIGINT, divcash FLOAT,
+                splitfactor FLOAT, UNIQUE (ticker, date)
+            )
+        """,
+    )
+    _pg_integration_command(conn, statements[name])
+    if name == "historical_data"
+        _pg_integration_command(
+            conn,
+            "INSERT INTO public.historical_data " *
+            "(ticker, date, close, volume, splitfactor) VALUES " *
+            "('LEGACY', DATE '2020-01-02', 42.5, 123, 1.0)",
+        )
+    else
+        _pg_integration_command(
+            conn,
+            "INSERT INTO public.$name " *
+            "(ticker, exchange, assettype, pricecurrency, startdate, enddate) " *
+            "VALUES ('LEGACY', 'NASDAQ', 'Stock', 'USD', " *
+            "DATE '2020-01-01', DATE '2020-01-03')",
+        )
+    end
+    return nothing
+end
+
+function _pg_integration_create_current_preledger(conn)
+    for statement in MigrationSchemaIntegration.POSTGRES_TARGET_DDL
+        _pg_integration_command(conn, statement)
+    end
+    for statement in MigrationSchemaIntegration.POSTGRES_TARGET_INDEX_DDL
+        _pg_integration_command(conn, statement)
+    end
+    return nothing
+end
+
+function _pg_integration_assert_legacy_rows(conn, names)
+    for name in names
+        if name == "historical_data"
+            row = _pg_integration_query(
+                conn,
+                "SELECT ticker, date, close, volume, splitfactor " *
+                "FROM public.historical_data",
+            )
+            @test row.ticker == ["LEGACY"]
+            @test row.close == [42.5]
+            @test row.volume == [123]
+            @test row.splitfactor == [1.0]
+        else
+            row = _pg_integration_query(
+                conn,
+                "SELECT ticker, exchange, assettype, pricecurrency " *
+                "FROM public.$name",
+            )
+            @test row.ticker == ["LEGACY"]
+            @test row.exchange == ["NASDAQ"]
+            @test row.assettype == ["Stock"]
+            @test row.pricecurrency == ["USD"]
+        end
+    end
+    return nothing
 end
 
 function _pg_integration_read_parquet(path::String)::DataFrame
@@ -61,6 +144,455 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 "AS server_version_num",
             ).server_version_num)
             @test 170_000 <= server_version_num < 180_000
+
+            @testset "PostgreSQL migration fresh and finite legacy catalog" begin
+                _pg_integration_cleanup(pg)
+                @test postgres_schema_version(pg) == 0
+                fresh_result = migrate_postgres!(pg)
+                @test fresh_result.from_version == 0
+                @test fresh_result.to_version == POSTGRES_SCHEMA_VERSION
+                @test fresh_result.applied_versions == [1]
+                @test postgres_schema_version(pg) == 1
+                @test create_tables(pg) === nothing
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) AS count FROM " *
+                    "public.tiingojulia_schema_migrations",
+                ).count) == 1
+
+                relation_names = [
+                    "us_tickers",
+                    "us_tickers_filtered",
+                    "historical_data",
+                ]
+                for mask in 1:7
+                    _pg_integration_cleanup(pg)
+                    selected = [
+                        relation_names[index] for index in eachindex(relation_names)
+                        if !iszero(mask & (1 << (index - 1)))
+                    ]
+                    for name in selected
+                        _pg_integration_create_v1_relation(pg, name)
+                    end
+                    @test postgres_schema_version(pg) == 0
+                    result = migrate_postgres!(pg)
+                    @test result.from_version == 0
+                    @test result.to_version == 1
+                    @test result.applied_versions == [1]
+                    @test postgres_schema_version(pg) == 1
+                    _pg_integration_assert_legacy_rows(pg, selected)
+                    if "historical_data" in selected
+                        key = _pg_integration_query(
+                            pg,
+                            """
+                            SELECT a.attname, a.attnotnull
+                            FROM pg_catalog.pg_attribute a
+                            JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+                            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = 'public'
+                              AND c.relname = 'historical_data'
+                              AND a.attname IN ('ticker', 'date')
+                            ORDER BY a.attname
+                            """,
+                        )
+                        @test all(key.attnotnull)
+                    end
+                end
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_v1_relation(pg, "historical_data")
+                _pg_integration_create_current_preledger(pg)
+                hybrid_before = _pg_integration_query(
+                    pg,
+                    "SELECT ticker, date, close, volume FROM public.historical_data",
+                )
+                @test migrate_postgres!(pg).applied_versions == [1]
+                hybrid_after = _pg_integration_query(
+                    pg,
+                    "SELECT ticker, date, close, volume FROM public.historical_data",
+                )
+                @test hybrid_after == hybrid_before
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "INSERT INTO public.historical_data " *
+                    "(ticker, date, close) VALUES " *
+                    "('CURRENT', DATE '2024-01-02', 88.0)",
+                )
+                @test migrate_postgres!(pg).applied_versions == [1]
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT close FROM public.historical_data " *
+                    "WHERE ticker = 'CURRENT'",
+                ).close) == 88.0
+            end
+
+            @testset "PostgreSQL migration fail-closed ledger and rollback" begin
+                _pg_integration_cleanup(pg)
+                _pg_integration_command(
+                    pg,
+                    "CREATE TABLE public.historical_data " *
+                    "(ticker TEXT, payload JSONB)",
+                )
+                unknown_error = try
+                    migrate_postgres!(pg)
+                    nothing
+                catch error
+                    error
+                end
+                @test unknown_error isa PostgresMigrationError
+                @test occursin("backup", lowercase(sprint(showerror, unknown_error)))
+                @test postgres_schema_version(pg) == 0
+                @test Set(_pg_integration_query(
+                    pg,
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'historical_data'
+                    """,
+                ).column_name) == Set(["ticker", "payload"])
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_v1_relation(pg, "historical_data")
+                _pg_integration_command(
+                    pg,
+                    "INSERT INTO public.historical_data " *
+                    "(ticker, date, close) VALUES " *
+                    "(NULL, DATE '2020-01-03', 99.0)",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test postgres_schema_version(pg) == 0
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) AS count FROM public.historical_data",
+                ).count) == 2
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT to_regclass('public.security_observations') AS relation",
+                ).relation))
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                _pg_integration_command(
+                    pg,
+                    "UPDATE public.tiingojulia_schema_migrations " *
+                    "SET checksum = repeat('0', 64) WHERE version = 1",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    """
+                    CREATE TABLE public.tiingojulia_schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        checksum TEXT NOT NULL,
+                        applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        package_version TEXT NOT NULL
+                    )
+                    """,
+                )
+                _pg_integration_command(
+                    pg,
+                    "INSERT INTO public.tiingojulia_schema_migrations " *
+                    "(version, name, checksum, package_version) VALUES " *
+                    "(2, 'future', repeat('f', 64), '9.0.0')",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+            end
+
+            @testset "PostgreSQL migration rejects spoofed security metadata" begin
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.historical_data ENABLE ROW LEVEL SECURITY",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT pg_catalog.to_regclass(" *
+                    "'public.tiingojulia_schema_migrations') AS relation",
+                ).relation))
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT relrowsecurity FROM pg_catalog.pg_class c " *
+                    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " *
+                    "WHERE n.nspname = 'public' AND c.relname = 'historical_data'",
+                ).relrowsecurity)
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "CREATE FUNCTION public.tiingo_test_trigger() RETURNS trigger " *
+                    "LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+                )
+                _pg_integration_command(
+                    pg,
+                    "CREATE TRIGGER tiingo_test_unexpected BEFORE INSERT ON " *
+                    "public.us_tickers FOR EACH ROW EXECUTE FUNCTION " *
+                    "public.tiingo_test_trigger()",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT pg_catalog.to_regclass(" *
+                    "'public.tiingojulia_schema_migrations') AS relation",
+                ).relation))
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) FROM pg_catalog.pg_trigger t " *
+                    "JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid " *
+                    "WHERE c.relname = 'us_tickers' AND NOT t.tgisinternal",
+                ).count) == 1
+                _pg_integration_command(
+                    pg,
+                    "DROP FUNCTION public.tiingo_test_trigger() CASCADE",
+                )
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                try
+                    _pg_integration_command(pg, "SET allow_system_table_mods = on")
+                    _pg_integration_command(
+                        pg,
+                        "UPDATE pg_catalog.pg_index SET indisvalid = false " *
+                        "WHERE indexrelid = " *
+                        "'public.idx_us_tickers_ticker'::pg_catalog.regclass",
+                    )
+                    @test_throws PostgresMigrationError migrate_postgres!(pg)
+                    @test ismissing(only(_pg_integration_query(
+                        pg,
+                        "SELECT pg_catalog.to_regclass(" *
+                        "'public.tiingojulia_schema_migrations') AS relation",
+                    ).relation))
+                    @test !only(_pg_integration_query(
+                        pg,
+                        "SELECT indisvalid FROM pg_catalog.pg_index " *
+                        "WHERE indexrelid = " *
+                        "'public.idx_us_tickers_ticker'::pg_catalog.regclass",
+                    ).indisvalid)
+                finally
+                    _pg_integration_command(pg, "SET allow_system_table_mods = off")
+                end
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.us_tickers SET UNLOGGED",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT pg_catalog.to_regclass(" *
+                    "'public.tiingojulia_schema_migrations') AS relation",
+                ).relation))
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.us_tickers " *
+                    "ALTER COLUMN ticker SET DEFAULT 'SPOOF'",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "DROP INDEX public.idx_us_tickers_ticker",
+                )
+                _pg_integration_command(
+                    pg,
+                    "CREATE INDEX idx_us_tickers_ticker ON public.us_tickers " *
+                    "(ticker varchar_pattern_ops)",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+
+                foreign_owner = "tiingo_test_foreign_owner"
+                _pg_integration_cleanup(pg)
+                _pg_integration_command(pg, "DROP ROLE IF EXISTS $foreign_owner")
+                _pg_integration_command(pg, "CREATE ROLE $foreign_owner NOLOGIN")
+                try
+                    _pg_integration_create_current_preledger(pg)
+                    _pg_integration_command(
+                        pg,
+                        "ALTER TABLE public.us_tickers OWNER TO $foreign_owner",
+                    )
+                    @test_throws PostgresMigrationError migrate_postgres!(pg)
+                finally
+                    _pg_integration_cleanup(pg)
+                    _pg_integration_command(pg, "DROP ROLE IF EXISTS $foreign_owner")
+                end
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_current_preledger(pg)
+                _pg_integration_command(
+                    pg,
+                    "CREATE VIEW public.tiingojulia_schema_migrations AS " *
+                    "SELECT 1::integer AS version, " *
+                    "'canonical_v1_baseline'::text AS name, " *
+                    "'$(MigrationSchemaIntegration.POSTGRES_MIGRATIONS[1].checksum)'::text " *
+                    "AS checksum, CURRENT_TIMESTAMP AS applied_at, " *
+                    "'1.1.0'::text AS package_version",
+                )
+                @test_throws PostgresMigrationError postgres_schema_version(pg)
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+                _pg_integration_command(
+                    pg,
+                    "DROP VIEW public.tiingojulia_schema_migrations",
+                )
+
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.tiingojulia_schema_migrations " *
+                    "DROP CONSTRAINT tiingojulia_schema_migrations_version_check",
+                )
+                @test_throws PostgresMigrationError postgres_schema_version(pg)
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.tiingojulia_schema_migrations " *
+                    "ALTER COLUMN applied_at SET DEFAULT pg_catalog.clock_timestamp()",
+                )
+                @test_throws PostgresMigrationError postgres_schema_version(pg)
+
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                _pg_integration_command(
+                    pg,
+                    "ALTER TABLE public.tiingojulia_schema_migrations SET UNLOGGED",
+                )
+                @test_throws PostgresMigrationError postgres_schema_version(pg)
+
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                _pg_integration_command(
+                    pg,
+                    "CREATE INDEX tiingo_test_ledger_extra ON " *
+                    "public.tiingojulia_schema_migrations (name)",
+                )
+                @test_throws PostgresMigrationError postgres_schema_version(pg)
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_command(pg, "DROP ROLE IF EXISTS $foreign_owner")
+                _pg_integration_command(pg, "CREATE ROLE $foreign_owner NOLOGIN")
+                try
+                    migrate_postgres!(pg)
+                    _pg_integration_command(
+                        pg,
+                        "ALTER TABLE public.tiingojulia_schema_migrations " *
+                        "OWNER TO $foreign_owner",
+                    )
+                    @test_throws PostgresMigrationError postgres_schema_version(pg)
+                    @test_throws PostgresMigrationError migrate_postgres!(pg)
+                finally
+                    _pg_integration_cleanup(pg)
+                    _pg_integration_command(pg, "DROP ROLE IF EXISTS $foreign_owner")
+                end
+            end
+
+            @testset "PostgreSQL migration ignores hostile search-path functions" begin
+                _pg_integration_cleanup(pg)
+                hostile_schema = "tiingo_test_migration_shadow"
+                _pg_integration_command(
+                    pg,
+                    "DROP SCHEMA IF EXISTS $hostile_schema CASCADE",
+                )
+                _pg_integration_command(pg, "CREATE SCHEMA $hostile_schema")
+                try
+                    _pg_integration_command(
+                        pg,
+                        "CREATE TABLE $hostile_schema.calls (name TEXT)",
+                    )
+                    _pg_integration_command(
+                        pg,
+                        "CREATE FUNCTION $hostile_schema.to_regclass(text) " *
+                        "RETURNS regclass LANGUAGE plpgsql AS 'BEGIN INSERT INTO " *
+                        "$hostile_schema.calls VALUES (''to_regclass''); " *
+                        "RETURN NULL; END'",
+                    )
+                    _pg_integration_command(
+                        pg,
+                        "CREATE FUNCTION $hostile_schema.set_config(text, text, boolean) " *
+                        "RETURNS text LANGUAGE plpgsql AS 'BEGIN INSERT INTO " *
+                        "$hostile_schema.calls VALUES (''set_config''); " *
+                        "RETURN \$2; END'",
+                    )
+                    _pg_integration_command(
+                        pg,
+                        "CREATE FUNCTION $hostile_schema.pg_advisory_xact_lock(" *
+                        "integer, integer) RETURNS void LANGUAGE plpgsql AS " *
+                        "'BEGIN INSERT INTO $hostile_schema.calls VALUES " *
+                        "(''advisory''); END'",
+                    )
+                    hostile_path = "$hostile_schema, pg_catalog, public"
+                    _pg_integration_command(pg, "SET search_path TO $hostile_path")
+                    @test postgres_schema_version(pg) == 0
+                    @test migrate_postgres!(pg).applied_versions == [1]
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT count(*) FROM $hostile_schema.calls",
+                    ).count) == 0
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT pg_catalog.current_setting('search_path') AS path",
+                    ).path) == hostile_path
+                finally
+                    _pg_integration_command(pg, "SET search_path TO public")
+                    _pg_integration_command(
+                        pg,
+                        "DROP SCHEMA IF EXISTS $hostile_schema CASCADE",
+                    )
+                end
+            end
+
+            @testset "PostgreSQL migration advisory lock contention" begin
+                _pg_integration_cleanup(pg)
+                second = connect_postgres(pg_connection_string; max_retries=1)
+                try
+                    _pg_integration_command(pg, "BEGIN")
+                    _pg_integration_command(
+                        pg,
+                        "SELECT pg_advisory_xact_lock(1414089038, 1)",
+                    )
+                    lock_error = try
+                        migrate_postgres!(second; lock_timeout_seconds=1)
+                        nothing
+                    catch error
+                        error
+                    end
+                    @test lock_error isa PostgresMigrationError
+                    @test LibPQ.transaction_status(second) ==
+                          LibPQ.libpq_c.PQTRANS_IDLE
+                    @test postgres_schema_version(second) == 0
+                    _pg_integration_command(pg, "COMMIT")
+                    @test migrate_postgres!(second).applied_versions == [1]
+                    @test postgres_schema_version(second) == 1
+                finally
+                    if LibPQ.transaction_status(pg) != LibPQ.libpq_c.PQTRANS_IDLE
+                        _pg_integration_command(pg, "ROLLBACK")
+                    end
+                    close_postgres(second)
+                end
+            end
 
             _pg_integration_cleanup(pg)
             create_tables(pg)

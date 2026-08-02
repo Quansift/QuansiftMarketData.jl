@@ -4,6 +4,7 @@ module Schema
     using DataFrames
     using LibPQ
     using Logging
+    using SHA
 
     using ..Config
     using ..Core: DuckDBConnection, DatabaseQueryError, validate_identifier
@@ -110,115 +111,16 @@ module Schema
         end
     end
 
+    include("migrations.jl")
+
     """
         create_tables(conn::LibPQ.Connection)
 
-    Idempotently create the PostgreSQL tables and indexes used by TiingoJulia.
-    Existing tables are preserved. Unique indexes provide the deterministic
-    conflict targets used by the PostgreSQL DataFrame upsert methods.
+    Migrate the canonical PostgreSQL schema to the version supported by this
+    TiingoJulia build. The legacy `nothing` return value is preserved.
     """
     function create_tables(conn::LibPQ.Connection)
-        LibPQ.transaction_status(conn) == LibPQ.libpq_c.PQTRANS_IDLE ||
-            throw(ArgumentError(
-                "create_tables requires an idle PostgreSQL connection; " *
-                "caller-owned transactions are not supported",
-            ))
-
-        statements = [
-            """
-            CREATE TABLE IF NOT EXISTS "public"."us_tickers" (
-                ticker VARCHAR,
-                exchange VARCHAR,
-                assettype VARCHAR,
-                pricecurrency VARCHAR,
-                startdate DATE,
-                enddate DATE
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS "public"."us_tickers_filtered" (
-                ticker VARCHAR,
-                exchange VARCHAR,
-                assettype VARCHAR,
-                pricecurrency VARCHAR,
-                startdate DATE,
-                enddate DATE
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS "public"."historical_data" (
-                ticker VARCHAR NOT NULL,
-                date DATE NOT NULL,
-                close DOUBLE PRECISION,
-                high DOUBLE PRECISION,
-                low DOUBLE PRECISION,
-                open DOUBLE PRECISION,
-                volume BIGINT,
-                adjclose DOUBLE PRECISION,
-                adjhigh DOUBLE PRECISION,
-                adjlow DOUBLE PRECISION,
-                adjopen DOUBLE PRECISION,
-                adjvolume BIGINT,
-                divcash DOUBLE PRECISION,
-                splitfactor DOUBLE PRECISION,
-                PRIMARY KEY (ticker, date)
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS "public"."security_observations" (
-                perma_ticker VARCHAR NOT NULL,
-                observed_at TIMESTAMP NOT NULL,
-                ticker VARCHAR NOT NULL,
-                is_active BOOLEAN NOT NULL,
-                is_adr BOOLEAN,
-                daily_last_updated TIMESTAMP,
-                exchange VARCHAR,
-                asset_type VARCHAR,
-                price_coverage_start DATE,
-                price_coverage_end DATE,
-                is_leveraged BOOLEAN,
-                join_status VARCHAR NOT NULL,
-                PRIMARY KEY (perma_ticker, observed_at)
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS "public"."fundamental_daily_metrics" (
-                perma_ticker VARCHAR NOT NULL,
-                metric_date DATE NOT NULL,
-                market_cap DOUBLE PRECISION,
-                enterprise_value DOUBLE PRECISION,
-                pe_ratio DOUBLE PRECISION,
-                available_at TIMESTAMP,
-                fetched_at TIMESTAMP NOT NULL,
-                source_revision VARCHAR,
-                PRIMARY KEY (perma_ticker, metric_date)
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON \"public\".\"us_tickers\" (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON \"public\".\"us_tickers_filtered\" (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_assettype ON \"public\".\"us_tickers_filtered\" (assettype)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_historical_ticker_date ON \"public\".\"historical_data\" (ticker, date)",
-            "CREATE INDEX IF NOT EXISTS idx_historical_ticker ON \"public\".\"historical_data\" (ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_historical_date ON \"public\".\"historical_data\" (date)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_security_observations_key ON \"public\".\"security_observations\" (perma_ticker, observed_at)",
-            "CREATE INDEX IF NOT EXISTS idx_security_observations_ticker ON \"public\".\"security_observations\" (ticker)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_fundamental_daily_metrics_key ON \"public\".\"fundamental_daily_metrics\" (perma_ticker, metric_date)",
-            "CREATE INDEX IF NOT EXISTS idx_fundamental_daily_metrics_date ON \"public\".\"fundamental_daily_metrics\" (metric_date)",
-        ]
-
-        close(LibPQ.execute(conn, "BEGIN"))
-        try
-            for statement in statements
-                close(LibPQ.execute(conn, statement))
-            end
-            close(LibPQ.execute(conn, "COMMIT"))
-        catch
-            try
-                close(LibPQ.execute(conn, "ROLLBACK"))
-            catch
-            end
-            rethrow()
-        end
+        migrate_postgres!(conn)
         return nothing
     end
 
@@ -392,4 +294,6 @@ module Schema
     export create_tables, create_indexes, create_or_replace_table, list_tables
     export generate_create_table_query, map_duckdb_to_postgres_type
     export quote_postgres_identifier, qualified_postgres_identifier
+    export POSTGRES_SCHEMA_VERSION, PostgresMigrationResult, PostgresMigrationError
+    export postgres_schema_version, migrate_postgres!
 end

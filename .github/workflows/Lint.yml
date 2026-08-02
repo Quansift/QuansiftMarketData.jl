@@ -11,21 +11,42 @@ concurrency:
     cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
+    release-tag-policy:
+        name: Classify release tag
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        outputs:
+            eligible: ${{ steps.classify.outputs.eligible }}
+        steps:
+            - name: Allow non-tag events and stable release tags
+              id: classify
+              shell: bash
+              run: |
+                  if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  elif [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+                  else
+                    echo "eligible=false" >> "${GITHUB_OUTPUT}"
+                  fi
     lint:
         name: Linting
+        needs: release-tag-policy
+        if: needs.release-tag-policy.outputs.eligible == 'true'
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v7
-            - uses: julia-actions/setup-julia@v3
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@v3
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
             - name: Install JuliaFormatter
               run: julia -e 'using Pkg; pkg"add JuliaFormatter"'
-            - uses: actions/setup-python@v7
+            - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
               with:
                   cache: "pip"
-            - uses: actions/cache@v6
+            - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
               with:
                   path: ~/.cache/pre-commit
                   key: ${{ runner.os }}-pre-commit-${{ hashFiles('**/.pre-commit-config.yaml') }}
@@ -35,10 +56,12 @@ jobs:
 
     link-checker:
         name: Link Checker
+        needs: release-tag-policy
+        if: needs.release-tag-policy.outputs.eligible == 'true'
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v7
-            - uses: lycheeverse/lychee-action@v2.9.0
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
 
               with:
                   fail: true

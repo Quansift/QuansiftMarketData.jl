@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `historical_data` table through a throwaway DuckDB working file.
 - Opt-in PostgreSQL 17 integration lane in CI, Parquet sink contract tests, and
   secret-redaction tests.
+- Forward-only PostgreSQL schema migrations with
+  `POSTGRES_SCHEMA_VERSION == 1`, a checksummed public ledger, advisory-lock
+  serialization, finite legacy-layout recognition, and rollback-safe
+  PostgreSQL 17 integration coverage.
+- Deterministic `micro`, `load`, and `soak` benchmark modes in an independent
+  project, with bounded synthetic fixtures, metadata-only JSON results, one
+  Linux/Julia 1.12 PR smoke, and scheduled PostgreSQL/local evidence jobs.
+- An advisory, allowlisted live Tiingo canary that observes normalized frames
+  in memory and performs zero application persistence.
+- Development, exact-main-SHA release-preflight, and stable post-tag hygiene
+  modes covering Project, changelog, citation, config, secrets, migrations,
+  hermetic tests, PostgreSQL 17, docs/links, benchmark smoke, and image build.
 
 ### Changed
 
@@ -42,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owned by `quansift_scheduler`, not TiingoJulia.
 - Prefer the `OHLCV_DUCKDB_PATH` and `OHLCV_PG_CONNECTION` environment variables.
 - DuckDB historical upsert is now set-based.
+- PostgreSQL `create_tables` now delegates to the versioned migration runner;
+  unknown, corrupt, or newer schemas fail closed instead of being guessed or
+  overwritten.
+- CI, documentation, lint, and image release behavior now accepts only exact
+  stable `vX.Y.Z` tags. Live-canary status and performance timing/RSS data are
+  not release gates.
 
 ### Deprecated
 

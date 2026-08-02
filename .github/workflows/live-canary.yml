@@ -1,0 +1,33 @@
+name: Advisory live Tiingo canary
+
+on:
+    schedule:
+        - cron: "17 12 * * 1"
+    workflow_dispatch:
+
+concurrency:
+    group: tiingojulia-live-canary
+    cancel-in-progress: true
+
+jobs:
+    live-canary:
+        name: Advisory zero-persistence canary
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+        env:
+            TIINGO_CANARY_TICKERS: AAPL,SPY
+            TIINGO_CANARY_WINDOW_DAYS: "14"
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate package
+              run: julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
+            - name: Run advisory live canary
+              env:
+                  TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+              run: julia --project=. scripts/live_canary.jl

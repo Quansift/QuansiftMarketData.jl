@@ -1,0 +1,221 @@
+name: Release preflight
+run-name: Release preflight v${{ inputs.release_version }} @ ${{ inputs.release_ref }}
+
+on:
+    workflow_dispatch:
+        inputs:
+            release_version:
+                description: Stable package version without the v prefix
+                required: true
+                type: string
+            release_ref:
+                description: Exact lowercase 40-character commit SHA on main
+                required: true
+                type: string
+
+concurrency:
+    group: release-preflight-${{ inputs.release_ref }}
+    cancel-in-progress: false
+
+jobs:
+    verify-release:
+        name: Verify exact main SHA
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        outputs:
+            sha: ${{ steps.verify.outputs.sha }}
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  fetch-depth: 0
+                  ref: ${{ inputs.release_ref }}
+            - name: Verify release inputs and main ancestry
+              id: verify
+              shell: bash
+              env:
+                  REQUESTED_VERSION: ${{ inputs.release_version }}
+                  REQUESTED_REF: ${{ inputs.release_ref }}
+              run: |
+                  [[ "${REQUESTED_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+                  [[ "${REQUESTED_REF}" =~ ^[0-9a-f]{40}$ ]]
+                  git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+                  checked_out="$(git rev-parse HEAD)"
+                  main_sha="$(git rev-parse refs/remotes/origin/main)"
+                  [[ "${REQUESTED_REF}" == "${checked_out}" ]]
+                  [[ "${REQUESTED_REF}" == "${main_sha}" ]]
+                  echo "sha=${checked_out}" >> "${GITHUB_OUTPUT}"
+
+    hermetic:
+        name: Hermetic tests and release metadata
+        needs: verify-release
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        permissions:
+            contents: read
+        env:
+            JULIA_PROJECT: "."
+            TIINGO_RELEASE_VERSION: ${{ inputs.release_version }}
+            TIINGO_RELEASE_REF: ${{ needs.verify-release.outputs.sha }}
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  ref: ${{ needs.verify-release.outputs.sha }}
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate package
+              run: julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
+            - name: Validate strict release metadata
+              run: julia --project=. scripts/ci/validate_release_hygiene.jl
+            - name: Run hermetic test suite
+              run: julia --project=. test/runtests.jl
+
+    postgres-integration:
+        name: PostgreSQL 17 integration
+        needs: verify-release
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        permissions:
+            contents: read
+        env:
+            JULIA_PROJECT: "."
+            TIINGO_TEST_PG_CONNECTION: postgresql://postgres:postgres@localhost:5432/tiingojulia_test?sslmode=disable
+        services:
+            postgres:
+                image: postgres:17
+                env:
+                    POSTGRES_DB: tiingojulia_test
+                    POSTGRES_PASSWORD: postgres
+                    POSTGRES_USER: postgres
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U postgres -d tiingojulia_test"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  ref: ${{ needs.verify-release.outputs.sha }}
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate package
+              run: julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
+            - name: Preinstall DuckDB PostgreSQL extension
+              run: >-
+                  julia --project=. -e
+                  'using DBInterface, DuckDB;
+                  conn = DBInterface.connect(DuckDB.DB);
+                  try DBInterface.execute(conn, "INSTALL postgres")
+                  finally DBInterface.close!(conn) end'
+            - name: Run PostgreSQL persistence integration
+              run: julia --project=. test/test_postgres_integration.jl
+
+    docs-and-links:
+        name: Documentation and link validation
+        needs: verify-release
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        permissions:
+            contents: read
+        env:
+            DOCS_DEPLOY: "false"
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  ref: ${{ needs.verify-release.outputs.sha }}
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate documentation environment
+              run: >-
+                  julia --project=docs -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+            - name: Build documentation without deployment
+              run: julia --color=yes --project=docs docs/make.jl
+            - name: Check repository links
+              uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+              with:
+                  fail: true
+                  args: --config '.lychee.toml' README.md CHANGELOG.md PRODUCTION.md CLAUDE.md AGENTS.md docs/src
+
+    benchmark-smoke:
+        name: One-sample benchmark smoke
+        needs: verify-release
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        env:
+            TIINGO_BENCH_TICKERS: "1"
+            TIINGO_BENCH_DAYS: "2"
+            TIINGO_BENCH_SAMPLES: "1"
+            TIINGO_BENCH_ITERATIONS: "1"
+            TIINGO_BENCH_MAX_ELAPSED_SECONDS: "90"
+            TIINGO_BENCH_SINK: local
+            TIINGO_BENCH_OUTPUT: benchmark/micro-result.json
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  ref: ${{ needs.verify-release.outputs.sha }}
+            - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - name: Instantiate benchmark environment
+              run: >-
+                  julia --project=benchmark -e
+                  'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+            - name: Run one-sample benchmark smoke
+              run: julia --project=benchmark benchmark/run.jl micro
+
+    image-build:
+        name: Production image build
+        needs: verify-release
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  ref: ${{ needs.verify-release.outputs.sha }}
+            - name: Build production image without publishing
+              run: docker build -f docker/Dockerfile .
+
+    attest-release:
+        name: Record exact-SHA release preflight attestation
+        needs:
+            - verify-release
+            - hermetic
+            - postgres-integration
+            - docs-and-links
+            - benchmark-smoke
+            - image-build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            statuses: write
+        steps:
+            - name: Record successful preflight on the verified commit
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
+                  RELEASE_TAG: v${{ inputs.release_version }}
+              run: |
+                  context="tiingojulia/release-preflight/${RELEASE_TAG}"
+                  target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  gh api --method POST \
+                    -H 'Accept: application/vnd.github+json' \
+                    "/repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_SHA}" \
+                    -f state=success \
+                    -f context="${context}" \
+                    -f description='All release preflight gates passed' \
+                    -f target_url="${target_url}"

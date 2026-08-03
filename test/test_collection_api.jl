@@ -3,7 +3,7 @@ using CSV
 using DataFrames
 using Dates
 using Logging
-using TiingoJulia
+using Tiingo
 
 struct _UnstringifiableTicker
     secret::String
@@ -264,7 +264,7 @@ end
             Date(2024, 1, 2),
         ],
     )
-    lookup = TiingoJulia.Sync.build_latest_date_lookup(latest_dates)
+    lookup = Tiingo.Sync.build_latest_date_lookup(latest_dates)
     @test lookup == Dict("VALID" => Date(2024, 1, 2))
 
     tickers = DataFrame(

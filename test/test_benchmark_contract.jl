@@ -5,10 +5,10 @@ using DBInterface
 using DuckDB
 using JSON3
 using LibPQ
-using TiingoJulia
+using Tiingo
 
 include(joinpath(@__DIR__, "..", "benchmark", "common.jl"))
-using .TiingoJuliaBench
+using .TiingoBench
 
 function _benchmark_test_config(; kwargs...)
     defaults = (
@@ -271,7 +271,7 @@ end
     project = read(joinpath(benchmark_directory, "Project.toml"), String)
     for dependency in (
         "BenchmarkTools", "DataFrames", "Dates", "DBInterface", "DuckDB",
-        "JSON3", "LibPQ", "TiingoJulia",
+        "JSON3", "LibPQ", "Tiingo",
     )
         @test occursin(dependency, project)
     end
@@ -377,7 +377,7 @@ end
                     "'SELECT ''tiingojulia_benchmark''::name'",
                     "CREATE FUNCTION $hostile_schema.shobj_description(oid, text) " *
                     "RETURNS text LANGUAGE sql IMMUTABLE AS " *
-                    "'SELECT ''tiingojulia-disposable-benchmark-v1''::text'",
+                    "'SELECT ''tiingo-disposable-benchmark-v1''::text'",
                     "CREATE TABLE $hostile_schema.pg_database " *
                     "(oid oid, datname name)",
                     "INSERT INTO $hostile_schema.pg_database " *
@@ -405,7 +405,7 @@ end
                 close(LibPQ.execute(
                     connection,
                     "COMMENT ON DATABASE tiingojulia_benchmark IS " *
-                    "'tiingojulia-disposable-benchmark-v1'",
+                    "'tiingo-disposable-benchmark-v1'",
                 ))
                 close(LibPQ.execute(
                     connection,

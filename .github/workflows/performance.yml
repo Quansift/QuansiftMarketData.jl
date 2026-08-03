@@ -114,7 +114,7 @@ jobs:
                   psql --host=localhost --username=postgres
                   --dbname=tiingojulia_benchmark --set=ON_ERROR_STOP=1
                   --command="COMMENT ON DATABASE tiingojulia_benchmark
-                  IS 'tiingojulia-disposable-benchmark-v1'"
+                  IS 'tiingo-disposable-benchmark-v1'"
             - name: Run disposable PostgreSQL regression
               env:
                   TIINGO_TEST_BENCH_PG_CONNECTION: postgresql://postgres:postgres@localhost:5432/tiingojulia_benchmark?sslmode=disable

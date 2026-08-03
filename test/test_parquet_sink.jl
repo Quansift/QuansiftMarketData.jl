@@ -3,7 +3,7 @@ using DataFrames
 using Dates
 using DBInterface
 using DuckDB
-using TiingoJulia
+using Tiingo
 
 function _read_parquet_fixture(path::String)::DataFrame
     conn = DBInterface.connect(DuckDB.DB)
@@ -82,7 +82,7 @@ end
 end
 
 @testset "Parquet publication failures preserve destinations and clean temporary files" begin
-    parquet_module = TiingoJulia.DB.Parquet
+    parquet_module = Tiingo.DB.Parquet
 
     mktempdir() do directory
         destination = joinpath(directory, "prices.parquet")
@@ -118,7 +118,7 @@ end
 end
 
 @testset "Parquet no-overwrite publication is race safe" begin
-    parquet_module = TiingoJulia.DB.Parquet
+    parquet_module = Tiingo.DB.Parquet
 
     mktempdir() do directory
         source = joinpath(directory, "source.parquet")

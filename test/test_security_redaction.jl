@@ -1,7 +1,7 @@
 using Test
 using DataFrames
 using Dates
-using TiingoJulia
+using Tiingo
 
 @testset "Writer failures redact database credentials" begin
     tickers = DataFrame(

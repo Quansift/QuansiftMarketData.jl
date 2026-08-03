@@ -1,24 +1,24 @@
-# TiingoJulia
+# Tiingo.jl
 
-TiingoJulia is a Julia library for collecting Tiingo end-of-day stock and ETF
+Tiingo is a Julia library for collecting Tiingo end-of-day stock and ETF
 prices and Fundamentals data, normalizing responses into `DataFrame`s, and
 persisting those frames through independent PostgreSQL, Parquet, or DuckDB
 primitives.
 
-[![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/TiingoJulia/actions)
-[![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/TiingoJulia/dev)
-[![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/TiingoJulia/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/TiingoJulia/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/Tiingo.jl/actions)
+[![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/Tiingo.jl/dev)
+[![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/Tiingo.jl/actions)
 
 ## Responsibility boundary
 
-TiingoJulia owns:
+Tiingo owns:
 
 - Tiingo HTTP access and response validation;
 - ticker, EOD price, and Fundamentals normalization;
 - idempotent EOD and Fundamentals upserts for PostgreSQL and DuckDB; and
 - verified atomic local Parquet writes with explicit overwrite behavior.
 
-TiingoJulia does not own cron or systemd scheduling, cross-stage retries,
+Tiingo does not own cron or systemd scheduling, cross-stage retries,
 object-store publication, Managed PostgreSQL deployment, notifications, or
 QuantScreener/TATSU sequencing.
 
@@ -30,7 +30,7 @@ PostgreSQL. DuckDB remains available for local analysis and backward
 compatibility; it is not a required production source of record.
 
 The rolling three-year rule applies only to DigitalOcean Managed PostgreSQL
-publication. System PostgreSQL and Parquet retain full history, and TiingoJulia
+publication. System PostgreSQL and Parquet retain full history, and Tiingo
 imposes no DuckDB retention period — consumers bound local DuckDB state to their
 own analysis needs. A separate three-year default exists for the `sync_fundamentals!`
 initial backfill window; it is unrelated to the Managed PostgreSQL publication rule.
@@ -39,7 +39,7 @@ initial backfill window; it is unrelated to the Managed PostgreSQL publication r
 
 ```julia
 using Pkg
-Pkg.add("TiingoJulia")
+Pkg.add("Tiingo")
 ```
 
 For repository development:
@@ -61,7 +61,7 @@ TIINGO_API_KEY=your_api_key_here
 ```
 
 `.env` is ignored by git. Do not commit secrets. Set overrides before running
-`using TiingoJulia`.
+`using Tiingo`.
 
 Common optional settings include:
 
@@ -93,7 +93,7 @@ Use `normalize_eod_prices` as the canonical schema and date-range validation
 boundary before passing externally supplied payloads to a persistence writer:
 
 ```julia
-using TiingoJulia
+using Tiingo
 using DataFrames
 using Dates
 
@@ -134,14 +134,14 @@ three-year initial backfill default.
 ## Choose a persistence primitive
 
 The sinks are independent. Applications can select PostgreSQL, Parquet,
-DuckDB, or more than one without adopting a TiingoJulia scheduler.
+DuckDB, or more than one without adopting a Tiingo scheduler.
 
 ### PostgreSQL
 
 The PostgreSQL overloads use the same upsert names as the existing DuckDB API:
 
 ```julia
-using TiingoJulia
+using Tiingo
 
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
@@ -198,11 +198,11 @@ end
 
 `write_parquet` returns `ParquetWriteResult` with `path`, `rows`, `columns`, and
 `bytes`. The default is no-overwrite; pass `overwrite=true` only when replacing
-the target is intentional. TiingoJulia verifies the temporary file before an
+the target is intentional. Tiingo verifies the temporary file before an
 atomic local publication; the calling application owns remote upload,
 manifests, retention, and publication ordering.
 
-PostgreSQL table snapshots use DuckDB's `postgres` extension. TiingoJulia only
+PostgreSQL table snapshots use DuckDB's `postgres` extension. Tiingo only
 runs `LOAD postgres` and never downloads extensions at runtime. Preinstall the
 matching extension while building the deployment image or environment:
 
@@ -218,7 +218,7 @@ during the image build.
 The existing DuckDB workflow remains supported:
 
 ```julia
-using TiingoJulia
+using Tiingo
 
 conn = connect_duckdb("analysis.duckdb")
 try
@@ -249,7 +249,7 @@ analysis needs. Do not treat it as an additional required full-history archive.
 
 System PostgreSQL is the source of record and Parquet is the full-history
 archive, so routing full history through DuckDB duplicates both. These entry
-points are deprecated and targeted for removal in 2.0.0:
+points are deprecated and targeted for removal in a future major release:
 
 | Deprecated | Replacement |
 | --- | --- |
@@ -302,7 +302,7 @@ TIINGO_TEST_PG_CONNECTION='postgresql://user:password@localhost:5432/tiingojulia
   `download_tickers_duckdb`, `update_historical`, `optimize_database`,
   `create_indexes`
 
-See the generated [documentation](https://quansift.github.io/TiingoJulia/dev)
+See the generated [documentation](https://quansift.github.io/Tiingo.jl/dev)
 for complete signatures.
 
 ## Performance

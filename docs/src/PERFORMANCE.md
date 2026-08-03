@@ -1,7 +1,7 @@
-# TiingoJulia performance guide
+# Tiingo performance guide
 
 This guide covers Tiingo request concurrency and sink-specific tuning.
-TiingoJulia does not prescribe a production scheduler or storage topology.
+Tiingo does not prescribe a production scheduler or storage topology.
 
 For Quansift production, system PostgreSQL plus Parquet is the selected path.
 DuckDB tuning applies only to consumers that choose the optional local-analysis
@@ -159,7 +159,7 @@ For best results:
    retried idempotently.
 4. Measure database locks, write latency, and row counts at the consumer.
 
-TiingoJulia provides the persistence primitive. Connection pooling, job
+Tiingo provides the persistence primitive. Connection pooling, job
 parallelism, retry scheduling, and replica/publication policy remain consumer
 responsibilities.
 
@@ -189,7 +189,7 @@ Practical guidance:
 - let the consuming scheduler upload files and publish remote manifests only
   after required writes succeed.
 
-Remote object-store performance and retention are outside TiingoJulia.
+Remote object-store performance and retention are outside Tiingo.
 PostgreSQL snapshots require DuckDB's `postgres` extension to be preinstalled
 for the matching DuckDB version and platform. Runtime collection only executes
 `LOAD postgres` and does not download extensions.

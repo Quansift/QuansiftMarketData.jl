@@ -1,7 +1,7 @@
 using ..DB.Core: DuckDBConnection, validate_identifier, validate_file_path, validate_sql_value
 using ..DB.Operations
 using ..API: get_ticker_data, get_api_key
-using ..TiingoJulia: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
+using ..Tiingo: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
 
 function _canonical_ticker_universe_frame()::DataFrame
     return DataFrame(

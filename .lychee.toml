@@ -3,7 +3,7 @@ exclude = [
   "^https://github.com/.*/compare/.*\\.\\.\\.HEAD$",
   "^https://github.com/.*/releases/tag/v.*$",
   "^https://doi.org/FIXME$",
-  "^https://quansift.github.io/TiingoJulia",
+  "^https://quansift.github.io/Tiingo.jl",
   "zenodo.org/badge/DOI/FIXME$",
   "^https://blog.esciencecenter.nl/the-utopic-git-history",
   "^https://pipx.pypa.io/?$"

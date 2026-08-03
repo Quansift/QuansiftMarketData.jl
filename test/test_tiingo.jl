@@ -1,9 +1,9 @@
-using TiingoJulia
+using Tiingo
 using Test
 using DataFrames
 using DBInterface
 
-@testset "TiingoJulia" begin
+@testset "Tiingo" begin
     if haskey(ENV, "TIINGO_API_KEY") && !isempty(ENV["TIINGO_API_KEY"])
         @test isa(get_api_key(), String)
         @test !isempty(get_api_key())

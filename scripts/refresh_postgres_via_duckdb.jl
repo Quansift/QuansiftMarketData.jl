@@ -11,7 +11,7 @@
 
 ENV["TIINGO_LOGGER"] = get(ENV, "TIINGO_LOGGER", "console")
 
-using TiingoJulia
+using Tiingo
 using DBInterface
 using DuckDB
 using DataFrames
@@ -19,9 +19,9 @@ using Logging
 using Dates
 
 # Reuse the package's PostgreSQL extension and ATTACH mechanisms.
-import TiingoJulia.DB.Postgres: connection_options_map, load_postgres_extension!
-import TiingoJulia.DB.Postgres: postgres_env_vars, with_temporary_env
-import TiingoJulia.DB.Core: validate_identifier
+import Tiingo.DB.Postgres: connection_options_map, load_postgres_extension!
+import Tiingo.DB.Postgres: postgres_env_vars, with_temporary_env
+import Tiingo.DB.Core: validate_identifier
 
 const DEFAULT_PG_CONN_STR = "postgresql://postgres@127.0.0.1:5432/tiingo?sslmode=disable"
 const DEFAULT_DUCKDB_PATH = "data/tiingo_local.duckdb"

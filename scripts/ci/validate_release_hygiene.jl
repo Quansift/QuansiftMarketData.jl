@@ -3,7 +3,7 @@
 using Dates
 using TOML
 import Pkg
-import TiingoJulia
+import Tiingo
 
 struct ReleaseHygieneError <: Exception
     message::String
@@ -372,10 +372,10 @@ end
 
 function _current_migration_metadata()
     try
-        schema = TiingoJulia.DB.Schema
+        schema = Tiingo.DB.Schema
         migrations = schema.POSTGRES_MIGRATIONS
         return (
-            schema_version = TiingoJulia.POSTGRES_SCHEMA_VERSION,
+            schema_version = Tiingo.POSTGRES_SCHEMA_VERSION,
             versions = [migration.version for migration in migrations],
             checksums_valid = all(
                 migration -> migration.checksum == schema.migration_checksum(

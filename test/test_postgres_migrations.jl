@@ -1,8 +1,8 @@
 using Test
 using LibPQ
-using TiingoJulia
+using Tiingo
 
-const MigrationSchema = TiingoJulia.DB.Schema
+const MigrationSchema = Tiingo.DB.Schema
 
 @testset "PostgreSQL migration public contract" begin
     @test POSTGRES_SCHEMA_VERSION == 1

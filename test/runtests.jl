@@ -14,7 +14,7 @@ using Logging
 using LoggingExtras
 using TimeSeries
 
-using TiingoJulia
+using Tiingo
 using Test
 
 

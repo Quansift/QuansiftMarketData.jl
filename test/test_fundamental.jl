@@ -2,7 +2,7 @@ using Test
 using Dates
 using DataFrames
 using TimeSeries
-using TiingoJulia
+using Tiingo
 
 struct OrdinaryFundamentalFetcherError <: Exception
     message::String

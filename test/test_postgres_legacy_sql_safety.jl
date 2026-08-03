@@ -1,11 +1,11 @@
 using Test
 using DataFrames
-using TiingoJulia
-using TiingoJulia.DB.Schema:
+using Tiingo
+using Tiingo.DB.Schema:
     generate_create_table_query,
     map_duckdb_to_postgres_type,
     quote_postgres_identifier
-using TiingoJulia.DB.Postgres:
+using Tiingo.DB.Postgres:
     generate_dataframe_insert_query,
     generate_refresh_upsert_query
 

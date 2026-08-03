@@ -1,16 +1,16 @@
 using Test
 using DataFrames
 using Logging
-using TiingoJulia
-using TiingoJulia.DB.Schema:
+using Tiingo
+using Tiingo.DB.Schema:
     generate_create_table_query,
     qualified_postgres_identifier
-using TiingoJulia.DB.Postgres:
+using Tiingo.DB.Postgres:
     generate_dataframe_insert_query,
     generate_refresh_upsert_query
 
 @testset "PostgreSQL connection errors never expose credentials" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
     fake_user = "security-review-user"
     fake_secret = "security-review-password"
     malformed = "postgresql://$fake_user:$fake_secret@[invalid/database"
@@ -55,7 +55,7 @@ using TiingoJulia.DB.Postgres:
 end
 
 @testset "Canonical PostgreSQL SQL is public-schema qualified" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
     @test qualified_postgres_identifier("Historical_Data") ==
           "\"public\".\"historical_data\""
     @test qualified_postgres_identifier("stage"; schema="pg_temp") ==

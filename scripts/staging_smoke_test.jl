@@ -4,7 +4,7 @@ using Dates
 using DBInterface
 using DataFrames
 using Logging
-using TiingoJulia
+using Tiingo
 
 function parse_bool_env(name::String, default::Bool)::Bool
     raw = lowercase(strip(get(ENV, name, default ? "true" : "false")))

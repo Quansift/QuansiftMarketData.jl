@@ -1,5 +1,5 @@
 using Test
-using TiingoJulia
+using Tiingo
 
 struct CallablePostgresOpener
     connection
@@ -23,7 +23,7 @@ end
         push!(events, :close)
     end
 
-    @test TiingoJulia.DB.initialize_owned_duckdb(
+    @test Tiingo.DB.initialize_owned_duckdb(
         "offline.duckdb";
         connector,
         initializer = _ -> push!(events, :initialize),
@@ -32,7 +32,7 @@ end
     @test events == [:open, :initialize]
 
     empty!(events)
-    @test_throws ErrorException TiingoJulia.DB.initialize_owned_duckdb(
+    @test_throws ErrorException Tiingo.DB.initialize_owned_duckdb(
         "offline.duckdb";
         connector,
         initializer = _ -> begin
@@ -53,7 +53,7 @@ end
         push!(events, :close)
     end
 
-    @test TiingoJulia.DB.Postgres.open_validated_postgres_connection(
+    @test Tiingo.DB.Postgres.open_validated_postgres_connection(
         "offline";
         opener,
         validator = _ -> push!(events, :validate),
@@ -62,7 +62,7 @@ end
     @test events == [:open, :validate]
 
     empty!(events)
-    @test_throws ErrorException TiingoJulia.DB.Postgres.open_validated_postgres_connection(
+    @test_throws ErrorException Tiingo.DB.Postgres.open_validated_postgres_connection(
         "offline";
         opener,
         validator = _ -> begin

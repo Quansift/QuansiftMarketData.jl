@@ -3,7 +3,7 @@ using Dates
 using DataFrames
 using DuckDB
 using DBInterface
-using TiingoJulia
+using Tiingo
 
 @testset "Official meta reconciles as observations without invented validity" begin
     observed_at = DateTime(2026, 7, 19, 12)

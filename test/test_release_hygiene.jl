@@ -54,7 +54,7 @@ julia = "1.9"
 
 - Initial release.
 """
-        release_link = released ? "\n[$version]: https://github.com/Quansift/TiingoJulia/compare/v1.0.0...v$version" : ""
+        release_link = released ? "\n[$version]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...v$version" : ""
         unreleased_base = released ? version : "1.0.0"
         unreleased_body = unreleased_entry ? "\n### Added\n\n- Not yet released.\n" : ""
         write(joinpath(directory, "CHANGELOG.md"), """
@@ -63,8 +63,8 @@ julia = "1.9"
 ## [Unreleased]
 $unreleased_body
 $release_section
-[unreleased]: https://github.com/Quansift/TiingoJulia/compare/v$unreleased_base...HEAD$release_link
-[1.0.0]: https://github.com/Quansift/TiingoJulia/releases/tag/v1.0.0
+[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v$unreleased_base...HEAD$release_link
+[1.0.0]: https://github.com/Quansift/Tiingo.jl/releases/tag/v1.0.0
 """)
         release_citation = complete_citation ? """
 version: $version
@@ -75,7 +75,7 @@ cff-version: 1.2.0
 title: FixturePackage.jl
 message: Please cite this software.
 type: software
-repository-code: https://github.com/Quansift/TiingoJulia
+repository-code: https://github.com/Quansift/Tiingo.jl
 license: MIT
 $release_citation
 authors:
@@ -218,7 +218,7 @@ supported_asset_types = ["Stock"]
         for (field, original) in (
             ("title", "FixturePackage.jl"),
             ("message", "Please cite this software."),
-            ("repository-code", "https://github.com/Quansift/TiingoJulia"),
+            ("repository-code", "https://github.com/Quansift/Tiingo.jl"),
             ("license", "MIT"),
         ), empty_value in ("\"\"", "\"   \"", "''", "'   '")
             mktempdir() do directory
@@ -429,7 +429,7 @@ supported_asset_types = ["Stock"]
             @test occursin("docker build", preflight)
             @test occursin("attest-release:", preflight)
             @test occursin("statuses: write", preflight)
-            @test occursin("tiingojulia/release-preflight/", preflight)
+            @test occursin("tiingo/release-preflight/", preflight)
             @test occursin(
                 "run-name: Release preflight v\${{ inputs.release_version }} @ \${{ inputs.release_ref }}",
                 preflight,
@@ -488,7 +488,7 @@ supported_asset_types = ["Stock"]
             source = read(joinpath(workflow_directory, filename), String)
             @test occursin("git rev-parse 'HEAD^{commit}'", source)
             @test occursin("/statuses?per_page=100", source)
-            @test occursin("tiingojulia/release-preflight/", source)
+            @test occursin("tiingo/release-preflight/", source)
             @test occursin("actions: read", source)
             @test occursin("contents: read", source)
             @test occursin("statuses: read", source)

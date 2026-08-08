@@ -4,9 +4,9 @@ using Dates
 using DBInterface
 using DuckDB
 using LibPQ
-using TiingoJulia
+using Tiingo
 
-const MigrationSchemaIntegration = TiingoJulia.DB.Schema
+const MigrationSchemaIntegration = Tiingo.DB.Schema
 
 function _pg_integration_query(conn::LibPQ.Connection, sql::String)::DataFrame
     result = LibPQ.execute(conn, sql)

@@ -1,10 +1,10 @@
-module TiingoJuliaBench
+module TiingoBench
 
 using DataFrames
 using Dates
 using JSON3
 using SHA
-using TiingoJulia
+using Tiingo
 
 export BENCHMARK_RESULT_SCHEMA_VERSION
 export MAX_TICKERS, MAX_TRADING_DAYS, MAX_SAMPLES, MAX_ITERATIONS
@@ -24,7 +24,7 @@ const MAX_SAMPLES = 20
 const MAX_ITERATIONS = 500
 const MAX_ELAPSED_SECONDS = 3_600
 const POSTGRES_DISPOSABLE_ACK = "I_ACKNOWLEDGE_THIS_DATABASE_IS_DISPOSABLE"
-const POSTGRES_DISPOSABLE_MARKER = "tiingojulia-disposable-benchmark-v1"
+const POSTGRES_DISPOSABLE_MARKER = "tiingo-disposable-benchmark-v1"
 const VALID_MODES = (:micro, :load, :soak)
 const VALID_SINKS = (:local, :duckdb, :parquet, :postgres)
 const CANONICAL_EOD_COLUMNS = [
@@ -238,7 +238,7 @@ function synthetic_eod_frame(
 end
 
 function with_benchmark_tempdir(f::Function)
-    directory = mktempdir(; prefix="tiingojulia-benchmark-")
+    directory = mktempdir(; prefix="tiingo-benchmark-")
     try
         return f(directory)
     finally
@@ -304,7 +304,7 @@ function environment_metadata(
     )
     return Dict{String,Any}(
         "julia_version" => string(VERSION),
-        "package_version" => _package_version(TiingoJulia),
+        "package_version" => _package_version(Tiingo),
         "dependency_versions" => dependencies,
         "os" => string(Sys.KERNEL),
         "architecture" => string(Sys.ARCH),

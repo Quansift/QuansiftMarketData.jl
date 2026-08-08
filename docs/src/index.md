@@ -1,24 +1,24 @@
 ```@meta
-CurrentModule = TiingoJulia
+CurrentModule = Tiingo
 ```
 
-# TiingoJulia.jl
+# Tiingo.jl
 
-TiingoJulia is an open source Julia package for collecting Tiingo end-of-day stock
+Tiingo is an open source Julia package for collecting Tiingo end-of-day stock
 and ETF prices and Fundamentals data, normalizing responses into `DataFrame`s, and
 persisting those frames through independent PostgreSQL, Parquet, or DuckDB
 primitives.
 
 ## Responsibility boundary
 
-TiingoJulia owns:
+Tiingo owns:
 
 - Tiingo HTTP access and response validation;
 - ticker, EOD price, and Fundamentals normalization into canonical `DataFrame`s;
 - idempotent EOD and Fundamentals upserts for PostgreSQL and DuckDB; and
 - verified atomic local Parquet writes with explicit overwrite behavior.
 
-TiingoJulia does not own cron or systemd scheduling, cross-stage retries,
+Tiingo does not own cron or systemd scheduling, cross-stage retries,
 object-store publication, Managed PostgreSQL deployment, notifications, or
 QuantScreener/TATSU sequencing.
 
@@ -27,7 +27,7 @@ QuantScreener/TATSU sequencing.
 The Quansift production workflow selects system PostgreSQL as its authoritative
 relational store and Parquet as its full-history interchange/archive format:
 
-1. TiingoJulia collects Tiingo EOD prices and Fundamentals, normalizes them into
+1. Tiingo collects Tiingo EOD prices and Fundamentals, normalizes them into
    `DataFrame`s, and upserts them into the system PostgreSQL source of record.
 2. `quansift_scheduler` exports full history from system PostgreSQL as Parquet and
    publishes it to DigitalOcean Spaces.
@@ -60,7 +60,8 @@ Persistence primitives are independent and can be combined freely:
 The DuckDB-first *full-history* path — `export_to_postgres`, `update_historical`
 and its parallel/sequential variants, `download_tickers_duckdb`,
 `add_historical_data`, and `update_split_ticker` — is deprecated and targeted for
-removal in 2.0.0, because system PostgreSQL and Parquet already hold full history.
+removal in a future major release, because system PostgreSQL and Parquet already
+hold full history.
 DuckDB itself is not deprecated. See `README.md` for the replacement for each entry
 point.
 

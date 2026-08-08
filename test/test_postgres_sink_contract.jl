@@ -4,11 +4,11 @@ using Dates
 using DBInterface
 using DuckDB
 using LibPQ
-using TiingoJulia
+using Tiingo
 
 @testset "PostgreSQL sink dispatch" begin
-    postgres_module = TiingoJulia.DB.Postgres
-    schema_module = TiingoJulia.DB.Schema
+    postgres_module = Tiingo.DB.Postgres
+    schema_module = Tiingo.DB.Schema
 
     @test PostgreSQLConnection === LibPQ.Connection
 
@@ -46,7 +46,7 @@ using TiingoJulia
 end
 
 @testset "PostgreSQL temporary environment is serialized and restored" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
     variable = "TIINGO_TEST_TEMPORARY_ENV_LOCK"
     original = get(ENV, variable, nothing)
     pop!(ENV, variable, nothing)
@@ -82,7 +82,7 @@ end
 end
 
 @testset "DuckDB PostgreSQL extension setup is load-only and fail-closed" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
     postgres_source = read(
         joinpath(@__DIR__, "..", "src", "db", "postgres.jl"),
         String,
@@ -141,7 +141,7 @@ end
 end
 
 @testset "PostgreSQL upsert column mappings" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
     mapping_contracts = [
         postgres_module.STOCK_COLUMN_MAPPINGS,
         postgres_module.SECURITY_OBSERVATION_COLUMN_MAPPINGS,

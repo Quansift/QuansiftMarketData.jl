@@ -73,9 +73,9 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
 - Existing rules in `.Codex/rules/` take highest priority
 - Research notes are stored in `.Codex/docs/research/` (keep empty when distributing templates)
 
-## 10) TiingoJulia Responsibility Boundary
+## 10) Tiingo Responsibility Boundary
 
-- TiingoJulia owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
+- Tiingo owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
   canonical `DataFrame` normalization; and PostgreSQL, verified atomic Parquet,
   and optional DuckDB persistence primitives.
 - `quansift_scheduler` owns cron, stage orchestration, DigitalOcean Spaces,
@@ -86,7 +86,7 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
   The rolling three-year rule belongs exclusively to Managed PostgreSQL
   publication and must not be restated as a DuckDB requirement.
 - The DuckDB-first full-history path is deprecated and targeted for removal in
-  2.0.0: `export_to_postgres`, `update_historical`,
+  a future major release: `export_to_postgres`, `update_historical`,
   `update_historical_parallel`, `update_historical_sequential`,
   `download_tickers_duckdb`, `add_historical_data`, and `update_split_ticker`.
   Do not add new callers. New work uses `collect_historical` with a

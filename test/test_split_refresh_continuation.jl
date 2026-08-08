@@ -2,7 +2,7 @@ using Test
 using Dates
 using DataFrames
 using DBInterface
-using TiingoJulia
+using Tiingo
 
 function _split_refresh_fixture(date::Date, close::Float64)
     return DataFrame(
@@ -60,7 +60,7 @@ end
             return _split_refresh_fixture(Date(2024, 1, 2), 50.0)
         end
 
-        result = TiingoJulia.Sync._collect_split_historical(
+        result = Tiingo.Sync._collect_split_historical(
             conn,
             split_targets,
             tickers,

@@ -7,10 +7,10 @@ using DBInterface
 using DuckDB
 using JSON3
 using LibPQ
-using TiingoJulia
+using Tiingo
 
 include(joinpath(@__DIR__, "common.jl"))
-using .TiingoJuliaBench
+using .TiingoBench
 
 const CANONICAL_EOD_SELECT =
     "ticker, date, close, high, low, open, volume, " *

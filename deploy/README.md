@@ -2,7 +2,7 @@
 
 The files in this directory package `scripts/staging_smoke_test.jl` as a
 one-shot container and retain legacy systemd/launchd wrappers for existing
-users. They validate TiingoJulia in a real runtime; they are not the canonical
+users. They validate Tiingo in a real runtime; they are not the canonical
 Quansift production scheduler.
 
 `quansift_scheduler` owns production scheduling, cross-stage retries,

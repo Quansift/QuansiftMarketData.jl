@@ -6,8 +6,8 @@ using DBInterface
 using HTTP
 using JSON3
 
-# Import the functions yousing TiingoJulia
-using TiingoJulia.API
+# Import the functions using Tiingo
+using Tiingo.API
 
 @testset "API Tests" begin
     @testset "get_api_key" begin
@@ -131,7 +131,7 @@ using TiingoJulia.API
 
             # Test the function with a simple case
             try
-                TiingoJulia.download_tickers_duckdb(conn)
+                Tiingo.download_tickers_duckdb(conn)
                 @test true
             catch e
                 @test e isa Exception
@@ -172,7 +172,7 @@ using TiingoJulia.API
     #     )
 
     #     # Run the function
-    #     TiingoJulia.generate_filtered_tickers(conn)
+    #     Tiingo.generate_filtered_tickers(conn)
 
     #     # Check the results
     #     result =

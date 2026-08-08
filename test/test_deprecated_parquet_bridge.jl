@@ -3,10 +3,10 @@ using DataFrames
 using DBInterface
 using DuckDB
 using LibPQ
-using TiingoJulia
+using Tiingo
 
 @testset "deprecated Parquet bridge owns only its temporary artifacts" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
 
     mktempdir() do caller_directory
         caller_path = joinpath(caller_directory, "caller-owned.parquet")
@@ -42,7 +42,7 @@ using TiingoJulia
 end
 
 @testset "retained Parquet writer owns a private same-directory temporary path" begin
-    parquet_module = TiingoJulia.DB.Parquet
+    parquet_module = Tiingo.DB.Parquet
 
     mktempdir() do directory
         destination = joinpath(directory, "retained.parquet")
@@ -82,7 +82,7 @@ end
 end
 
 @testset "deprecated Parquet bridge preserves caller file on transfer failure" begin
-    postgres_module = TiingoJulia.DB.Postgres
+    postgres_module = Tiingo.DB.Postgres
 
     mktempdir() do caller_directory
         caller_path = joinpath(caller_directory, "caller-owned.parquet")

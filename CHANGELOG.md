@@ -45,13 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** renamed the package and module from `TiingoJulia` to `Tiingo`,
+  and moved the repository to `Quansift/Tiingo.jl`. Consumers must replace
+  `using TiingoJulia` with `using Tiingo`.
 - Documented the storage responsibility boundary: system PostgreSQL is the authoritative
   relational store and Parquet is the full-history interchange/archive format. DuckDB is
   optional local analysis state and is no longer a production full-history source of
   record. This repository imposes no DuckDB retention period.
 - Cross-system orchestration — DigitalOcean Spaces publication, rolling three-year
   DigitalOcean Managed PostgreSQL publication, and QuantScreener/TATSU sequencing — is
-  owned by `quansift_scheduler`, not TiingoJulia.
+  owned by `quansift_scheduler`, not Tiingo.
 - Prefer the `OHLCV_DUCKDB_PATH` and `OHLCV_PG_CONNECTION` environment variables.
 - DuckDB historical upsert is now set-based.
 - PostgreSQL `create_tables` now delegates to the versioned migration runner;
@@ -63,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
-- The DuckDB-first full-history path is deprecated and targeted for removal in 2.0.0.
+- The DuckDB-first full-history path is deprecated and targeted for removal in a
+  future major release.
   System PostgreSQL is the source of record and Parquet is the full-history archive, so
   routing full history through DuckDB duplicates both. Affected entry points:
   `export_to_postgres`, `update_historical`, `update_historical_parallel`,
@@ -108,5 +112,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/TiingoJulia/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/Quansift/TiingoJulia/releases/tag/v1.0.0
+[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Quansift/Tiingo.jl/releases/tag/v1.0.0

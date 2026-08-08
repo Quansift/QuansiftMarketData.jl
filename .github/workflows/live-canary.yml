@@ -6,7 +6,7 @@ on:
     workflow_dispatch:
 
 concurrency:
-    group: tiingojulia-live-canary
+    group: tiingo-live-canary
     cancel-in-progress: true
 
 jobs:

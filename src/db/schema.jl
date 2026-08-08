@@ -117,7 +117,7 @@ module Schema
         create_tables(conn::LibPQ.Connection)
 
     Migrate the canonical PostgreSQL schema to the version supported by this
-    TiingoJulia build. The legacy `nothing` return value is preserved.
+    Tiingo build. The legacy `nothing` return value is preserved.
     """
     function create_tables(conn::LibPQ.Connection)
         migrate_postgres!(conn)

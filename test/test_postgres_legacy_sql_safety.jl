@@ -76,7 +76,18 @@ end
         @test map_duckdb_to_postgres_type(duckdb_type) == postgres_type
     end
 
-    @test_throws ArgumentError map_duckdb_to_postgres_type("DECIMAL(18, 2)")
+    # Screener output tables are NUMERIC(p, s) in PostgreSQL, so the artifact
+    # Parquet round-trips as DECIMAL(p, s) through DuckDB's DESCRIBE.
+    @test map_duckdb_to_postgres_type("DECIMAL(12,4)") == "NUMERIC(12, 4)"
+    @test map_duckdb_to_postgres_type(" decimal(18, 2) ") == "NUMERIC(18, 2)"
+    @test map_duckdb_to_postgres_type("NUMERIC(8,4)") == "NUMERIC(8, 4)"
+
+    @test_throws ArgumentError map_duckdb_to_postgres_type("DECIMAL(4, 9)")
+    @test_throws ArgumentError map_duckdb_to_postgres_type("DECIMAL(0, 0)")
+    @test_throws ArgumentError map_duckdb_to_postgres_type("DECIMAL(12)")
+    @test_throws ArgumentError map_duckdb_to_postgres_type(
+        "DECIMAL(12,4)); DROP TABLE historical_data; --",
+    )
     @test_throws ArgumentError map_duckdb_to_postgres_type("INTEGER[]")
     @test_throws ArgumentError map_duckdb_to_postgres_type("UBIGINT")
     @test_throws ArgumentError map_duckdb_to_postgres_type(

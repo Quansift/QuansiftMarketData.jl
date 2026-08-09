@@ -268,6 +268,14 @@ module Schema
         return query
     end
 
+    # DECIMAL(p, s) / NUMERIC(p, s). Precision and scale are digits only, and the
+    # returned type is rebuilt from the parsed integers, so no caller-supplied
+    # text ever reaches the generated DDL.
+    const DECIMAL_TYPE_PATTERN = r"^(?:DECIMAL|NUMERIC)\(\s*(\d{1,4})\s*,\s*(\d{1,4})\s*\)$"
+
+    # PostgreSQL rejects NUMERIC precision outside 1..1000.
+    const MAX_NUMERIC_PRECISION = 1000
+
     """
         map_duckdb_to_postgres_type(duckdb_type::String)
 
@@ -286,10 +294,20 @@ module Schema
         )
 
         normalized_type = uppercase(strip(duckdb_type))
-        haskey(type_mapping, normalized_type) || throw(ArgumentError(
+        haskey(type_mapping, normalized_type) && return type_mapping[normalized_type]
+
+        decimal_match = match(DECIMAL_TYPE_PATTERN, normalized_type)
+        if decimal_match !== nothing
+            precision = parse(Int, decimal_match.captures[1])
+            scale = parse(Int, decimal_match.captures[2])
+            if 1 <= precision <= MAX_NUMERIC_PRECISION && 0 <= scale <= precision
+                return "NUMERIC($(precision), $(scale))"
+            end
+        end
+
+        throw(ArgumentError(
             "Unsupported DuckDB type for PostgreSQL export: '$duckdb_type'",
         ))
-        return type_mapping[normalized_type]
     end
     export create_tables, create_indexes, create_or_replace_table, list_tables
     export generate_create_table_query, map_duckdb_to_postgres_type

@@ -257,9 +257,71 @@ end
 
 const POSTGRES_V1_0_MANIFEST = _v1_manifest()
 const POSTGRES_TARGET_MANIFEST = _target_manifest()
+
+function _compatibility_export_manifest()
+    historical_columns = vcat(
+        [
+            PostgresColumnManifest("ticker", :varchar, false),
+            PostgresColumnManifest("date", :date, false),
+        ],
+        [
+            PostgresColumnManifest(
+                column.name,
+                column.data_type == :float8 ? :float4 : column.data_type,
+                true,
+            )
+            for column in _HISTORICAL_VALUE_COLUMNS
+        ],
+    )
+    observation_columns = [
+        PostgresColumnManifest("perma_ticker", :varchar, false),
+        PostgresColumnManifest("observed_at", :timestamp, false),
+        PostgresColumnManifest("ticker", :varchar, true),
+        PostgresColumnManifest("is_active", :boolean, true),
+        PostgresColumnManifest("is_adr", :boolean, true),
+        PostgresColumnManifest("daily_last_updated", :timestamp, true),
+        PostgresColumnManifest("exchange", :varchar, true),
+        PostgresColumnManifest("asset_type", :varchar, true),
+        PostgresColumnManifest("price_coverage_start", :date, true),
+        PostgresColumnManifest("price_coverage_end", :date, true),
+        PostgresColumnManifest("is_leveraged", :boolean, true),
+        PostgresColumnManifest("join_status", :varchar, true),
+    ]
+    metric_columns = [
+        PostgresColumnManifest("perma_ticker", :varchar, false),
+        PostgresColumnManifest("metric_date", :date, false),
+        PostgresColumnManifest("market_cap", :float8, true),
+        PostgresColumnManifest("enterprise_value", :float8, true),
+        PostgresColumnManifest("pe_ratio", :float8, true),
+        PostgresColumnManifest("available_at", :timestamp, true),
+        PostgresColumnManifest("fetched_at", :timestamp, true),
+        PostgresColumnManifest("source_revision", :varchar, true),
+    ]
+    return PostgresDatabaseManifest(Dict(
+        "historical_data" => _relation(
+            "historical_data",
+            historical_columns,
+            [_index("ticker", "date"; unique=true, primary=true)],
+        ),
+        "us_tickers_filtered" => _relation("us_tickers_filtered", _TICKER_COLUMNS),
+        "security_observations" => _relation(
+            "security_observations",
+            observation_columns,
+            [_index("perma_ticker", "observed_at"; unique=true, primary=true)],
+        ),
+        "fundamental_daily_metrics" => _relation(
+            "fundamental_daily_metrics",
+            metric_columns,
+            [_index("perma_ticker", "metric_date"; unique=true, primary=true)],
+        ),
+    ))
+end
+
+const POSTGRES_COMPATIBILITY_EXPORT_MANIFEST = _compatibility_export_manifest()
 const POSTGRES_LEGACY_CATALOG = Dict(
     :fresh => "no canonical application relations",
     :released_1_0_export => "released 1.0 export subset",
+    :first_party_compatibility_export => "first-party compatibility export",
     :released_1_0_plus_preledger_bootstrap => "released 1.0/current hybrid",
     :current_1_1_preledger => "current pre-ledger schema",
 )
@@ -514,6 +576,11 @@ function classify_preledger_manifest(manifest::PostgresDatabaseManifest)::Symbol
     isempty(manifest.relations) && return :fresh
     _manifest_matches(manifest, POSTGRES_TARGET_MANIFEST) &&
         return :current_1_1_preledger
+    _manifest_matches(
+        manifest,
+        POSTGRES_COMPATIBILITY_EXPORT_MANIFEST;
+        exact_indexes=true,
+    ) && return :first_party_compatibility_export
     _is_released_v1_subset(manifest) && return :released_1_0_export
     _is_preledger_hybrid(manifest) &&
         return :released_1_0_plus_preledger_bootstrap
@@ -979,6 +1046,48 @@ function _assert_legacy_historical_keys!(conn)
     return nothing
 end
 
+function _upgrade_compatibility_export!(conn)
+    invalid = _pg_dataframe(conn, """
+        SELECT
+          (SELECT count(*) FROM "public"."security_observations"
+           WHERE ticker IS NULL OR is_active IS NULL OR join_status IS NULL)
+            AS observation_nulls,
+          (SELECT count(*) FROM "public"."fundamental_daily_metrics"
+           WHERE fetched_at IS NULL) AS metric_nulls
+    """)
+    (Int(invalid.observation_nulls[1]) == 0 && Int(invalid.metric_nulls[1]) == 0) ||
+        throw(PostgresMigrationError(
+            1,
+            "canonical_v1_baseline",
+            "compatibility export has null required values; " *
+            "take a backup and repair explicitly",
+        ))
+    _pg_command(conn, """
+        ALTER TABLE "public"."historical_data"
+          ALTER COLUMN close TYPE DOUBLE PRECISION,
+          ALTER COLUMN high TYPE DOUBLE PRECISION,
+          ALTER COLUMN low TYPE DOUBLE PRECISION,
+          ALTER COLUMN open TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjclose TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjhigh TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjlow TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjopen TYPE DOUBLE PRECISION,
+          ALTER COLUMN divcash TYPE DOUBLE PRECISION,
+          ALTER COLUMN splitfactor TYPE DOUBLE PRECISION
+    """)
+    _pg_command(conn, """
+        ALTER TABLE "public"."security_observations"
+          ALTER COLUMN ticker SET NOT NULL,
+          ALTER COLUMN is_active SET NOT NULL,
+          ALTER COLUMN join_status SET NOT NULL
+    """)
+    _pg_command(conn, """
+        ALTER TABLE "public"."fundamental_daily_metrics"
+          ALTER COLUMN fetched_at SET NOT NULL
+    """)
+    return nothing
+end
+
 function _has_primary_historical_key(manifest::PostgresDatabaseManifest)
     haskey(manifest.relations, "historical_data") || return false
     return any(
@@ -988,6 +1097,8 @@ function _has_primary_historical_key(manifest::PostgresDatabaseManifest)
 end
 
 function _apply_bootstrap_transition!(conn, catalog_entry::Symbol, manifest)
+    catalog_entry == :first_party_compatibility_export &&
+        _upgrade_compatibility_export!(conn)
     for statement in POSTGRES_TARGET_DDL
         _pg_command(conn, statement)
     end

@@ -78,6 +78,7 @@ end
     @test Set(keys(MigrationSchema.POSTGRES_LEGACY_CATALOG)) == Set([
         :fresh,
         :released_1_0_export,
+        :first_party_compatibility_export,
         :released_1_0_plus_preledger_bootstrap,
         :current_1_1_preledger,
     ])
@@ -96,6 +97,55 @@ end
     @test MigrationSchema.classify_preledger_manifest(
         MigrationSchema.POSTGRES_TARGET_MANIFEST,
     ) == :current_1_1_preledger
+
+    compatibility_export = deepcopy(
+        MigrationSchema.POSTGRES_COMPATIBILITY_EXPORT_MANIFEST,
+    )
+    @test MigrationSchema.classify_preledger_manifest(compatibility_export) ==
+          :first_party_compatibility_export
+    @test compatibility_export.relations["historical_data"].columns[3].data_type ==
+          :float4
+    @test compatibility_export.relations["security_observations"].columns[3].nullable
+    @test compatibility_export.relations["fundamental_daily_metrics"].columns[7].nullable
+
+    for near_miss in (
+        let manifest = deepcopy(compatibility_export)
+            delete!(manifest.relations, "security_observations")
+            manifest
+        end,
+        let manifest = deepcopy(compatibility_export)
+            manifest.relations["us_tickers"] = deepcopy(
+                MigrationSchema.POSTGRES_TARGET_MANIFEST.relations["us_tickers"],
+            )
+            manifest
+        end,
+        let manifest = deepcopy(compatibility_export)
+            manifest.relations["historical_data"].owner_matches_current_role = false
+            manifest
+        end,
+        let manifest = deepcopy(compatibility_export)
+            manifest.relations["historical_data"].row_security = true
+            manifest
+        end,
+        let manifest = deepcopy(compatibility_export)
+            manifest.relations["historical_data"].columns[3] =
+                MigrationSchema.PostgresColumnManifest("close", :float8, true)
+            manifest
+        end,
+        let manifest = deepcopy(compatibility_export)
+            push!(
+                manifest.relations["us_tickers_filtered"].indexes,
+                deepcopy(MigrationSchema.POSTGRES_TARGET_MANIFEST.relations[
+                    "us_tickers_filtered"
+                ].indexes[1]),
+            )
+            manifest
+        end,
+    )
+        @test_throws PostgresMigrationError MigrationSchema.classify_preledger_manifest(
+            near_miss,
+        )
+    end
 
     hostile = deepcopy(MigrationSchema.POSTGRES_TARGET_MANIFEST)
     push!(

@@ -91,6 +91,88 @@ function _pg_integration_create_current_preledger(conn)
     return nothing
 end
 
+function _pg_integration_create_compatibility_export(conn)
+    schemas = Dict(
+        "historical_data" => DataFrame(
+            column_name=[
+                "ticker", "date", "close", "high", "low", "open", "volume",
+                "adjClose", "adjHigh", "adjLow", "adjOpen", "adjVolume",
+                "divCash", "splitFactor",
+            ],
+            column_type=[
+                "VARCHAR", "DATE", "FLOAT", "FLOAT", "FLOAT", "FLOAT",
+                "BIGINT", "FLOAT", "FLOAT", "FLOAT", "FLOAT", "BIGINT",
+                "FLOAT", "FLOAT",
+            ],
+        ),
+        "us_tickers_filtered" => DataFrame(
+            column_name=[
+                "ticker", "exchange", "assetType", "priceCurrency", "startDate",
+                "endDate",
+            ],
+            column_type=["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "DATE", "DATE"],
+        ),
+        "security_observations" => DataFrame(
+            column_name=[
+                "perma_ticker", "observed_at", "ticker", "is_active", "is_adr",
+                "daily_last_updated", "exchange", "asset_type",
+                "price_coverage_start", "price_coverage_end", "is_leveraged",
+                "join_status",
+            ],
+            column_type=[
+                "VARCHAR", "TIMESTAMP", "VARCHAR", "BOOLEAN", "BOOLEAN",
+                "TIMESTAMP", "VARCHAR", "VARCHAR", "DATE", "DATE", "BOOLEAN",
+                "VARCHAR",
+            ],
+        ),
+        "fundamental_daily_metrics" => DataFrame(
+            column_name=[
+                "perma_ticker", "metric_date", "market_cap", "enterprise_value",
+                "pe_ratio", "available_at", "fetched_at", "source_revision",
+            ],
+            column_type=[
+                "VARCHAR", "DATE", "DOUBLE", "DOUBLE", "DOUBLE", "TIMESTAMP",
+                "TIMESTAMP", "VARCHAR",
+            ],
+        ),
+    )
+    for name in (
+        "historical_data",
+        "us_tickers_filtered",
+        "security_observations",
+        "fundamental_daily_metrics",
+    )
+        _pg_integration_command(
+            conn,
+            MigrationSchemaIntegration.generate_create_table_query(name, schemas[name]),
+        )
+    end
+    _pg_integration_command(conn, """
+        INSERT INTO public.historical_data
+          (ticker, date, close, high, low, open, volume, adjclose, adjhigh,
+           adjlow, adjopen, adjvolume, divcash, splitfactor)
+        VALUES ('EXPORTED', DATE '2024-02-03', 0.1, 0.2, 0.3, 0.4, 123,
+                0.5, 0.6, 0.7, 0.8, 456, 0.9, 1.1)
+    """)
+    _pg_integration_command(conn, """
+        INSERT INTO public.us_tickers_filtered
+          (ticker, exchange, assettype, pricecurrency, startdate, enddate)
+        VALUES ('EXPORTED', 'NASDAQ', 'Stock', 'USD',
+                DATE '2024-01-01', DATE '2024-12-31')
+    """)
+    _pg_integration_command(conn, """
+        INSERT INTO public.security_observations
+          (perma_ticker, observed_at, ticker, is_active, join_status)
+        VALUES ('PERMA', TIMESTAMP '2024-02-03 12:00:00', 'EXPORTED', true, 'matched')
+    """)
+    _pg_integration_command(conn, """
+        INSERT INTO public.fundamental_daily_metrics
+          (perma_ticker, metric_date, market_cap, fetched_at)
+        VALUES ('PERMA', DATE '2024-02-03', 100.5, TIMESTAMP '2024-02-04 12:00:00')
+    """)
+    return nothing
+end
+
 function _pg_integration_assert_legacy_rows(conn, names)
     for name in names
         if name == "historical_data"
@@ -227,9 +309,125 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     "SELECT close FROM public.historical_data " *
                     "WHERE ticker = 'CURRENT'",
                 ).close) == 88.0
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_compatibility_export(pg)
+                unchanged_export_tables = (
+                    "us_tickers_filtered",
+                    "security_observations",
+                    "fundamental_daily_metrics",
+                )
+                before_export = Dict(name => only(_pg_integration_query(
+                    pg,
+                    "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
+                    "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
+                    "FROM public.$name t",
+                ).fingerprint) for name in unchanged_export_tables)
+                historical_stable_sql = """
+                    SELECT md5(string_agg(
+                        to_jsonb(ROW(ticker, date, volume, adjvolume))::text,
+                        '' ORDER BY ticker, date
+                    )) AS fingerprint
+                    FROM public.historical_data
+                """
+                historical_real_sql = """
+                    SELECT close::REAL, high::REAL, low::REAL, open::REAL,
+                           adjclose::REAL, adjhigh::REAL, adjlow::REAL,
+                           adjopen::REAL, divcash::REAL, splitfactor::REAL
+                    FROM public.historical_data
+                    ORDER BY ticker, date
+                """
+                historical_stable_before = only(_pg_integration_query(
+                    pg,
+                    historical_stable_sql,
+                ).fingerprint)
+                historical_real_before = _pg_integration_query(pg, historical_real_sql)
+                @test MigrationSchemaIntegration.classify_preledger_manifest(
+                    MigrationSchemaIntegration.inspect_postgres_manifest(pg),
+                ) == :first_party_compatibility_export
+                @test migrate_postgres!(pg).applied_versions == [1]
+                after_export = Dict(name => only(_pg_integration_query(
+                    pg,
+                    "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
+                    "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
+                    "FROM public.$name t",
+                ).fingerprint) for name in unchanged_export_tables)
+                @test after_export == before_export
+                @test only(_pg_integration_query(
+                    pg,
+                    historical_stable_sql,
+                ).fingerprint) == historical_stable_before
+                @test _pg_integration_query(pg, historical_real_sql) ==
+                      historical_real_before
+                @test migrate_postgres!(pg).applied_versions == Int[]
+
+                export_owner = "tiingo_test_export_owner"
+                _pg_integration_cleanup(pg)
+                _pg_integration_command(pg, "DROP ROLE IF EXISTS $export_owner")
+                _pg_integration_command(pg, "CREATE ROLE $export_owner NOLOGIN")
+                try
+                    _pg_integration_command(
+                        pg,
+                        "GRANT CREATE ON SCHEMA public TO $export_owner",
+                    )
+                    _pg_integration_create_compatibility_export(pg)
+                    for name in (
+                        "historical_data",
+                        unchanged_export_tables...,
+                    )
+                        _pg_integration_command(
+                            pg,
+                            "ALTER TABLE public.$name OWNER TO $export_owner",
+                        )
+                    end
+                    @test_throws PostgresMigrationError migrate_postgres!(pg)
+                    _pg_integration_command(pg, "SET ROLE $export_owner")
+                    @test migrate_postgres!(pg).applied_versions == [1]
+                    @test postgres_schema_version(pg) == 1
+                finally
+                    _pg_integration_command(pg, "RESET ROLE")
+                    _pg_integration_cleanup(pg)
+                    _pg_integration_command(
+                        pg,
+                        "REVOKE CREATE ON SCHEMA public FROM $export_owner",
+                    )
+                    _pg_integration_command(pg, "DROP ROLE IF EXISTS $export_owner")
+                end
             end
 
             @testset "PostgreSQL migration fail-closed ledger and rollback" begin
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_compatibility_export(pg)
+                _pg_integration_command(
+                    pg,
+                    "UPDATE public.security_observations SET ticker = NULL",
+                )
+                _pg_integration_command(
+                    pg,
+                    "UPDATE public.fundamental_daily_metrics SET fetched_at = NULL",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test postgres_schema_version(pg) == 0
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT to_regclass('public.us_tickers') AS relation",
+                ).relation))
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT data_type FROM information_schema.columns " *
+                    "WHERE table_schema = 'public' " *
+                    "AND table_name = 'historical_data' AND column_name = 'close'",
+                ).data_type) == "real"
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT ticker FROM public.security_observations",
+                ).ticker))
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT fetched_at FROM public.fundamental_daily_metrics",
+                ).fetched_at))
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
                 _pg_integration_cleanup(pg)
                 _pg_integration_command(
                     pg,

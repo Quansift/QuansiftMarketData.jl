@@ -178,6 +178,8 @@ end
 function _pg_integration_create_deployed_export(
     conn;
     primary_key_name::String="scheduler filtered ticker pkey",
+    create_filtered_stocks::Bool=true,
+    foreign_key_delete_action::String="CASCADE",
 )
     _pg_integration_create_compatibility_export(conn)
     _pg_integration_command(conn, """
@@ -209,15 +211,21 @@ function _pg_integration_create_deployed_export(
         "CREATE INDEX scheduler_filtered_exchange " *
         "ON public.us_tickers_filtered (exchange)",
     )
+    create_filtered_stocks || return nothing
+    ticker_definition =
+        "ticker VARCHAR PRIMARY KEY " *
+        "CONSTRAINT filtered_stocks_ticker_fkey " *
+        "REFERENCES public.us_tickers_filtered (ticker) " *
+        "ON DELETE $foreign_key_delete_action"
     _pg_integration_command(conn, """
         CREATE TABLE public.filtered_stocks (
-            ticker VARCHAR PRIMARY KEY,
+            $ticker_definition,
             retained_value INTEGER NOT NULL
         )
     """)
     _pg_integration_command(
         conn,
-        "INSERT INTO public.filtered_stocks VALUES ('IGNORED', 7)",
+        "INSERT INTO public.filtered_stocks VALUES ('EXPORTED', 7)",
     )
     return nothing
 end
@@ -506,6 +514,26 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                             index.columns == ("ticker",),
                         filtered_indexes,
                     )
+                    deployed_fk = only(eachrow(_pg_integration_query(
+                        pg,
+                        """
+                        SELECT
+                            fk.conname,
+                            pg_get_constraintdef(fk.oid, false) AS definition,
+                            fk.conindid::regclass::text AS referenced_index,
+                            pg_get_userbyid(child.relowner) AS child_owner
+                        FROM pg_constraint fk
+                        JOIN pg_class child ON child.oid = fk.conrelid
+                        WHERE fk.conrelid = 'public.filtered_stocks'::regclass
+                          AND fk.contype = 'f'
+                        """,
+                    )))
+                    @test deployed_fk.conname == "filtered_stocks_ticker_fkey"
+                    @test deployed_fk.definition ==
+                          "FOREIGN KEY (ticker) REFERENCES us_tickers_filtered(ticker) ON DELETE CASCADE"
+                    @test deployed_fk.referenced_index ==
+                          "tiingojulia_us_tickers_filtered_ticker_bridge"
+                    @test deployed_fk.child_owner == deployed_owner
                     for columns in (("ticker",), ("assettype",), ("exchange",))
                         @test any(
                             index -> !index.unique && !index.primary &&
@@ -526,6 +554,36 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                         "WHERE ticker = 'EXPORTED'",
                     ).exchange) == "NYSE"
                     @test postgres_schema_version(pg) == 1
+                    @test migrate_postgres!(pg).applied_versions == Int[]
+                    _pg_integration_command(
+                        pg,
+                        "DELETE FROM public.us_tickers_filtered " *
+                        "WHERE ticker = 'EXPORTED'",
+                    )
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT count(*) FROM public.filtered_stocks " *
+                        "WHERE ticker = 'EXPORTED'",
+                    ).count) == 0
+
+                    _pg_integration_command(pg, "RESET ROLE")
+                    _pg_integration_cleanup(pg)
+                    _pg_integration_create_deployed_export(
+                        pg;
+                        create_filtered_stocks=false,
+                    )
+                    for name in deployed_tables[1:4]
+                        _pg_integration_command(
+                            pg,
+                            "ALTER TABLE public.$name OWNER TO $deployed_owner",
+                        )
+                    end
+                    _pg_integration_command(pg, "SET ROLE $deployed_owner")
+                    @test migrate_postgres!(pg).applied_versions == [1]
+                    @test ismissing(only(_pg_integration_query(
+                        pg,
+                        "SELECT to_regclass('public.filtered_stocks') AS relation",
+                    ).relation))
                     @test migrate_postgres!(pg).applied_versions == Int[]
                 finally
                     _pg_integration_command(pg, "RESET ROLE")
@@ -578,6 +636,27 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 _pg_integration_cleanup(pg)
                 _pg_integration_create_deployed_export(
                     pg;
+                    foreign_key_delete_action="NO ACTION",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test postgres_schema_version(pg) == 0
+                wrong_action_fk = only(eachrow(_pg_integration_query(
+                    pg,
+                    """
+                    SELECT pg_get_constraintdef(oid, false) AS definition,
+                           conindid::regclass::text AS referenced_index
+                    FROM pg_constraint
+                    WHERE conname = 'filtered_stocks_ticker_fkey'
+                    """,
+                )))
+                @test wrong_action_fk.definition ==
+                      "FOREIGN KEY (ticker) REFERENCES us_tickers_filtered(ticker)"
+                @test wrong_action_fk.referenced_index ==
+                      "\"scheduler filtered ticker pkey\""
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_deployed_export(
+                    pg;
                     primary_key_name="arbitrary Scheduler PK name",
                 )
                 _pg_integration_command(pg, """
@@ -608,6 +687,18 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     pg,
                     "SELECT ticker FROM public.tiingo_test_filtered_fk",
                 ).ticker) == "EXPORTED"
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) FROM pg_constraint " *
+                    "WHERE contype = 'f' AND confrelid = " *
+                    "'public.us_tickers_filtered'::regclass",
+                ).count) == 2
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT conindid::regclass::text AS referenced_index " *
+                    "FROM pg_constraint " *
+                    "WHERE conname = 'filtered_stocks_ticker_fkey'",
+                ).referenced_index) == "\"arbitrary Scheduler PK name\""
 
                 _pg_integration_cleanup(pg)
                 _pg_integration_create_compatibility_export(pg)

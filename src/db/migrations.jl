@@ -1139,22 +1139,128 @@ end
 
 function _upgrade_deployed_export!(conn)
     _assert_compatibility_required_values!(conn)
-    _pg_command(conn, """
-        CREATE UNIQUE INDEX tiingojulia_us_tickers_filtered_ticker_bridge
-        ON "public"."us_tickers_filtered" (ticker)
+    child_before_lock = _pg_dataframe(conn, """
+        SELECT pg_catalog.to_regclass('public.filtered_stocks') IS NOT NULL
+          AS present
     """)
+    has_filtered_stocks = Bool(child_before_lock.present[1])
+    lock_targets = has_filtered_stocks ?
+        "\"public\".\"us_tickers_filtered\", \"public\".\"filtered_stocks\"" :
+        "\"public\".\"us_tickers_filtered\""
+    _pg_command(conn, "LOCK TABLE $lock_targets IN ACCESS EXCLUSIVE MODE")
+
+    child_after_lock = _pg_dataframe(conn, """
+        SELECT pg_catalog.to_regclass('public.filtered_stocks') IS NOT NULL
+          AS present
+    """)
+    Bool(child_after_lock.present[1]) == has_filtered_stocks || throw(
+        PostgresMigrationError(
+            1,
+            "canonical_v1_baseline",
+            "filtered_stocks changed while acquiring migration locks; retry migration",
+        ),
+    )
+
     primary = _pg_dataframe(conn, """
-        SELECT constraint_name
-        FROM information_schema.table_constraints
-        WHERE table_schema = 'public'
-          AND table_name = 'us_tickers_filtered'
-          AND constraint_type = 'PRIMARY KEY'
+        SELECT primary_key.conindid::bigint AS index_oid,
+               primary_key.conname AS constraint_name
+        FROM pg_catalog.pg_constraint primary_key
+        JOIN pg_catalog.pg_class parent
+          ON parent.oid = primary_key.conrelid
+        JOIN pg_catalog.pg_namespace parent_namespace
+          ON parent_namespace.oid = parent.relnamespace
+        WHERE parent_namespace.nspname = 'public'
+          AND parent.relname = 'us_tickers_filtered'
+          AND primary_key.contype = 'p'
     """)
     nrow(primary) == 1 || throw(PostgresMigrationError(
         1,
         "canonical_v1_baseline",
-        "deployed ticker export must have exactly one primary key constraint",
+        "locked deployed ticker export must have exactly one primary key constraint",
     ))
+    index_oid = Int(primary.index_oid[1])
+
+    foreign_keys = _pg_dataframe(
+        conn,
+        """
+        SELECT COALESCE(
+                   foreign_key.conname = 'filtered_stocks_ticker_fkey'
+                   AND foreign_key.connamespace =
+                       'public'::regnamespace
+                   AND foreign_key.conkey =
+                       ARRAY[child_ticker.attnum]::smallint[]
+                   AND foreign_key.confkey =
+                       ARRAY[parent_ticker.attnum]::smallint[]
+                   AND foreign_key.convalidated
+                   AND NOT foreign_key.condeferrable
+                   AND NOT foreign_key.condeferred
+                   AND foreign_key.confmatchtype = 's'
+                   AND foreign_key.confupdtype = 'a'
+                   AND foreign_key.confdeltype = 'c'
+                   AND foreign_key.confdelsetcols IS NULL
+                   AND foreign_key.conparentid = 0
+                   AND foreign_key.conislocal
+                   AND foreign_key.coninhcount = 0
+                   AND foreign_key.connoinherit
+                   AND pg_catalog.obj_description(
+                       foreign_key.oid,
+                       'pg_constraint'
+                   ) IS NULL
+                   AND child_namespace.nspname = 'public'
+                   AND child.relname = 'filtered_stocks'
+                   AND parent_namespace.nspname = 'public'
+                   AND parent.relname = 'us_tickers_filtered',
+                   false
+               ) AS expected,
+               foreign_key.conname AS constraint_name
+        FROM pg_catalog.pg_constraint foreign_key
+        JOIN pg_catalog.pg_class child
+          ON child.oid = foreign_key.conrelid
+        JOIN pg_catalog.pg_namespace child_namespace
+          ON child_namespace.oid = child.relnamespace
+        JOIN pg_catalog.pg_attribute child_ticker
+          ON child_ticker.attrelid = child.oid
+         AND child_ticker.attname = 'ticker'
+         AND child_ticker.attnum > 0
+         AND NOT child_ticker.attisdropped
+        JOIN pg_catalog.pg_class parent
+          ON parent.oid = foreign_key.confrelid
+        JOIN pg_catalog.pg_namespace parent_namespace
+          ON parent_namespace.oid = parent.relnamespace
+        JOIN pg_catalog.pg_attribute parent_ticker
+          ON parent_ticker.attrelid = parent.oid
+         AND parent_ticker.attname = 'ticker'
+         AND parent_ticker.attnum > 0
+         AND NOT parent_ticker.attisdropped
+        WHERE foreign_key.contype = 'f'
+          AND foreign_key.conindid = \$1::oid
+        """,
+        Any[index_oid],
+    )
+    has_filtered_stocks_fk = nrow(foreign_keys) == 1 &&
+                             Bool(foreign_keys.expected[1])
+    (isempty(foreign_keys) || has_filtered_stocks_fk) || throw(
+        PostgresMigrationError(
+            1,
+            "canonical_v1_baseline",
+            "deployed ticker primary key has unsupported foreign-key dependencies",
+        ),
+    )
+
+    _pg_command(conn, """
+        CREATE UNIQUE INDEX tiingojulia_us_tickers_filtered_ticker_bridge
+        ON "public"."us_tickers_filtered" (ticker)
+    """)
+    if has_filtered_stocks_fk
+        foreign_key_name = quote_postgres_identifier(
+            String(foreign_keys.constraint_name[1]),
+        )
+        _pg_command(
+            conn,
+            "ALTER TABLE \"public\".\"filtered_stocks\" " *
+            "DROP CONSTRAINT $foreign_key_name",
+        )
+    end
     constraint_name = quote_postgres_identifier(String(primary.constraint_name[1]))
     _pg_command(
         conn,
@@ -1165,6 +1271,18 @@ function _upgrade_deployed_export!(conn)
         ALTER TABLE "public"."us_tickers_filtered"
           ALTER COLUMN ticker DROP NOT NULL
     """)
+    if has_filtered_stocks_fk
+        foreign_key_name = quote_postgres_identifier(
+            String(foreign_keys.constraint_name[1]),
+        )
+        _pg_command(conn, """
+            ALTER TABLE "public"."filtered_stocks"
+            ADD CONSTRAINT $foreign_key_name
+            FOREIGN KEY (ticker)
+            REFERENCES "public"."us_tickers_filtered" (ticker)
+            ON DELETE CASCADE
+        """)
+    end
     _restore_compatibility_required_not_null!(conn)
     return nothing
 end

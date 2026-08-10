@@ -79,6 +79,7 @@ end
         :fresh,
         :released_1_0_export,
         :first_party_compatibility_export,
+        :deployed_first_party_composition,
         :released_1_0_plus_preledger_bootstrap,
         :current_1_1_preledger,
     ])
@@ -107,6 +108,46 @@ end
           :float4
     @test compatibility_export.relations["security_observations"].columns[3].nullable
     @test compatibility_export.relations["fundamental_daily_metrics"].columns[7].nullable
+
+    deployed_export = deepcopy(MigrationSchema.POSTGRES_DEPLOYED_EXPORT_MANIFEST)
+    @test MigrationSchema.classify_preledger_manifest(deployed_export) ==
+          :deployed_first_party_composition
+    @test deployed_export.relations["historical_data"].columns[3].data_type ==
+          :float8
+    @test !deployed_export.relations["us_tickers_filtered"].columns[1].nullable
+    @test Set(MigrationSchema.semantic_index_key.(
+        deployed_export.relations["us_tickers_filtered"].indexes,
+    )) == Set([
+        (true, true, ("ticker",)),
+        (false, false, ("assettype",)),
+        (false, false, ("exchange",)),
+    ])
+
+    for near_miss in (
+        let manifest = deepcopy(deployed_export)
+            manifest.relations["us_tickers_filtered"].owner_matches_current_role = false
+            manifest
+        end,
+        let manifest = deepcopy(deployed_export)
+            manifest.relations["us_tickers_filtered"].columns[1] =
+                MigrationSchema.PostgresColumnManifest("ticker", :varchar, true)
+            manifest
+        end,
+        let manifest = deepcopy(deployed_export)
+            pop!(manifest.relations["us_tickers_filtered"].indexes)
+            manifest
+        end,
+        let manifest = deepcopy(deployed_export)
+            manifest.relations["us_tickers"] = deepcopy(
+                MigrationSchema.POSTGRES_TARGET_MANIFEST.relations["us_tickers"],
+            )
+            manifest
+        end,
+    )
+        @test_throws PostgresMigrationError MigrationSchema.classify_preledger_manifest(
+            near_miss,
+        )
+    end
 
     for near_miss in (
         let manifest = deepcopy(compatibility_export)

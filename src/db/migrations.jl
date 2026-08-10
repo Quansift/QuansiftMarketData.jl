@@ -318,10 +318,44 @@ function _compatibility_export_manifest()
 end
 
 const POSTGRES_COMPATIBILITY_EXPORT_MANIFEST = _compatibility_export_manifest()
+
+function _deployed_export_manifest()
+    filtered_columns = copy(_TICKER_COLUMNS)
+    filtered_columns[1] = PostgresColumnManifest("ticker", :varchar, false)
+    return PostgresDatabaseManifest(Dict(
+        "historical_data" => _relation(
+            "historical_data",
+            POSTGRES_TARGET_MANIFEST.relations["historical_data"].columns,
+            [_index("ticker", "date"; unique=true, primary=true)],
+        ),
+        "us_tickers_filtered" => _relation(
+            "us_tickers_filtered",
+            filtered_columns,
+            [
+                _index("ticker"; unique=true, primary=true),
+                _index("assettype"),
+                _index("exchange"),
+            ],
+        ),
+        "security_observations" => deepcopy(
+            POSTGRES_COMPATIBILITY_EXPORT_MANIFEST.relations[
+                "security_observations"
+            ],
+        ),
+        "fundamental_daily_metrics" => deepcopy(
+            POSTGRES_COMPATIBILITY_EXPORT_MANIFEST.relations[
+                "fundamental_daily_metrics"
+            ],
+        ),
+    ))
+end
+
+const POSTGRES_DEPLOYED_EXPORT_MANIFEST = _deployed_export_manifest()
 const POSTGRES_LEGACY_CATALOG = Dict(
     :fresh => "no canonical application relations",
     :released_1_0_export => "released 1.0 export subset",
     :first_party_compatibility_export => "first-party compatibility export",
+    :deployed_first_party_composition => "deployed exporter/scheduler composition",
     :released_1_0_plus_preledger_bootstrap => "released 1.0/current hybrid",
     :current_1_1_preledger => "current pre-ledger schema",
 )
@@ -581,6 +615,11 @@ function classify_preledger_manifest(manifest::PostgresDatabaseManifest)::Symbol
         POSTGRES_COMPATIBILITY_EXPORT_MANIFEST;
         exact_indexes=true,
     ) && return :first_party_compatibility_export
+    _manifest_matches(
+        manifest,
+        POSTGRES_DEPLOYED_EXPORT_MANIFEST;
+        exact_indexes=true,
+    ) && return :deployed_first_party_composition
     _is_released_v1_subset(manifest) && return :released_1_0_export
     _is_preledger_hybrid(manifest) &&
         return :released_1_0_plus_preledger_bootstrap
@@ -1046,7 +1085,7 @@ function _assert_legacy_historical_keys!(conn)
     return nothing
 end
 
-function _upgrade_compatibility_export!(conn)
+function _assert_compatibility_required_values!(conn)
     invalid = _pg_dataframe(conn, """
         SELECT
           (SELECT count(*) FROM "public"."security_observations"
@@ -1062,6 +1101,25 @@ function _upgrade_compatibility_export!(conn)
             "compatibility export has null required values; " *
             "take a backup and repair explicitly",
         ))
+    return nothing
+end
+
+function _restore_compatibility_required_not_null!(conn)
+    _pg_command(conn, """
+        ALTER TABLE "public"."security_observations"
+          ALTER COLUMN ticker SET NOT NULL,
+          ALTER COLUMN is_active SET NOT NULL,
+          ALTER COLUMN join_status SET NOT NULL
+    """)
+    _pg_command(conn, """
+        ALTER TABLE "public"."fundamental_daily_metrics"
+          ALTER COLUMN fetched_at SET NOT NULL
+    """)
+    return nothing
+end
+
+function _upgrade_compatibility_export!(conn)
+    _assert_compatibility_required_values!(conn)
     _pg_command(conn, """
         ALTER TABLE "public"."historical_data"
           ALTER COLUMN close TYPE DOUBLE PRECISION,
@@ -1075,16 +1133,39 @@ function _upgrade_compatibility_export!(conn)
           ALTER COLUMN divcash TYPE DOUBLE PRECISION,
           ALTER COLUMN splitfactor TYPE DOUBLE PRECISION
     """)
+    _restore_compatibility_required_not_null!(conn)
+    return nothing
+end
+
+function _upgrade_deployed_export!(conn)
+    _assert_compatibility_required_values!(conn)
     _pg_command(conn, """
-        ALTER TABLE "public"."security_observations"
-          ALTER COLUMN ticker SET NOT NULL,
-          ALTER COLUMN is_active SET NOT NULL,
-          ALTER COLUMN join_status SET NOT NULL
+        CREATE UNIQUE INDEX tiingojulia_us_tickers_filtered_ticker_bridge
+        ON "public"."us_tickers_filtered" (ticker)
     """)
+    primary = _pg_dataframe(conn, """
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_schema = 'public'
+          AND table_name = 'us_tickers_filtered'
+          AND constraint_type = 'PRIMARY KEY'
+    """)
+    nrow(primary) == 1 || throw(PostgresMigrationError(
+        1,
+        "canonical_v1_baseline",
+        "deployed ticker export must have exactly one primary key constraint",
+    ))
+    constraint_name = quote_postgres_identifier(String(primary.constraint_name[1]))
+    _pg_command(
+        conn,
+        "ALTER TABLE \"public\".\"us_tickers_filtered\" " *
+        "DROP CONSTRAINT $constraint_name",
+    )
     _pg_command(conn, """
-        ALTER TABLE "public"."fundamental_daily_metrics"
-          ALTER COLUMN fetched_at SET NOT NULL
+        ALTER TABLE "public"."us_tickers_filtered"
+          ALTER COLUMN ticker DROP NOT NULL
     """)
+    _restore_compatibility_required_not_null!(conn)
     return nothing
 end
 
@@ -1099,6 +1180,8 @@ end
 function _apply_bootstrap_transition!(conn, catalog_entry::Symbol, manifest)
     catalog_entry == :first_party_compatibility_export &&
         _upgrade_compatibility_export!(conn)
+    catalog_entry == :deployed_first_party_composition &&
+        _upgrade_deployed_export!(conn)
     for statement in POSTGRES_TARGET_DDL
         _pg_command(conn, statement)
     end

@@ -24,6 +24,8 @@ end
 
 function _pg_integration_cleanup(conn::LibPQ.Connection)
     for table in (
+        "tiingo_test_filtered_fk",
+        "filtered_stocks",
         "legacy_atomic_child",
         "legacy_atomic_second",
         "legacy_atomic_first",
@@ -170,6 +172,53 @@ function _pg_integration_create_compatibility_export(conn)
           (perma_ticker, metric_date, market_cap, fetched_at)
         VALUES ('PERMA', DATE '2024-02-03', 100.5, TIMESTAMP '2024-02-04 12:00:00')
     """)
+    return nothing
+end
+
+function _pg_integration_create_deployed_export(
+    conn;
+    primary_key_name::String="scheduler filtered ticker pkey",
+)
+    _pg_integration_create_compatibility_export(conn)
+    _pg_integration_command(conn, """
+        ALTER TABLE public.historical_data
+          ALTER COLUMN close TYPE DOUBLE PRECISION,
+          ALTER COLUMN high TYPE DOUBLE PRECISION,
+          ALTER COLUMN low TYPE DOUBLE PRECISION,
+          ALTER COLUMN open TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjclose TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjhigh TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjlow TYPE DOUBLE PRECISION,
+          ALTER COLUMN adjopen TYPE DOUBLE PRECISION,
+          ALTER COLUMN divcash TYPE DOUBLE PRECISION,
+          ALTER COLUMN splitfactor TYPE DOUBLE PRECISION
+    """)
+    quoted_key = MigrationSchemaIntegration.quote_postgres_identifier(primary_key_name)
+    _pg_integration_command(conn, """
+        ALTER TABLE public.us_tickers_filtered
+          ALTER COLUMN ticker SET NOT NULL,
+          ADD CONSTRAINT $quoted_key PRIMARY KEY (ticker)
+    """)
+    _pg_integration_command(
+        conn,
+        "CREATE INDEX scheduler_filtered_assettype " *
+        "ON public.us_tickers_filtered (assettype)",
+    )
+    _pg_integration_command(
+        conn,
+        "CREATE INDEX scheduler_filtered_exchange " *
+        "ON public.us_tickers_filtered (exchange)",
+    )
+    _pg_integration_command(conn, """
+        CREATE TABLE public.filtered_stocks (
+            ticker VARCHAR PRIMARY KEY,
+            retained_value INTEGER NOT NULL
+        )
+    """)
+    _pg_integration_command(
+        conn,
+        "INSERT INTO public.filtered_stocks VALUES ('IGNORED', 7)",
+    )
     return nothing
 end
 
@@ -393,9 +442,173 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     )
                     _pg_integration_command(pg, "DROP ROLE IF EXISTS $export_owner")
                 end
+
+                deployed_owner = "tiingo_test_deployed_migrator"
+                _pg_integration_cleanup(pg)
+                _pg_integration_command(pg, "DROP ROLE IF EXISTS $deployed_owner")
+                _pg_integration_command(pg, "CREATE ROLE $deployed_owner NOLOGIN")
+                deployed_tables = (
+                    "historical_data",
+                    "us_tickers_filtered",
+                    "security_observations",
+                    "fundamental_daily_metrics",
+                    "filtered_stocks",
+                )
+                try
+                    _pg_integration_command(
+                        pg,
+                        "GRANT CREATE ON SCHEMA public TO $deployed_owner",
+                    )
+                    _pg_integration_create_deployed_export(pg)
+                    for name in deployed_tables
+                        _pg_integration_command(
+                            pg,
+                            "ALTER TABLE public.$name OWNER TO $deployed_owner",
+                        )
+                    end
+                    @test_throws PostgresMigrationError migrate_postgres!(pg)
+                    _pg_integration_command(pg, "SET ROLE $deployed_owner")
+                    deployed_before = Dict(name => only(_pg_integration_query(
+                        pg,
+                        "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
+                        "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
+                        "FROM public.$name t",
+                    ).fingerprint) for name in deployed_tables)
+                    @test MigrationSchemaIntegration.classify_preledger_manifest(
+                        MigrationSchemaIntegration.inspect_postgres_manifest(pg),
+                    ) == :deployed_first_party_composition
+                    deployed_result = migrate_postgres!(pg)
+                    @test deployed_result.from_version == 0
+                    @test deployed_result.to_version == 1
+                    @test deployed_result.applied_versions == [1]
+                    deployed_after = Dict(name => only(_pg_integration_query(
+                        pg,
+                        "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
+                        "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
+                        "FROM public.$name t",
+                    ).fingerprint) for name in deployed_tables)
+                    @test deployed_after == deployed_before
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT is_nullable FROM information_schema.columns " *
+                        "WHERE table_schema = 'public' " *
+                        "AND table_name = 'us_tickers_filtered' " *
+                        "AND column_name = 'ticker'",
+                    ).is_nullable) == "YES"
+                    post_manifest =
+                        MigrationSchemaIntegration.inspect_postgres_manifest(pg)
+                    filtered_indexes = post_manifest.relations[
+                        "us_tickers_filtered"
+                    ].indexes
+                    @test !any(index -> index.primary, filtered_indexes)
+                    @test any(
+                        index -> index.unique && !index.primary &&
+                            index.columns == ("ticker",),
+                        filtered_indexes,
+                    )
+                    for columns in (("ticker",), ("assettype",), ("exchange",))
+                        @test any(
+                            index -> !index.unique && !index.primary &&
+                                index.columns == columns,
+                            filtered_indexes,
+                        )
+                    end
+                    _pg_integration_command(pg, """
+                        INSERT INTO public.us_tickers_filtered
+                          (ticker, exchange, assettype)
+                        VALUES ('EXPORTED', 'NYSE', 'Stock')
+                        ON CONFLICT (ticker) DO UPDATE
+                        SET exchange = EXCLUDED.exchange
+                    """)
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT exchange FROM public.us_tickers_filtered " *
+                        "WHERE ticker = 'EXPORTED'",
+                    ).exchange) == "NYSE"
+                    @test postgres_schema_version(pg) == 1
+                    @test migrate_postgres!(pg).applied_versions == Int[]
+                finally
+                    _pg_integration_command(pg, "RESET ROLE")
+                    _pg_integration_cleanup(pg)
+                    _pg_integration_command(
+                        pg,
+                        "REVOKE CREATE ON SCHEMA public FROM $deployed_owner",
+                    )
+                    _pg_integration_command(
+                        pg,
+                        "DROP ROLE IF EXISTS $deployed_owner",
+                    )
+                end
             end
 
             @testset "PostgreSQL migration fail-closed ledger and rollback" begin
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_deployed_export(pg)
+                _pg_integration_command(
+                    pg,
+                    "UPDATE public.security_observations SET ticker = NULL",
+                )
+                _pg_integration_command(
+                    pg,
+                    "UPDATE public.fundamental_daily_metrics SET fetched_at = NULL",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test postgres_schema_version(pg) == 0
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT is_nullable FROM information_schema.columns " *
+                    "WHERE table_schema = 'public' " *
+                    "AND table_name = 'us_tickers_filtered' " *
+                    "AND column_name = 'ticker'",
+                ).is_nullable) == "NO"
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) FROM information_schema.table_constraints " *
+                    "WHERE table_schema = 'public' " *
+                    "AND table_name = 'us_tickers_filtered' " *
+                    "AND constraint_type = 'PRIMARY KEY'",
+                ).count) == 1
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT to_regclass(" *
+                    "'public.tiingojulia_us_tickers_filtered_ticker_bridge'" *
+                    ") AS relation",
+                ).relation))
+
+                _pg_integration_cleanup(pg)
+                _pg_integration_create_deployed_export(
+                    pg;
+                    primary_key_name="arbitrary Scheduler PK name",
+                )
+                _pg_integration_command(pg, """
+                    CREATE TABLE public.tiingo_test_filtered_fk (
+                        ticker VARCHAR REFERENCES public.us_tickers_filtered (ticker)
+                    )
+                """)
+                _pg_integration_command(
+                    pg,
+                    "INSERT INTO public.tiingo_test_filtered_fk VALUES ('EXPORTED')",
+                )
+                @test_throws PostgresMigrationError migrate_postgres!(pg)
+                @test postgres_schema_version(pg) == 0
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT count(*) FROM information_schema.table_constraints " *
+                    "WHERE table_schema = 'public' " *
+                    "AND table_name = 'us_tickers_filtered' " *
+                    "AND constraint_type = 'PRIMARY KEY'",
+                ).count) == 1
+                @test ismissing(only(_pg_integration_query(
+                    pg,
+                    "SELECT to_regclass(" *
+                    "'public.tiingojulia_us_tickers_filtered_ticker_bridge'" *
+                    ") AS relation",
+                ).relation))
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT ticker FROM public.tiingo_test_filtered_fk",
+                ).ticker) == "EXPORTED"
+
                 _pg_integration_cleanup(pg)
                 _pg_integration_create_compatibility_export(pg)
                 _pg_integration_command(

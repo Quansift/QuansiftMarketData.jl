@@ -22,7 +22,7 @@ jobs:
             - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e
@@ -55,7 +55,7 @@ jobs:
             - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
               with:
                   version: "1.9"
-            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Resolve independent benchmark environment at Julia floor
               run: >-
                   julia --project=benchmark -e
@@ -102,7 +102,7 @@ jobs:
             - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e
@@ -152,7 +152,7 @@ jobs:
             - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e

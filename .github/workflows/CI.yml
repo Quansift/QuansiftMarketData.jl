@@ -62,7 +62,7 @@ jobs:
               with:
                   version: ${{ matrix.version }}
                   # arch omitted; setup-julia auto-detects the runner architecture.
-            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Resolve dependencies for the active Julia version
               run: |
                   julia --project=. -e '
@@ -125,7 +125,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Install and resolve dependencies
               run: |
                   julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
@@ -158,7 +158,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Instantiate benchmark environment
               run: >-
                   julia --project=benchmark -e

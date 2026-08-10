@@ -40,7 +40,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3
+            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Install JuliaFormatter
               run: julia -e 'using Pkg; pkg"add JuliaFormatter"'
             - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7

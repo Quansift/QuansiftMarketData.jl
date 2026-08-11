@@ -102,6 +102,16 @@ Therefore changes on `main` remain undeployed until an explicit promotion.
 
 ## Installation
 
+Until Tiingo is registered in Julia's General registry, install it directly
+from this repository:
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/Quansift/Tiingo.jl")
+```
+
+After General registration, name-based installation will be available:
+
 ```julia
 using Pkg
 Pkg.add("Tiingo")
@@ -127,6 +137,14 @@ TIINGO_API_KEY=your_api_key_here
 
 `.env` is ignored by git. Do not commit secrets. Set overrides before running
 `using Tiingo`.
+
+Each user must use their own Tiingo account and API token. This package does
+not bundle or redistribute Tiingo market or Fundamentals data. The MIT license
+applies only to this software and grants no rights to Tiingo data. Use of the
+API and its data remains subject to the current
+[Tiingo Terms of Service](https://api.tiingo.com/tos/) and the user's account
+terms. This project is independent and is not affiliated with or endorsed by
+Tiingo, Inc.
 
 Common optional settings include:
 

@@ -511,6 +511,16 @@ supported_asset_types = ["Stock"]
         ci = read(joinpath(workflow_directory, "CI.yml"), String)
         @test occursin("- \"1.9\"", ci)
         @test occursin("- \"1.12\"", ci)
+        @test !occursin("secrets.TIINGO_API_KEY", ci)
+        @test !occursin("actions: write", ci)
+        @test occursin("TIINGO_API_KEY: mock-api-key-for-testing", ci)
+        checkout_count = count("uses: actions/checkout@", ci)
+        hardened_checkout_count = count(
+            r"(?m)^([ ]*)- uses: actions/checkout@[^\n]+\n\1  with:\n\1      persist-credentials: false$",
+            ci,
+        )
+        @test checkout_count > 0
+        @test hardened_checkout_count == checkout_count
         @test !occursin("Pkg.instantiate(); Pkg.resolve()", ci)
         @test occursin("VERSION < v\"1.12\"", ci)
         @test occursin("rm(manifest_path)", ci)

@@ -68,6 +68,7 @@ function _canonical_payload_date(value, field_name::String)::Date
     try
         return Date(first(text, 10))
     catch error
+        error isa InterruptException && rethrow()
         throw(ArgumentError("invalid $field_name: $error"))
     end
 end
@@ -85,6 +86,7 @@ function _nullable_payload_datetime(value, field_name::String)::Union{Missing,Da
     try
         return length(text) == 10 ? DateTime(Date(text)) : DateTime(first(text, 19))
     catch error
+        error isa InterruptException && rethrow()
         throw(ArgumentError("invalid $field_name: $error"))
     end
 end
@@ -417,6 +419,7 @@ function collect_fundamentals(
                 throw(ArgumentError("observation_writer row count must be non-negative"))
             observation_rows = rows
         catch error
+            error isa InterruptException && rethrow()
             entity = "security_observations"
             push!(failed, entity)
             push!(failures, _sync_failure(entity, :write, error))
@@ -446,6 +449,7 @@ function collect_fundamentals(
                 return_type = "original",
             )
         catch error
+            error isa InterruptException && rethrow()
             push!(failed, perma_ticker)
             push!(failures, _sync_failure(perma_ticker, :fetch, error))
             (!continue_on_error && !strict) && rethrow()
@@ -459,6 +463,7 @@ function collect_fundamentals(
                 fetched_at,
             )
         catch error
+            error isa InterruptException && rethrow()
             push!(failed, perma_ticker)
             push!(failures, _sync_failure(
                 perma_ticker,
@@ -490,6 +495,7 @@ function collect_fundamentals(
                     throw(ArgumentError("metric_writer row count must be non-negative"))
                 metric_rows += rows
             catch error
+                error isa InterruptException && rethrow()
                 push!(failed, perma_ticker)
                 push!(failures, _sync_failure(perma_ticker, :write, error))
                 (!continue_on_error && !strict) && rethrow()
@@ -592,7 +598,8 @@ function sync_fundamentals!(
             end
             metric_rows += upsert_fundamental_daily_metrics(conn, metrics)
             push!(requested, perma_ticker)
-        catch
+        catch error
+            error isa InterruptException && rethrow()
             continue_on_error || rethrow()
             push!(failed, perma_ticker)
         end

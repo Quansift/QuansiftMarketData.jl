@@ -9,6 +9,22 @@ struct _UnstringifiableTicker
     secret::String
 end
 
+struct _InterruptingHistoricalString
+    cancellation::InterruptException
+end
+
+Base.String(value::_InterruptingHistoricalString) = throw(value.cancellation)
+
+struct _InterruptingHistoricalEquality
+    cancellation::InterruptException
+end
+
+Base.:(==)(value::_InterruptingHistoricalEquality, ::String) =
+    throw(value.cancellation)
+
+const _legacy_historical_mode = Ref(:delegate)
+const _legacy_historical_cancellation = Ref{Union{Nothing,InterruptException}}(nothing)
+
 function _eod_fixture(date, close=100.0)
     return DataFrame(
         date = [date],
@@ -486,6 +502,182 @@ end
     end
 end
 
+@testset "Historical writer cancellation is rethrown immediately" begin
+    tickers = DataFrame(
+        ticker=["CANCEL", "AFTER"],
+        start_date=fill(Date(2024, 1, 1), 2),
+        end_date=fill(Date(2024, 1, 2), 2),
+    )
+
+    for continue_on_error in (false, true), strict in (false, true)
+        fetched = String[]
+        written = String[]
+        cancellation = InterruptException()
+        fetcher = function (row; kwargs...)
+            push!(fetched, String(row.ticker))
+            return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+        end
+        writer = function (ticker, frame)
+            push!(written, ticker)
+            ticker == "CANCEL" && throw(cancellation)
+            return nrow(frame)
+        end
+
+        caught = try
+            collect_historical(
+                tickers,
+                "offline-token";
+                fetcher,
+                writer,
+                continue_on_error,
+                strict,
+            )
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+        @test fetched == ["CANCEL"]
+        @test written == ["CANCEL"]
+    end
+end
+
+@testset "Historical normalization cancellation preserves identity" begin
+    for stage in (:ticker, :end_date, :start_date, :eod_date)
+        cancellation = InterruptException()
+        value = _InterruptingHistoricalString(cancellation)
+        tickers = DataFrame(
+            ticker=Any[stage == :ticker ? value : "CANCEL"],
+            start_date=Any[stage == :start_date ? value : Date(2024, 1, 1)],
+            end_date=Any[stage == :end_date ? value : Date(2024, 1, 2)],
+        )
+        fetcher = stage == :eod_date ?
+            ((row; kwargs...) -> _eod_fixture(value, 30.0)) :
+            ((row; kwargs...) -> DataFrame())
+
+        caught = try
+            collect_historical(tickers, "offline-token"; fetcher)
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+    end
+end
+
+@testset "Legacy historical exports rethrow cancellation" begin
+    row_type = typeof(DataFrame(ticker=["TYPE"])[1, :])
+    @eval Tiingo.API function get_ticker_data(row::$row_type; kwargs...)
+        if row.ticker == "__LEGACY_CANCEL__"
+            cancellation = Main._legacy_historical_cancellation[]
+            Main._legacy_historical_mode[] == :fetch && throw(cancellation)
+            if Main._legacy_historical_mode[] == :write
+                frame = Main._eod_fixture(Date(2024, 1, 2), 30.0)
+                frame.ticker = [Main._InterruptingHistoricalEquality(cancellation)]
+                return frame
+            end
+        end
+        return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
+    end
+    injected_method = which(Tiingo.API.get_ticker_data, (row_type,))
+    conn = connect_duckdb(":memory:")
+
+    try
+        create_tables(conn)
+        tickers = DataFrame(
+            ticker=["__LEGACY_CANCEL__"],
+            start_date=[Date(2024, 1, 1)],
+            end_date=[Date(2024, 1, 2)],
+        )
+
+        _legacy_historical_mode[] = :fetch
+        for operation in (
+            () -> update_historical(
+                conn,
+                tickers,
+                "offline-token";
+                latest_dates_df=DataFrame(
+                    ticker=["__LEGACY_CANCEL__"],
+                    latest_date=[Date(2024, 1, 1)],
+                ),
+            ),
+            () -> update_historical_sequential(conn, tickers, "offline-token"),
+            () -> update_historical_parallel(
+                conn,
+                tickers,
+                "offline-token";
+                batch_size=1,
+                max_concurrent=1,
+            ),
+        )
+            cancellation = InterruptException()
+            _legacy_historical_cancellation[] = cancellation
+            caught = try
+                operation()
+                nothing
+            catch error
+                error
+            end
+            @test caught === cancellation
+        end
+
+        cancellation = InterruptException()
+        _legacy_historical_cancellation[] = cancellation
+        _legacy_historical_mode[] = :write
+        caught = try
+            update_historical_parallel(
+                conn,
+                tickers,
+                "offline-token";
+                batch_size=1,
+                max_concurrent=1,
+            )
+            nothing
+        catch error
+            error
+        end
+        @test caught === cancellation
+    finally
+        _legacy_historical_mode[] = :delegate
+        _legacy_historical_cancellation[] = nothing
+        close_duckdb(conn)
+        Base.delete_method(injected_method)
+    end
+end
+
+@testset "Ticker and split normalization preserve cancellation" begin
+    cancellation = InterruptException()
+    caught = try
+        collect_ticker_universe(DataFrame(
+            ticker=["CANCEL"],
+            exchange=["NYSE"],
+            assetType=["Stock"],
+            priceCurrency=["USD"],
+            startDate=Any[_InterruptingHistoricalString(cancellation)],
+            endDate=["2024-01-02"],
+        ))
+        nothing
+    catch error
+        error
+    end
+    @test caught === cancellation
+
+    cancellation = InterruptException()
+    caught = try
+        find_split_refresh_targets(DataFrame(
+            ticker=Any[_InterruptingHistoricalString(cancellation)],
+            date=[Date(2024, 1, 2)],
+            splitFactor=[2.0],
+        ))
+        nothing
+    catch error
+        error
+    end
+    @test caught === cancellation
+end
+
 @testset "Fundamentals collection separates normalization and writers" begin
     as_of = Date(2024, 1, 3)
     observed_at = DateTime(2024, 1, 3, 12)
@@ -649,4 +841,92 @@ end
     @test only(result.failures).stage == :fetch
     @test only(result.failures).retryable
     @test !occursin("fundamental-secret", only(result.failures).message)
+end
+
+@testset "Fundamentals cancellation is rethrown immediately" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [
+        (permaTicker="perm-a-cancel", ticker="CANCEL", isActive=true, isADR=false, dailyLastUpdated=string(as_of)),
+        (permaTicker="perm-z-after", ticker="AFTER", isActive=true, isADR=false, dailyLastUpdated=string(as_of)),
+    ]
+    universe_payload = [
+        (ticker="CANCEL", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate=string(as_of)),
+        (ticker="AFTER", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate=string(as_of)),
+    ]
+    metric_payload = [(date=string(as_of), marketCap=200.0)]
+
+    for continue_on_error in (false, true), strict in (false, true)
+        cancellation = InterruptException()
+        fetched = String[]
+        daily_fetcher = function (perma_ticker; kwargs...)
+            push!(fetched, perma_ticker)
+            perma_ticker == "perm-a-cancel" && throw(cancellation)
+            return metric_payload
+        end
+        caught = try
+            collect_fundamentals(
+                meta_payload,
+                universe_payload;
+                api_key="offline-token",
+                as_of,
+                daily_fetcher,
+                continue_on_error,
+                strict,
+            )
+            nothing
+        catch error
+            error
+        end
+        @test caught === cancellation
+        @test fetched == ["perm-a-cancel"]
+    end
+
+    # Defaults exercise continue_on_error=true and strict=false.
+    cancellation = InterruptException()
+    fetched = String[]
+    caught = try
+        collect_fundamentals(
+            meta_payload,
+            universe_payload;
+            api_key="offline-token",
+            as_of,
+            daily_fetcher=(perma_ticker; kwargs...) -> begin
+                push!(fetched, perma_ticker)
+                metric_payload
+            end,
+            observation_writer=_ -> throw(cancellation),
+        )
+        nothing
+    catch error
+        error
+    end
+    @test caught === cancellation
+    @test isempty(fetched)
+
+    cancellation = InterruptException()
+    fetched = String[]
+    written = String[]
+    caught = try
+        collect_fundamentals(
+            meta_payload,
+            universe_payload;
+            api_key="offline-token",
+            as_of,
+            daily_fetcher=(perma_ticker; kwargs...) -> begin
+                push!(fetched, perma_ticker)
+                metric_payload
+            end,
+            metric_writer=(perma_ticker, frame) -> begin
+                push!(written, perma_ticker)
+                perma_ticker == "perm-a-cancel" && throw(cancellation)
+                nrow(frame)
+            end,
+        )
+        nothing
+    catch error
+        error
+    end
+    @test caught === cancellation
+    @test fetched == ["perm-a-cancel"]
+    @test written == ["perm-a-cancel"]
 end

@@ -33,12 +33,11 @@ jobs:
         runs-on: ${{ matrix.os }}
         timeout-minutes: 60
         env:
-            TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY || 'mock-api-key-for-testing' }}
+            TIINGO_API_KEY: mock-api-key-for-testing
             TIINGO_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
             JULIA_NUM_THREADS: "auto"
             JULIA_PROJECT: "."
-        permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
-            actions: write
+        permissions:
             contents: read
         strategy:
             fail-fast: false
@@ -58,6 +57,8 @@ jobs:
                 # default macOS runner to Apple Silicon.
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  persist-credentials: false
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: ${{ matrix.version }}
@@ -91,7 +92,7 @@ jobs:
             - uses: julia-actions/julia-processcoverage@03114f09f119417c3242a9fb6e0b722676aedf38 # v1
             - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
               with:
-                  file: lcov.info
+                  files: lcov.info
                   token: ${{ secrets.CODECOV_TOKEN }}
                   fail_ci_if_error: false
     postgres-integration:
@@ -122,6 +123,8 @@ jobs:
                     --health-retries 5
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  persist-credentials: false
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
@@ -155,6 +158,8 @@ jobs:
             TIINGO_BENCH_OUTPUT: benchmark/micro-result.json
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  persist-credentials: false
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"

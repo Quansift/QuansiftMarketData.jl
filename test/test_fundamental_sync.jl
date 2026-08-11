@@ -5,6 +5,15 @@ using DuckDB
 using DBInterface
 using Tiingo
 
+struct _InterruptDuringFundamentalParse
+    cancellation::InterruptException
+end
+
+Base.String(value::_InterruptDuringFundamentalParse) = value
+Base.length(value::_InterruptDuringFundamentalParse) = throw(value.cancellation)
+Base.first(value::_InterruptDuringFundamentalParse, ::Integer) =
+    throw(value.cancellation)
+
 @testset "Official meta reconciles as observations without invented validity" begin
     observed_at = DateTime(2026, 7, 19, 12)
     meta_payload = [
@@ -162,6 +171,25 @@ end
     @test normalized.fetched_at == fill(fetched_at, 2)
     @test ismissing(normalized.source_revision[1])
     @test normalized.source_revision[2] == "revision-2"
+end
+
+@testset "Fundamentals normalization cancellation preserves identity" begin
+    for field in (:metric_date, :available_at)
+        cancellation = InterruptException()
+        value = _InterruptDuringFundamentalParse(cancellation)
+        payload = field == :metric_date ?
+            [(date=value, marketCap=1.0)] :
+            [(date="2024-01-31", marketCap=1.0, availableAt=value)]
+
+        caught = try
+            normalize_fundamental_daily_metrics(payload, "perm-cancel")
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+    end
 end
 
 @testset "Fundamentals sync backfills then advances by watermark" begin
@@ -469,6 +497,49 @@ end
 
         @test isempty(result.unavailable)
         @test result.failed == ["perm-error"]
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Legacy Fundamentals sync rethrows cancellation" begin
+    conn = connect_duckdb(":memory:")
+    try
+        as_of = Date(2026, 7, 19)
+        observed_at = DateTime(2026, 7, 19, 12)
+        meta_payload = [(
+            permaTicker="perm-cancel",
+            ticker="CANCEL",
+            isActive=true,
+            isADR=false,
+            dailyLastUpdated=string(observed_at),
+        )]
+        universe_payload = [(
+            ticker="CANCEL",
+            exchange="NASDAQ",
+            assetType="Stock",
+            startDate="2020-01-01",
+            endDate=string(as_of),
+        )]
+        cancellation = InterruptException()
+
+        caught = try
+            sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key="offline-token",
+                as_of,
+                observed_at,
+                fetched_at=observed_at,
+                daily_fetcher=(ticker; kwargs...) -> throw(cancellation),
+            )
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
     finally
         close_duckdb(conn)
     end

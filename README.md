@@ -22,12 +22,17 @@ Tiingo does not own cron or systemd scheduling, cross-stage retries,
 object-store publication, Managed PostgreSQL deployment, notifications, or
 QuantScreener/TATSU sequencing.
 
-The Quansift production workflow selects system PostgreSQL as its authoritative
-relational store and Parquet as its full-history interchange/archive format.
+The Quansift production workflow assigns each persisted representation a
+distinct role:
+
+- system PostgreSQL is the authoritative production query store and recovery
+  baseline;
+- persistent DuckDB is an analysis replica and high-performance OLAP cache; and
+- off-host Parquet is the full-history archive and interchange format.
+
 `quansift_scheduler` owns the ordered workflow and publishes Parquet to
 DigitalOcean Spaces and a rolling three-year dataset to DigitalOcean Managed
-PostgreSQL. DuckDB remains available for local analysis and backward
-compatibility; it is not a required production source of record.
+PostgreSQL. DuckDB is not an additional source of record.
 
 The rolling three-year rule applies only to DigitalOcean Managed PostgreSQL
 publication. System PostgreSQL and Parquet retain full history, and Tiingo
@@ -301,6 +306,9 @@ finally
     close_duckdb(conn)
 end
 ```
+
+PostgreSQL setup is not required to evaluate or analyze Tiingo data. A Tiingo
+API key and a local DuckDB file are sufficient to use the workflow above.
 
 For production applications, bound any local DuckDB data to the consumer's
 analysis needs. Do not treat it as an additional required full-history archive.

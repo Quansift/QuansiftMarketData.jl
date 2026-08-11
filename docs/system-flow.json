@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "system": {
+    "name": "Tiingo.jl data platform",
+    "scope": "Tiingo collection, normalization, persistence, scheduling, publication, and release boundaries",
+    "source_of_truth": "System PostgreSQL",
+    "archive": "Off-host Parquet",
+    "optional_analysis_store": "DuckDB"
+  },
+  "responsibility_boundary": {
+    "tiingo_jl": [
+      "Tiingo HTTP access and response validation",
+      "Ticker-universe, EOD price, and Daily Metrics collection",
+      "Canonical DataFrame normalization",
+      "Independent PostgreSQL, DuckDB, and Parquet persistence primitives"
+    ],
+    "quansift_scheduler": [
+      "Cron and stage orchestration",
+      "Durable per-ticker split retry queue",
+      "DigitalOcean Spaces publication",
+      "Rolling three-year Managed PostgreSQL publication",
+      "QuantScreener and TATSU sequencing"
+    ]
+  },
+  "components": [
+    {
+      "id": "tiingo_api",
+      "name": "Tiingo API",
+      "owner": "Tiingo",
+      "role": "External ticker-universe, EOD, and Daily Metrics source",
+      "kind": "source",
+      "optional": false
+    },
+    {
+      "id": "http_client",
+      "name": "HTTP and validation",
+      "owner": "Tiingo.jl",
+      "role": "Bounded retries, response validation, and safe error reporting",
+      "kind": "library",
+      "optional": false
+    },
+    {
+      "id": "collectors",
+      "name": "Collectors",
+      "owner": "Tiingo.jl",
+      "role": "collect_ticker_universe, collect_historical, and collect_fundamentals",
+      "kind": "library",
+      "optional": false
+    },
+    {
+      "id": "normalized_frames",
+      "name": "Canonical DataFrames",
+      "owner": "Tiingo.jl",
+      "role": "Sink-neutral normalized ticker, EOD, security-observation, and Daily Metrics data",
+      "kind": "boundary",
+      "optional": false
+    },
+    {
+      "id": "postgresql",
+      "name": "System PostgreSQL",
+      "owner": "Production application",
+      "role": "Authoritative production query store and recovery baseline",
+      "kind": "authoritative_store",
+      "optional": false
+    },
+    {
+      "id": "duckdb",
+      "name": "DuckDB",
+      "owner": "Library consumer",
+      "role": "Optional persistent analysis replica and high-performance OLAP cache",
+      "kind": "optional_store",
+      "optional": true
+    },
+    {
+      "id": "parquet",
+      "name": "Parquet",
+      "owner": "Library consumer",
+      "role": "Optional library sink and required Quansift production artifact; off-host full-history archive and interchange format after publication",
+      "kind": "archive",
+      "optional": true
+    },
+    {
+      "id": "scheduler",
+      "name": "quansift_scheduler",
+      "owner": "Quansift application",
+      "role": "Production scheduling, durable retries, ordered publication, and downstream sequencing",
+      "kind": "orchestrator",
+      "optional": false
+    },
+    {
+      "id": "spaces",
+      "name": "DigitalOcean Spaces",
+      "owner": "quansift_scheduler",
+      "role": "Off-host Parquet publication target",
+      "kind": "publication",
+      "optional": false
+    },
+    {
+      "id": "managed_postgresql",
+      "name": "Managed PostgreSQL",
+      "owner": "quansift_scheduler",
+      "role": "Rolling three-year published dataset",
+      "kind": "publication",
+      "optional": false
+    },
+    {
+      "id": "analytics",
+      "name": "QuantScreener and TATSU",
+      "owner": "Downstream applications",
+      "role": "Screening, analysis, and publication consumers",
+      "kind": "consumer",
+      "optional": false
+    },
+    {
+      "id": "migration_runner",
+      "name": "PostgreSQL migration runner",
+      "owner": "Tiingo.jl",
+      "role": "Applies ordered schema migrations under an advisory lock",
+      "kind": "library",
+      "optional": false
+    },
+    {
+      "id": "migration_ledger",
+      "name": "tiingojulia_schema_migrations",
+      "owner": "System PostgreSQL",
+      "role": "Records the current canonical schema version; current baseline is version 1",
+      "kind": "authoritative_metadata",
+      "optional": false
+    }
+  ],
+  "flows": [
+    {
+      "id": "library_collection",
+      "name": "Package collection and independent persistence",
+      "steps": [
+        { "from": "tiingo_api", "to": "http_client", "action": "Fetch and validate" },
+        { "from": "http_client", "to": "collectors", "action": "Return validated payloads" },
+        { "from": "collectors", "to": "normalized_frames", "action": "Normalize into canonical DataFrames" },
+        { "from": "normalized_frames", "to": "postgresql", "action": "Idempotent upsert" },
+        { "from": "normalized_frames", "to": "duckdb", "action": "Optional local persistence" },
+        { "from": "normalized_frames", "to": "parquet", "action": "Verified atomic write" }
+      ]
+    },
+    {
+      "id": "package_without_postgresql",
+      "name": "Standalone package evaluation",
+      "steps": [
+        { "from": "tiingo_api", "to": "http_client", "action": "Fetch with a Tiingo API key" },
+        { "from": "http_client", "to": "collectors", "action": "Return validated payloads" },
+        { "from": "collectors", "to": "normalized_frames", "action": "Normalize into canonical DataFrames" },
+        { "from": "normalized_frames", "to": "duckdb", "action": "Analyze locally without PostgreSQL" },
+        { "from": "normalized_frames", "to": "parquet", "action": "Optionally write portable files" }
+      ]
+    },
+    {
+      "id": "production_orchestration",
+      "name": "Production data flow",
+      "steps": [
+        { "from": "scheduler", "to": "collectors", "action": "Run scheduled stock, ETF, and Fundamentals stages" },
+        { "from": "tiingo_api", "to": "http_client", "action": "Return Tiingo source payloads" },
+        { "from": "http_client", "to": "collectors", "action": "Validate responses and apply bounded retries" },
+        { "from": "collectors", "to": "normalized_frames", "action": "Normalize into canonical DataFrames" },
+        { "from": "normalized_frames", "to": "postgresql", "action": "Commit authoritative data" },
+        { "from": "postgresql", "to": "parquet", "action": "Create verified snapshots" },
+        { "from": "parquet", "to": "spaces", "action": "Publish full-history artifacts" },
+        { "from": "parquet", "to": "managed_postgresql", "action": "Publish rolling three-year dataset" },
+        { "from": "postgresql", "to": "analytics", "action": "Supply production queries" }
+      ]
+    },
+    {
+      "id": "fundamentals_collection",
+      "name": "Fundamentals collection",
+      "steps": [
+        { "from": "tiingo_api", "to": "http_client", "action": "Fetch Fundamentals metadata and Daily Metrics" },
+        { "from": "http_client", "to": "collectors", "action": "Return validated Fundamentals payloads" },
+        { "from": "collectors", "to": "normalized_frames", "action": "Normalize security observations and fundamental daily metrics" },
+        { "from": "normalized_frames", "to": "postgresql", "action": "Idempotently upsert both canonical tables" },
+        { "from": "normalized_frames", "to": "duckdb", "action": "Optionally update the analysis replica" },
+        { "from": "normalized_frames", "to": "parquet", "action": "Optionally write verified portable artifacts" }
+      ]
+    },
+    {
+      "id": "split_retry",
+      "name": "Durable split recovery",
+      "owner": "quansift_scheduler",
+      "steps": [
+        { "from": "scheduler", "to": "scheduler", "action": "Persist ticker in pending queue before refresh" },
+        { "from": "scheduler", "to": "collectors", "action": "Fetch full ticker history" },
+        { "from": "collectors", "to": "postgresql", "action": "Replace ticker history in one transaction" },
+        { "from": "postgresql", "to": "duckdb", "action": "Optional: refresh the analysis replica when DuckDB is configured" },
+        { "from": "scheduler", "to": "scheduler", "action": "Clear pending entry after PostgreSQL commit and, when DuckDB is configured, after its refresh completes" },
+        { "from": "scheduler", "to": "scheduler", "action": "On failure, record error and retain entry for the next run" }
+      ]
+    },
+    {
+      "id": "postgresql_to_parquet",
+      "name": "PostgreSQL table snapshot",
+      "steps": [
+        { "from": "postgresql", "to": "duckdb", "action": "Scan through an ephemeral in-memory DuckDB connection" },
+        { "from": "duckdb", "to": "parquet", "action": "Write, verify, and atomically publish locally" }
+      ],
+      "constraint": "The DuckDB postgres extension is installed at build time; runtime library code only loads it and does not download extensions."
+    },
+    {
+      "id": "schema_migration",
+      "name": "PostgreSQL schema migration",
+      "steps": [
+        { "from": "migration_runner", "to": "postgresql", "action": "Acquire the migration advisory lock" },
+        { "from": "migration_ledger", "to": "migration_runner", "action": "Report the current ledger version" },
+        { "from": "migration_runner", "to": "postgresql", "action": "Apply ordered schema changes and ledger row in one transaction" },
+        { "from": "postgresql", "to": "migration_ledger", "action": "Commit canonical schema version 1" }
+      ],
+      "failure": "Any migration error rolls back the complete transaction and leaves the previous ledger version authoritative."
+    }
+  ],
+  "invariants": [
+    "Persistence sinks are independent; adopting Tiingo.jl does not require adopting quansift_scheduler.",
+    "A Tiingo API key and local DuckDB file are sufficient for package evaluation; PostgreSQL is not required.",
+    "System PostgreSQL and off-host Parquet retain full history.",
+    "The rolling three-year rule applies only to Managed PostgreSQL publication.",
+    "DuckDB is not a source of record and Tiingo.jl imposes no DuckDB retention period.",
+    "Remote upload, manifests, retention, and publication ordering belong to the calling application.",
+    "Split retry durability and cross-stage retry policy belong to quansift_scheduler.",
+    "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
+    "The canonical migration ledger tiingojulia_schema_migrations records schema version 1."
+  ],
+  "deprecated_entry_points": [
+    { "name": "export_to_postgres", "replacement": "PostgreSQL upsert_* overloads and write_parquet" },
+    { "name": "update_historical", "replacement": "collect_historical with a caller-supplied writer" },
+    { "name": "update_historical_parallel", "replacement": "collect_historical with a caller-supplied writer" },
+    { "name": "update_historical_sequential", "replacement": "collect_historical with a caller-supplied writer" },
+    { "name": "download_tickers_duckdb", "replacement": "collect_ticker_universe and replace_ticker_universe" },
+    { "name": "add_historical_data", "replacement": "collect_historical with a caller-supplied writer" },
+    { "name": "update_split_ticker", "replacement": "collect_historical with a caller-supplied writer" }
+  ],
+  "lifecycle": {
+    "package_release": [
+      "Develop on a feature branch",
+      "Optionally integrate on staging",
+      "Open a pull request to main and require CI to pass",
+      "Merge the exact release commit to main",
+      "Run strict release preflight against that exact main SHA",
+      "Invoke Registrator",
+      "Wait for the General registry pull request to merge",
+      "Let TagBot create the immutable version tag and GitHub Release"
+    ],
+    "pre_registration_policy": [
+      "Do not create a manual version tag before the General registry pull request merges",
+      "Do not create or allow a competing version tag"
+    ],
+    "production_deployment": [
+      "Validate Tiingo and quansift_scheduler on main",
+      "Verify the scheduler pins the exact Tiingo revision",
+      "Fast-forward Tiingo production, then scheduler production",
+      "Pause scheduled writers and verify the system is idle",
+      "Pull both production-tracking checkouts with --ff-only",
+      "Apply and verify database migrations",
+      "Restore cron after health and pin checks pass"
+    ]
+  }
+}

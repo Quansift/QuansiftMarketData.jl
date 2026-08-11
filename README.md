@@ -35,6 +35,66 @@ imposes no DuckDB retention period — consumers bound local DuckDB state to the
 own analysis needs. A separate three-year default exists for the `sync_fundamentals!`
 initial backfill window; it is unrelated to the Managed PostgreSQL publication rule.
 
+## Production release channel
+
+Development changes go through a feature branch, optional `staging` integration,
+and a pull request to `main`. Do not open pull requests to, or commit directly on,
+`production`: it is the protected deployment pointer, not a development branch.
+Merging to `main` does not deploy automatically.
+
+For a Tiingo release, first merge and verify Tiingo on `main`. Then update the
+exact Tiingo revision in all `quansift_scheduler` pin locations, merge that
+scheduler pull request, and require both repositories' CI to pass. Promote the
+validated pair by fast-forwarding Tiingo `production` first and scheduler
+`production` second; never force-push either branch.
+For a scheduler-only release, keep the Tiingo pin unchanged and promote only
+scheduler `production`.
+
+The promotion commands derive the revisions from the remote branches, so the
+operator does not need to remember a commit SHA:
+
+```bash
+(
+set -euo pipefail
+
+git -C /path/to/Tiingo.jl fetch --prune origin
+git -C /path/to/quansift_scheduler fetch --prune origin
+
+TIINGO_RELEASE="$(git -C /path/to/Tiingo.jl rev-parse origin/main)"
+SCHEDULER_RELEASE="$(git -C /path/to/quansift_scheduler rev-parse origin/main)"
+SCHEDULER_PIN="$(
+  git -C /path/to/quansift_scheduler show origin/main:Project.toml |
+    awk -F'"' '/^Tiingo = \{rev = / {print $2}'
+)"
+
+test "$TIINGO_RELEASE" = "$SCHEDULER_PIN"
+git -C /path/to/Tiingo.jl \
+  merge-base --is-ancestor origin/production "$TIINGO_RELEASE"
+git -C /path/to/quansift_scheduler \
+  merge-base --is-ancestor origin/production "$SCHEDULER_RELEASE"
+
+git -C /path/to/Tiingo.jl \
+  push origin "$TIINGO_RELEASE:refs/heads/production"
+git -C /path/to/quansift_scheduler \
+  push origin "$SCHEDULER_RELEASE:refs/heads/production"
+)
+```
+
+Do not pull either data-plane checkout unless both promotion pushes succeed.
+
+On data-plane, pause the scheduler cron entries and prove that no pipeline,
+lock, or PostgreSQL writer is active before updating. Pull Tiingo first, apply
+and verify any database migration, then pull scheduler and recheck that its
+Tiingo pin equals `/opt/tiingojulia` `HEAD` before restoring cron:
+
+```bash
+git -C /opt/tiingojulia pull --ff-only
+git -C /home/shin/10kpw/quansift_scheduler pull --ff-only
+```
+
+Both production checkouts track `origin/production` with `pull.ff=only`.
+Therefore changes on `main` remain undeployed until an explicit promotion.
+
 ## Installation
 
 ```julia

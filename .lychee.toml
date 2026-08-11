@@ -1,6 +1,7 @@
 exclude = [
   "@ref",
   "^https://github.com/.*/compare/.*\\.\\.\\.HEAD$",
+  "^https://github.com/Quansift/Tiingo\\.jl/compare/v1\\.0\\.0\\.\\.\\.v2\\.0\\.0$",
   "^https://github.com/.*/releases/tag/v.*$",
   "^https://doi.org/FIXME$",
   "^https://quansift.github.io/Tiingo.jl",

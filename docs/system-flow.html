@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Tiingo.jl と本番データ基盤の構造、データフロー、責任境界を1ページで示す資料">
+  <title>Tiingo.jl — System Structure &amp; Flow</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #526078;
+      --line: #cbd3df;
+      --surface: #ffffff;
+      --canvas: #f4f7fb;
+      --source: #dcecff;
+      --source-line: #1768ac;
+      --authoritative: #dff4e6;
+      --authoritative-line: #247747;
+      --optional: #eee5ff;
+      --optional-line: #6842a5;
+      --archive: #fff0cc;
+      --archive-line: #9b6500;
+      --deprecated: #eef0f3;
+      --deprecated-line: #697386;
+      --shadow: 0 8px 24px rgb(23 32 51 / 8%);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a { color: #075f9b; }
+
+    .skip-link {
+      position: absolute;
+      top: -4rem;
+      left: 1rem;
+      z-index: 10;
+      padding: .7rem 1rem;
+      background: var(--ink);
+      color: white;
+    }
+
+    .skip-link:focus { top: 1rem; }
+
+    header {
+      padding: 3rem max(1.25rem, calc((100vw - 1180px) / 2));
+      background: #13233f;
+      color: white;
+    }
+
+    header p { max-width: 72ch; margin-bottom: 0; color: #dce7f8; }
+
+    h1 { margin: 0 0 .7rem; font-size: clamp(2rem, 5vw, 3.6rem); line-height: 1.05; }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.4rem, 3vw, 2rem); }
+    h3 { margin: 0 0 .45rem; font-size: 1.05rem; }
+    p { margin: .35rem 0 .8rem; }
+
+    main {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2rem 0 4rem;
+    }
+
+    section {
+      margin: 1.25rem 0;
+      padding: clamp(1.15rem, 3vw, 2rem);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 .45rem;
+      color: #9fc7ff;
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .legend, .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .55rem;
+      margin: 1rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .3rem .6rem;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      background: white;
+      font-size: .72rem;
+      font-weight: 800;
+      letter-spacing: .04em;
+    }
+
+    .badge::before { width: .65rem; height: .65rem; border-radius: 3px; background: currentColor; content: ""; }
+    .source-label { color: var(--source-line); }
+    .authoritative-label { color: var(--authoritative-line); }
+    .optional-label { color: var(--optional-line); }
+    .archive-label { color: var(--archive-line); }
+    .deprecated-label { color: var(--deprecated-line); }
+
+    .core-flow, .step-list {
+      margin: 1.2rem 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .core-flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1.7rem;
+    }
+
+    .snapshot-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .core-flow > li { position: relative; }
+    .core-flow > li:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -1.35rem;
+      color: var(--source-line);
+      content: "→";
+      font-size: 1.5rem;
+      font-weight: 900;
+      transform: translateY(-50%);
+    }
+
+    .card {
+      height: 100%;
+      padding: 1rem;
+      border: 2px solid var(--source-line);
+      border-radius: 12px;
+      background: var(--source);
+    }
+
+    .card p { margin-bottom: 0; color: #35435a; font-size: .9rem; }
+    .card small { display: block; margin-bottom: .35rem; color: var(--muted); font-weight: 700; }
+
+    .sink-grid, .boundary-grid, .lifecycle-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .sink-grid { margin-top: 1rem; }
+    .sink-grid .card { min-height: 9.5rem; }
+    .card.authoritative { border-color: var(--authoritative-line); background: var(--authoritative); }
+    .card.optional { border-color: var(--optional-line); background: var(--optional); }
+    .card.archive { border-color: var(--archive-line); background: var(--archive); }
+
+    .branch-label {
+      margin: 1.4rem 0 .5rem;
+      text-align: center;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .boundary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .boundary-grid article, .lifecycle-grid article {
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfcfe;
+    }
+
+    .boundary-grid ul { margin: .6rem 0 0; padding-left: 1.2rem; }
+    .boundary-grid li + li { margin-top: .35rem; }
+
+    .step-list { counter-reset: steps; }
+    .step-list li {
+      display: grid;
+      grid-template-columns: 2rem 1fr;
+      gap: .7rem;
+      align-items: start;
+      padding: .65rem 0;
+      border-bottom: 1px solid #e5e9f0;
+      counter-increment: steps;
+    }
+
+    .step-list li:last-child { border-bottom: 0; }
+    .step-list li::before {
+      display: grid;
+      width: 1.75rem;
+      height: 1.75rem;
+      place-items: center;
+      border-radius: 50%;
+      background: #173f70;
+      color: white;
+      content: counter(steps);
+      font-size: .78rem;
+      font-weight: 800;
+    }
+
+    .failure {
+      padding: .8rem 1rem;
+      border-left: 5px solid #a33a33;
+      background: #fff0f0;
+      color: #6d2424;
+      font-weight: 700;
+    }
+
+    .note {
+      padding: .8rem 1rem;
+      border-left: 5px solid var(--archive-line);
+      background: #fff8e6;
+    }
+
+    .lifecycle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lifecycle-grid .release { border-top: 5px solid var(--source-line); }
+    .lifecycle-grid .deploy { border-top: 5px solid var(--authoritative-line); }
+
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { padding: .65rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--deprecated); }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .88em; }
+
+    .footer-note { color: var(--muted); font-size: .85rem; }
+
+    @media (max-width: 820px) {
+      .core-flow, .snapshot-flow { grid-template-columns: 1fr; gap: .8rem; }
+      .core-flow > li:not(:last-child)::after {
+        top: auto;
+        right: 50%;
+        bottom: -.8rem;
+        transform: translateX(50%) rotate(90deg);
+      }
+      .sink-grid, .boundary-grid, .lifecycle-grid { grid-template-columns: 1fr; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+      tr { padding: .6rem 0; border-bottom: 1px solid var(--line); }
+      td { padding: .25rem 0; border: 0; }
+      td::before { display: block; color: var(--muted); content: attr(data-label); font-size: .72rem; font-weight: 800; text-transform: uppercase; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+
+    @media print {
+      @page { size: A3 landscape; margin: 10mm; }
+      body { background: white; font-size: 9pt; }
+      header { padding: 1rem; background: white; color: black; border-bottom: 2px solid black; }
+      header p, .eyebrow { color: black; }
+      main { width: 100%; padding: .5rem 0; }
+      section { margin: .5rem 0; padding: .8rem; box-shadow: none; break-inside: avoid; }
+      h1 { font-size: 24pt; }
+      h2 { font-size: 14pt; }
+      .skip-link { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">本文へ移動</a>
+  <header>
+    <p class="eyebrow">System Structure &amp; Flow</p>
+    <h1>Tiingo.jl データ基盤</h1>
+    <p>Tiingo APIから正規化されたDataFrame、独立した3つの保存先、本番オーケストレーション、releaseとproduction deployまでを1枚にまとめた構造図です。</p>
+    <ul class="badges" aria-label="主要原則">
+      <li class="badge authoritative-label">PostgreSQL = AUTHORITATIVE</li>
+      <li class="badge optional-label">DuckDB = OPTIONAL</li>
+      <li class="badge archive-label">Parquet = ARCHIVE</li>
+    </ul>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <section aria-labelledby="structure-title">
+      <h2 id="structure-title">1. Collection → Normalization → Independent Sinks</h2>
+      <ol class="core-flow" aria-label="Tiingo.jlの基本データフロー">
+        <li><article class="card"><small>SOURCE</small><h3>Tiingo API</h3><p>Ticker universe、EOD、Daily Metrics。</p></article></li>
+        <li><article class="card"><small>TIINGO.JL</small><h3>HTTP &amp; Validation</h3><p>検証、上限付きretry、安全なエラー報告。</p></article></li>
+        <li><article class="card"><small>TIINGO.JL</small><h3>Collectors</h3><p><code>collect_ticker_universe</code>、<code>collect_historical</code>、<code>collect_fundamentals</code>。</p></article></li>
+        <li><article class="card"><small>BOUNDARY</small><h3>Canonical DataFrames</h3><p>保存先に依存しない正規化データ。</p></article></li>
+      </ol>
+
+      <p class="branch-label">↓ 用途に応じて独立に選択（複数選択可）</p>
+      <div class="sink-grid">
+        <article class="card authoritative">
+          <small>AUTHORITATIVE</small>
+          <h3>System PostgreSQL</h3>
+          <p>本番参照の正本かつ復旧基準。自然キーによる冪等upsert。</p>
+        </article>
+        <article class="card optional">
+          <small>OPTIONAL</small>
+          <h3>DuckDB</h3>
+          <p>永続的な分析replica／高速OLAP cache。正本ではなく、保持期間はconsumerが決める。</p>
+        </article>
+        <article class="card archive">
+          <small>ARCHIVE</small>
+          <h3>Parquet</h3>
+          <p>検証済みatomic local artifact。off-host公開後は全履歴archive／交換形式。</p>
+        </article>
+      </div>
+
+      <p class="note"><strong>Package-only path:</strong> PostgreSQLの準備は不要です。Tiingo API keyからHTTP validation → collector → canonical DataFrameを経て、local DuckDBまたはParquetだけで収集・検証・分析できます。</p>
+    </section>
+
+    <section aria-labelledby="boundary-title">
+      <h2 id="boundary-title">2. Responsibility Boundary</h2>
+      <div class="boundary-grid">
+        <article>
+          <h3>Tiingo.jl owns</h3>
+          <ul>
+            <li>HTTP access、response validation</li>
+            <li>Ticker universe、EOD、Daily Metrics collection</li>
+            <li>Canonical DataFrame normalization</li>
+            <li>PostgreSQL、DuckDB、Parquet persistence primitives</li>
+          </ul>
+        </article>
+        <article>
+          <h3>quansift_scheduler owns</h3>
+          <ul>
+            <li>Cron、stage orchestration、cross-stage retry</li>
+            <li>Splitのdurable per-ticker retry queue</li>
+            <li>SpacesとManaged PostgreSQLへのpublication</li>
+            <li>QuantScreener／TATSU sequencing</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="production-title">
+      <h2 id="production-title">3. Production Flow</h2>
+      <ol class="step-list">
+        <li><div><strong>Schedule</strong><br><code>quansift_scheduler</code>がstock、ETF、Fundamentals stageを起動。</div></li>
+        <li><div><strong>Collect &amp; normalize</strong><br>Tiingo API → HTTP validation → collector → canonical DataFrameの境界を通過。</div></li>
+        <li><div><strong>Commit authoritative data</strong><br>System PostgreSQLへ冪等に書き込み、本番正本を更新。</div></li>
+        <li><div><strong>Materialize optional analysis state</strong><br>必要なconsumerだけがDuckDB replica／cacheを更新。</div></li>
+        <li><div><strong>Archive &amp; publish</strong><br>Parquetを検証・atomic writeし、schedulerがSpacesへ全履歴を公開。</div></li>
+        <li><div><strong>Serve downstream</strong><br>Managed PostgreSQLへrolling 3年を公開し、QuantScreener／TATSUを順序制御。</div></li>
+      </ol>
+      <p class="footer-note">Rolling 3年ルールはManaged PostgreSQL publicationだけに適用。System PostgreSQLとoff-host Parquetは全履歴を保持します。</p>
+    </section>
+
+    <section aria-labelledby="fundamentals-title">
+      <h2 id="fundamentals-title">4. Fundamentals Flow</h2>
+      <ol class="step-list">
+        <li><div>Tiingo APIからFundamentals metadataとDaily Metricsを取得・検証。</div></li>
+        <li><div><code>collect_fundamentals</code>がsecurity observationsとfundamental daily metricsへ正規化。</div></li>
+        <li><div>System PostgreSQLの2つのcanonical tableへ冪等upsert。</div></li>
+        <li><div>必要に応じてDuckDB analysis replicaまたはverified Parquet artifactへ独立に書き込み。</div></li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="split-title">
+      <h2 id="split-title">5. Split Recovery — Durable Per-Ticker Retry</h2>
+      <ol class="step-list">
+        <li><div>refresh前にtickerをschedulerのpending queueへ永続化。</div></li>
+        <li><div>対象tickerの全履歴をTiingo.jl collectorで再取得。</div></li>
+        <li><div>ticker単位のPostgreSQL transactionで履歴を置換しcommit。</div></li>
+        <li><div><strong>Optional:</strong> DuckDBが構成されている場合だけanalysis replicaを更新。</div></li>
+        <li><div>scheduler自身が、PostgreSQL commit後、かつDuckDB構成時はその更新完了後にpending entryを削除。</div></li>
+      </ol>
+      <p class="failure">失敗時: transactionをrollbackし、エラーを記録してpending entryを残す。他tickerは継続し、次回runで再試行する。</p>
+    </section>
+
+    <section aria-labelledby="snapshot-title">
+      <h2 id="snapshot-title">6. PostgreSQL → Parquet Snapshot</h2>
+      <ol class="core-flow snapshot-flow" aria-label="PostgreSQLからParquetへのsnapshot">
+        <li><article class="card authoritative"><small>AUTHORITATIVE</small><h3>PostgreSQL table</h3><p>snapshot元。</p></article></li>
+        <li><article class="card optional"><small>EPHEMERAL SCANNER</small><h3>In-memory DuckDB</h3><p><code>postgres</code> extensionでscan。永続storeにはしない。</p></article></li>
+        <li><article class="card archive"><small>ARCHIVE</small><h3>Verified Parquet</h3><p>temporary fileを検証後、local atomic publication。</p></article></li>
+      </ol>
+      <p class="note"><code>postgres</code> extensionはbuild時にinstallします。runtime library codeは<code>LOAD</code>のみを行い、downloadしません。</p>
+    </section>
+
+    <section aria-labelledby="migration-title">
+      <h2 id="migration-title">7. PostgreSQL Schema Migration</h2>
+      <ol class="step-list">
+        <li><div><code>migrate_postgres!</code>がmigration advisory lockを取得。</div></li>
+        <li><div><code>tiingojulia_schema_migrations</code>から現在versionを確認。</div></li>
+        <li><div>順序付きschema変更とledger rowを1 transaction内で適用。</div></li>
+        <li><div>成功時にcanonical schema version 1をcommit。</div></li>
+      </ol>
+      <p class="failure">migration error時はschema変更とledger更新をまとめてrollbackし、直前versionを正本として維持する。</p>
+    </section>
+
+    <section aria-labelledby="lifecycle-title">
+      <h2 id="lifecycle-title">8. Package Release ≠ Production Deployment</h2>
+      <div class="lifecycle-grid">
+        <article class="release">
+          <h3>Public package release</h3>
+          <ol class="step-list">
+            <li><div>Feature branch</div></li>
+            <li><div>Optional staging integration</div></li>
+            <li><div>PR → <code>main</code>、required CI pass</div></li>
+            <li><div>Exact release commitを<code>main</code>へmerge</div></li>
+            <li><div>Exact <code>main</code> SHAに対するstrict release preflight</div></li>
+            <li><div>Registratorを起動</div></li>
+            <li><div>General registry PRのmergeを待つ</div></li>
+            <li><div>TagBotがimmutable version tagとGitHub Releaseを作成</div></li>
+          </ol>
+          <p class="failure">Pre-registration中はmanual tagを作らず、competing version tagも許可しない。</p>
+        </article>
+        <article class="deploy">
+          <h3>Production deployment</h3>
+          <ol class="step-list">
+            <li><div>Tiingoとschedulerを<code>main</code>で検証</div></li>
+            <li><div>schedulerのTiingo SHA pinを一致させる</div></li>
+            <li><div>Tiingo → schedulerの順で<code>production</code>をfast-forward</div></li>
+            <li><div>cron停止・idle確認・<code>git pull --ff-only</code></div></li>
+            <li><div>migration／health／pin確認後にcron復帰</div></li>
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="deprecated-title">
+      <h2 id="deprecated-title">9. Deprecated DuckDB-first Entry Points</h2>
+      <p>DuckDB自体はdeprecatedではありません。full-historyをDuckDB経由に固定する次の7 entry pointだけが将来のmajor releaseで削除予定です。</p>
+      <table>
+        <thead><tr><th scope="col">Deprecated</th><th scope="col">Replacement</th></tr></thead>
+        <tbody>
+          <tr><td data-label="Deprecated"><code>export_to_postgres</code></td><td data-label="Replacement">PostgreSQL <code>upsert_*</code> overloads + <code>write_parquet</code></td></tr>
+          <tr><td data-label="Deprecated"><code>update_historical</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Deprecated"><code>update_historical_parallel</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Deprecated"><code>update_historical_sequential</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Deprecated"><code>download_tickers_duckdb</code></td><td data-label="Replacement"><code>collect_ticker_universe</code> + <code>replace_ticker_universe</code></td></tr>
+          <tr><td data-label="Deprecated"><code>add_historical_data</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Deprecated"><code>update_split_ticker</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="legend-title">
+      <h2 id="legend-title">Legend</h2>
+      <ul class="legend">
+        <li class="badge source-label">SOURCE / LIBRARY</li>
+        <li class="badge authoritative-label">AUTHORITATIVE</li>
+        <li class="badge optional-label">OPTIONAL / EPHEMERAL</li>
+        <li class="badge archive-label">ARCHIVE</li>
+        <li class="badge deprecated-label">DEPRECATED ENTRY POINT</li>
+      </ul>
+      <p class="footer-note">Machine-readable companion: <code>system-flow.json</code>. The same JSON is embedded below for offline inspection; this HTML does not execute JavaScript.</p>
+    </section>
+  </main>
+
+  <script type="application/json" id="system-flow-data">
+{
+    "schema_version": 1,
+    "system": {
+        "name": "Tiingo.jl data platform",
+        "scope": "Tiingo collection, normalization, persistence, scheduling, publication, and release boundaries",
+        "source_of_truth": "System PostgreSQL",
+        "archive": "Off-host Parquet",
+        "optional_analysis_store": "DuckDB"
+    },
+    "responsibility_boundary": {
+        "tiingo_jl": [
+            "Tiingo HTTP access and response validation",
+            "Ticker-universe, EOD price, and Daily Metrics collection",
+            "Canonical DataFrame normalization",
+            "Independent PostgreSQL, DuckDB, and Parquet persistence primitives"
+        ],
+        "quansift_scheduler": [
+            "Cron and stage orchestration",
+            "Durable per-ticker split retry queue",
+            "DigitalOcean Spaces publication",
+            "Rolling three-year Managed PostgreSQL publication",
+            "QuantScreener and TATSU sequencing"
+        ]
+    },
+    "components": [
+        {
+            "id": "tiingo_api",
+            "name": "Tiingo API",
+            "owner": "Tiingo",
+            "role": "External ticker-universe, EOD, and Daily Metrics source",
+            "kind": "source",
+            "optional": false
+        },
+        {
+            "id": "http_client",
+            "name": "HTTP and validation",
+            "owner": "Tiingo.jl",
+            "role": "Bounded retries, response validation, and safe error reporting",
+            "kind": "library",
+            "optional": false
+        },
+        {
+            "id": "collectors",
+            "name": "Collectors",
+            "owner": "Tiingo.jl",
+            "role": "collect_ticker_universe, collect_historical, and collect_fundamentals",
+            "kind": "library",
+            "optional": false
+        },
+        {
+            "id": "normalized_frames",
+            "name": "Canonical DataFrames",
+            "owner": "Tiingo.jl",
+            "role": "Sink-neutral normalized ticker, EOD, security-observation, and Daily Metrics data",
+            "kind": "boundary",
+            "optional": false
+        },
+        {
+            "id": "postgresql",
+            "name": "System PostgreSQL",
+            "owner": "Production application",
+            "role": "Authoritative production query store and recovery baseline",
+            "kind": "authoritative_store",
+            "optional": false
+        },
+        {
+            "id": "duckdb",
+            "name": "DuckDB",
+            "owner": "Library consumer",
+            "role": "Optional persistent analysis replica and high-performance OLAP cache",
+            "kind": "optional_store",
+            "optional": true
+        },
+        {
+            "id": "parquet",
+            "name": "Parquet",
+            "owner": "Library consumer",
+            "role": "Optional library sink and required Quansift production artifact; off-host full-history archive and interchange format after publication",
+            "kind": "archive",
+            "optional": true
+        },
+        {
+            "id": "scheduler",
+            "name": "quansift_scheduler",
+            "owner": "Quansift application",
+            "role": "Production scheduling, durable retries, ordered publication, and downstream sequencing",
+            "kind": "orchestrator",
+            "optional": false
+        },
+        {
+            "id": "spaces",
+            "name": "DigitalOcean Spaces",
+            "owner": "quansift_scheduler",
+            "role": "Off-host Parquet publication target",
+            "kind": "publication",
+            "optional": false
+        },
+        {
+            "id": "managed_postgresql",
+            "name": "Managed PostgreSQL",
+            "owner": "quansift_scheduler",
+            "role": "Rolling three-year published dataset",
+            "kind": "publication",
+            "optional": false
+        },
+        {
+            "id": "analytics",
+            "name": "QuantScreener and TATSU",
+            "owner": "Downstream applications",
+            "role": "Screening, analysis, and publication consumers",
+            "kind": "consumer",
+            "optional": false
+        },
+        {
+            "id": "migration_runner",
+            "name": "PostgreSQL migration runner",
+            "owner": "Tiingo.jl",
+            "role": "Applies ordered schema migrations under an advisory lock",
+            "kind": "library",
+            "optional": false
+        },
+        {
+            "id": "migration_ledger",
+            "name": "tiingojulia_schema_migrations",
+            "owner": "System PostgreSQL",
+            "role": "Records the current canonical schema version; current baseline is version 1",
+            "kind": "authoritative_metadata",
+            "optional": false
+        }
+    ],
+    "flows": [
+        {
+            "id": "library_collection",
+            "name": "Package collection and independent persistence",
+            "steps": [
+                {
+                    "from": "tiingo_api",
+                    "to": "http_client",
+                    "action": "Fetch and validate"
+                },
+                {
+                    "from": "http_client",
+                    "to": "collectors",
+                    "action": "Return validated payloads"
+                },
+                {
+                    "from": "collectors",
+                    "to": "normalized_frames",
+                    "action": "Normalize into canonical DataFrames"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "postgresql",
+                    "action": "Idempotent upsert"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "duckdb",
+                    "action": "Optional local persistence"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "parquet",
+                    "action": "Verified atomic write"
+                }
+            ]
+        },
+        {
+            "id": "package_without_postgresql",
+            "name": "Standalone package evaluation",
+            "steps": [
+                {
+                    "from": "tiingo_api",
+                    "to": "http_client",
+                    "action": "Fetch with a Tiingo API key"
+                },
+                {
+                    "from": "http_client",
+                    "to": "collectors",
+                    "action": "Return validated payloads"
+                },
+                {
+                    "from": "collectors",
+                    "to": "normalized_frames",
+                    "action": "Normalize into canonical DataFrames"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "duckdb",
+                    "action": "Analyze locally without PostgreSQL"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "parquet",
+                    "action": "Optionally write portable files"
+                }
+            ]
+        },
+        {
+            "id": "production_orchestration",
+            "name": "Production data flow",
+            "steps": [
+                {
+                    "from": "scheduler",
+                    "to": "collectors",
+                    "action": "Run scheduled stock, ETF, and Fundamentals stages"
+                },
+                {
+                    "from": "tiingo_api",
+                    "to": "http_client",
+                    "action": "Return Tiingo source payloads"
+                },
+                {
+                    "from": "http_client",
+                    "to": "collectors",
+                    "action": "Validate responses and apply bounded retries"
+                },
+                {
+                    "from": "collectors",
+                    "to": "normalized_frames",
+                    "action": "Normalize into canonical DataFrames"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "postgresql",
+                    "action": "Commit authoritative data"
+                },
+                {
+                    "from": "postgresql",
+                    "to": "parquet",
+                    "action": "Create verified snapshots"
+                },
+                {
+                    "from": "parquet",
+                    "to": "spaces",
+                    "action": "Publish full-history artifacts"
+                },
+                {
+                    "from": "parquet",
+                    "to": "managed_postgresql",
+                    "action": "Publish rolling three-year dataset"
+                },
+                {
+                    "from": "postgresql",
+                    "to": "analytics",
+                    "action": "Supply production queries"
+                }
+            ]
+        },
+        {
+            "id": "fundamentals_collection",
+            "name": "Fundamentals collection",
+            "steps": [
+                {
+                    "from": "tiingo_api",
+                    "to": "http_client",
+                    "action": "Fetch Fundamentals metadata and Daily Metrics"
+                },
+                {
+                    "from": "http_client",
+                    "to": "collectors",
+                    "action": "Return validated Fundamentals payloads"
+                },
+                {
+                    "from": "collectors",
+                    "to": "normalized_frames",
+                    "action": "Normalize security observations and fundamental daily metrics"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "postgresql",
+                    "action": "Idempotently upsert both canonical tables"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "duckdb",
+                    "action": "Optionally update the analysis replica"
+                },
+                {
+                    "from": "normalized_frames",
+                    "to": "parquet",
+                    "action": "Optionally write verified portable artifacts"
+                }
+            ]
+        },
+        {
+            "id": "split_retry",
+            "name": "Durable split recovery",
+            "owner": "quansift_scheduler",
+            "steps": [
+                {
+                    "from": "scheduler",
+                    "to": "scheduler",
+                    "action": "Persist ticker in pending queue before refresh"
+                },
+                {
+                    "from": "scheduler",
+                    "to": "collectors",
+                    "action": "Fetch full ticker history"
+                },
+                {
+                    "from": "collectors",
+                    "to": "postgresql",
+                    "action": "Replace ticker history in one transaction"
+                },
+                {
+                    "from": "postgresql",
+                    "to": "duckdb",
+                    "action": "Optional: refresh the analysis replica when DuckDB is configured"
+                },
+                {
+                    "from": "scheduler",
+                    "to": "scheduler",
+                    "action": "Clear pending entry after PostgreSQL commit and, when DuckDB is configured, after its refresh completes"
+                },
+                {
+                    "from": "scheduler",
+                    "to": "scheduler",
+                    "action": "On failure, record error and retain entry for the next run"
+                }
+            ]
+        },
+        {
+            "id": "postgresql_to_parquet",
+            "name": "PostgreSQL table snapshot",
+            "steps": [
+                {
+                    "from": "postgresql",
+                    "to": "duckdb",
+                    "action": "Scan through an ephemeral in-memory DuckDB connection"
+                },
+                {
+                    "from": "duckdb",
+                    "to": "parquet",
+                    "action": "Write, verify, and atomically publish locally"
+                }
+            ],
+            "constraint": "The DuckDB postgres extension is installed at build time; runtime library code only loads it and does not download extensions."
+        },
+        {
+            "id": "schema_migration",
+            "name": "PostgreSQL schema migration",
+            "steps": [
+                {
+                    "from": "migration_runner",
+                    "to": "postgresql",
+                    "action": "Acquire the migration advisory lock"
+                },
+                {
+                    "from": "migration_ledger",
+                    "to": "migration_runner",
+                    "action": "Report the current ledger version"
+                },
+                {
+                    "from": "migration_runner",
+                    "to": "postgresql",
+                    "action": "Apply ordered schema changes and ledger row in one transaction"
+                },
+                {
+                    "from": "postgresql",
+                    "to": "migration_ledger",
+                    "action": "Commit canonical schema version 1"
+                }
+            ],
+            "failure": "Any migration error rolls back the complete transaction and leaves the previous ledger version authoritative."
+        }
+    ],
+    "invariants": [
+        "Persistence sinks are independent; adopting Tiingo.jl does not require adopting quansift_scheduler.",
+        "A Tiingo API key and local DuckDB file are sufficient for package evaluation; PostgreSQL is not required.",
+        "System PostgreSQL and off-host Parquet retain full history.",
+        "The rolling three-year rule applies only to Managed PostgreSQL publication.",
+        "DuckDB is not a source of record and Tiingo.jl imposes no DuckDB retention period.",
+        "Remote upload, manifests, retention, and publication ordering belong to the calling application.",
+        "Split retry durability and cross-stage retry policy belong to quansift_scheduler.",
+        "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
+        "The canonical migration ledger tiingojulia_schema_migrations records schema version 1."
+    ],
+    "deprecated_entry_points": [
+        {
+            "name": "export_to_postgres",
+            "replacement": "PostgreSQL upsert_* overloads and write_parquet"
+        },
+        {
+            "name": "update_historical",
+            "replacement": "collect_historical with a caller-supplied writer"
+        },
+        {
+            "name": "update_historical_parallel",
+            "replacement": "collect_historical with a caller-supplied writer"
+        },
+        {
+            "name": "update_historical_sequential",
+            "replacement": "collect_historical with a caller-supplied writer"
+        },
+        {
+            "name": "download_tickers_duckdb",
+            "replacement": "collect_ticker_universe and replace_ticker_universe"
+        },
+        {
+            "name": "add_historical_data",
+            "replacement": "collect_historical with a caller-supplied writer"
+        },
+        {
+            "name": "update_split_ticker",
+            "replacement": "collect_historical with a caller-supplied writer"
+        }
+    ],
+    "lifecycle": {
+        "package_release": [
+            "Develop on a feature branch",
+            "Optionally integrate on staging",
+            "Open a pull request to main and require CI to pass",
+            "Merge the exact release commit to main",
+            "Run strict release preflight against that exact main SHA",
+            "Invoke Registrator",
+            "Wait for the General registry pull request to merge",
+            "Let TagBot create the immutable version tag and GitHub Release"
+        ],
+        "pre_registration_policy": [
+            "Do not create a manual version tag before the General registry pull request merges",
+            "Do not create or allow a competing version tag"
+        ],
+        "production_deployment": [
+            "Validate Tiingo and quansift_scheduler on main",
+            "Verify the scheduler pins the exact Tiingo revision",
+            "Fast-forward Tiingo production, then scheduler production",
+            "Pause scheduled writers and verify the system is idle",
+            "Pull both production-tracking checkouts with --ff-only",
+            "Apply and verify database migrations",
+            "Restore cron after health and pin checks pass"
+        ]
+    }
+}
+  </script>
+</body>
+</html>

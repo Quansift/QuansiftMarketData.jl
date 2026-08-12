@@ -19,7 +19,7 @@ allowed only after every eligible request succeeds.
 
 ENV["TIINGO_LOGGER"] = get(ENV, "TIINGO_LOGGER", "console")
 
-using Tiingo
+using QuansiftMarketData
 using Dates
 using DataFrames
 using DBInterface

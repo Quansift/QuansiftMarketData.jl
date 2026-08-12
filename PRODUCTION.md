@@ -1,7 +1,7 @@
 # Production integration checklist
 
-Tiingo is a library, not the Quansift production scheduler. It owns Tiingo
-collection, response validation, `DataFrame` normalization, and reusable
+QuansiftMarketData is a library, not the Quansift production scheduler. It owns
+Tiingo collection, response validation, `DataFrame` normalization, and reusable
 PostgreSQL, Parquet, and DuckDB persistence primitives.
 
 In Quansift production:
@@ -14,7 +14,7 @@ In Quansift production:
   DigitalOcean Spaces, DigitalOcean Managed PostgreSQL, notifications, and
   QuantScreener/TATSU sequencing.
 
-Do not put Spaces or Managed PostgreSQL credentials in Tiingo env files.
+Do not put Spaces or Managed PostgreSQL credentials in QuansiftMarketData env files.
 
 ## Provider account and data-retention gate
 
@@ -35,7 +35,7 @@ govern.
 
 ## Library release verification
 
-Before releasing or consuming a Tiingo build:
+Before releasing or consuming a QuansiftMarketData build:
 
 1. Run the hermetic test suite:
 
@@ -92,19 +92,19 @@ Before releasing or consuming a Tiingo build:
      julia --project=. test/test_postgres_integration.jl
    ```
 
-   The test creates, replaces, and drops Tiingo tables. Never point it at
+   The test creates, replaces, and drops QuansiftMarketData tables. Never point it at
    a shared or production database.
 
 ## PostgreSQL schema migration safety
 
-Tiingo exposes a forward-only PostgreSQL schema contract through
+QuansiftMarketData exposes a forward-only PostgreSQL schema contract through
 `POSTGRES_SCHEMA_VERSION`, `postgres_schema_version`, and `migrate_postgres!`.
 The current schema version is `1`. PostgreSQL `create_tables(pg_conn)` delegates
 to this migration path, so existing databases receive the same validation as
 fresh databases.
 
 Before the first migration of an existing database, take and verify an
-operator-owned backup. Tiingo validates and migrates known layouts, but it
+operator-owned backup. QuansiftMarketData validates and migrates known layouts, but it
 does not create, retain, or restore database backups. Exercise the exact
 upgrade first against a restored copy or other isolated database:
 
@@ -285,7 +285,7 @@ A production consumer should:
 - make object-store publication atomic from a reader's perspective; and
 - enforce its own locks, timeouts, retries, monitoring, and alerting.
 
-Those workflow policies belong to the consuming application. Tiingo should
+Those workflow policies belong to the consuming application. QuansiftMarketData should
 remain usable by applications that select any one of PostgreSQL, Parquet, or
 DuckDB without importing Quansift deployment assumptions. That is a technical
 capability only; the provider account and data-retention gate still applies.

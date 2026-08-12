@@ -3,8 +3,8 @@ using Dates
 using DataFrames
 using DuckDB
 using DBInterface
-using Tiingo
-using Tiingo.DB.Schema: generate_create_table_query
+using QuansiftMarketData
+using QuansiftMarketData.DB.Schema: generate_create_table_query
 
 function _fundamental_metrics_fixture(metric_dates)
     row_count = length(metric_dates)

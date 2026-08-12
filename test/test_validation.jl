@@ -1,6 +1,6 @@
 using Test
-using Tiingo
-using Tiingo.DB.Core: validate_identifier, validate_file_path, validate_sql_value
+using QuansiftMarketData
+using QuansiftMarketData.DB.Core: validate_identifier, validate_file_path, validate_sql_value
 
 @testset "SQL Validation Functions" begin
     @testset "validate_identifier" begin

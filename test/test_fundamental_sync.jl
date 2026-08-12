@@ -3,7 +3,7 @@ using Dates
 using DataFrames
 using DuckDB
 using DBInterface
-using Tiingo
+using QuansiftMarketData
 
 struct _InterruptDuringFundamentalParse
     cancellation::InterruptException

@@ -13,7 +13,7 @@ Do not open a public issue for a suspected vulnerability or include API keys,
 database credentials, production data, or exploit details in public.
 
 Report vulnerabilities privately through the repository's
-[Security advisories](https://github.com/Quansift/Tiingo.jl/security/advisories/new).
+[Security advisories](https://github.com/Quansift/QuansiftMarketData.jl/security/advisories/new).
 Include the affected version or commit, impact, reproduction steps, and any
 known mitigation without including secrets or proprietary market data.
 

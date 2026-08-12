@@ -142,9 +142,9 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
 - Existing rules in `.Codex/rules/` take highest priority
 - Research notes are stored in `.Codex/docs/research/` (keep empty when distributing templates)
 
-## 10) Tiingo Responsibility Boundary
+## 10) QuansiftMarketData Responsibility Boundary
 
-- Tiingo owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
+- QuansiftMarketData owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
   canonical `DataFrame` normalization; and PostgreSQL, verified atomic Parquet,
   and optional DuckDB persistence primitives.
 - `quansift_scheduler` owns cron, stage orchestration, DigitalOcean Spaces,

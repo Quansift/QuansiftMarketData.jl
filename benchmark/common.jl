@@ -1,10 +1,10 @@
-module TiingoBench
+module QuansiftMarketDataBench
 
 using DataFrames
 using Dates
 using JSON3
 using SHA
-using Tiingo
+using QuansiftMarketData
 
 export BENCHMARK_RESULT_SCHEMA_VERSION
 export MAX_TICKERS, MAX_TRADING_DAYS, MAX_SAMPLES, MAX_ITERATIONS
@@ -304,7 +304,7 @@ function environment_metadata(
     )
     return Dict{String,Any}(
         "julia_version" => string(VERSION),
-        "package_version" => _package_version(Tiingo),
+        "package_version" => _package_version(QuansiftMarketData),
         "dependency_versions" => dependencies,
         "os" => string(Sys.KERNEL),
         "architecture" => string(Sys.ARCH),

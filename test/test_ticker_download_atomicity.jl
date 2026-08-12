@@ -1,6 +1,6 @@
 using Test
 using ZipFile
-using Tiingo
+using QuansiftMarketData
 
 function _write_ticker_zip(path::String, entry_name::String, csv_content::String)
     writer = ZipFile.Writer(path)

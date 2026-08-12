@@ -3,7 +3,7 @@ using CSV
 using DataFrames
 using Dates
 using Logging
-using Tiingo
+using QuansiftMarketData
 
 struct _UnstringifiableTicker
     secret::String
@@ -280,7 +280,7 @@ end
             Date(2024, 1, 2),
         ],
     )
-    lookup = Tiingo.Sync.build_latest_date_lookup(latest_dates)
+    lookup = QuansiftMarketData.Sync.build_latest_date_lookup(latest_dates)
     @test lookup == Dict("VALID" => Date(2024, 1, 2))
 
     tickers = DataFrame(
@@ -569,7 +569,7 @@ end
 
 @testset "Legacy historical exports rethrow cancellation" begin
     row_type = typeof(DataFrame(ticker=["TYPE"])[1, :])
-    @eval Tiingo.API function get_ticker_data(row::$row_type; kwargs...)
+    @eval QuansiftMarketData.API function get_ticker_data(row::$row_type; kwargs...)
         if row.ticker == "__LEGACY_CANCEL__"
             cancellation = Main._legacy_historical_cancellation[]
             Main._legacy_historical_mode[] == :fetch && throw(cancellation)
@@ -581,7 +581,7 @@ end
         end
         return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
     end
-    injected_method = which(Tiingo.API.get_ticker_data, (row_type,))
+    injected_method = which(QuansiftMarketData.API.get_ticker_data, (row_type,))
     conn = connect_duckdb(":memory:")
 
     try

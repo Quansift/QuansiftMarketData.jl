@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-11
+
 ### Added
 
 - Sink-neutral collection API: `collect_ticker_universe`, `collect_historical`, and
@@ -112,5 +114,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...HEAD
+[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Quansift/Tiingo.jl/releases/tag/v1.0.0

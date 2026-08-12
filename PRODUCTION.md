@@ -16,6 +16,23 @@ In Quansift production:
 
 Do not put Spaces or Managed PostgreSQL credentials in Tiingo env files.
 
+## Provider account and data-retention gate
+
+These storage roles describe technical architecture, not permission to retain
+Tiingo Data. Before enabling any persistent flow, the operator must verify that
+the current Tiingo plan or a separate written agreement permits every enabled
+PostgreSQL, DuckDB, Parquet, Spaces, file, log, queue, archive, backup, and
+disaster-recovery path. The operator must also maintain a deletion procedure
+covering every copy if the paid plan expires, is cancelled or terminated, or is
+downgraded to Starter or Trial.
+
+Starter and Trial Plan users must not use these persistent paths under the
+current Tiingo Terms. See the canonical
+[data terms and project identity](README.md#data-terms-and-project-identity)
+summary before using any storage or live integration example. The user's
+current plan, applicable Supplemental Terms, and any separate written agreement
+govern.
+
 ## Library release verification
 
 Before releasing or consuming a Tiingo build:
@@ -91,6 +108,10 @@ operator-owned backup. Tiingo validates and migrates known layouts, but it
 does not create, retain, or restore database backups. Exercise the exact
 upgrade first against a restored copy or other isolated database:
 
+The backup and restored rehearsal copy are retained Tiingo Data. Create them
+only after the provider account and data-retention gate passes, and include
+both in the operator's deletion inventory.
+
 ```julia
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
@@ -151,9 +172,11 @@ bundled `docker/Dockerfile` installs the matching extension at build time.
 
 `collect_fundamentals` is unbounded by default through
 `initial_start_date=nothing`, while `columns=nothing` requests all Daily
-Metrics columns. Production consumers should set explicit bounds when their
-Tiingo plan or retention policy requires them. The legacy `sync_fundamentals!`
-workflow retains its three-year initial-backfill default.
+Metrics columns. After passing the provider account and data-retention gate,
+production consumers should set explicit bounds when their Tiingo plan or
+retention policy requires them. Bounds do not make a persistent sink suitable
+for Starter or Trial Plans. The legacy `sync_fundamentals!` workflow retains
+its three-year initial-backfill default.
 
 ## Advisory zero-persistence live canary
 
@@ -172,6 +195,13 @@ TIINGO_CANARY_TICKERS=AAPL,SPY \
 TIINGO_CANARY_WINDOW_DAYS=14 \
   julia --project=. scripts/live_canary.jl
 ```
+
+This is the closest provided validation path for Starter and Trial Plans
+because it selects no persistent sink. Users must still comply with their
+current account terms, permanently remove transient Tiingo Data immediately
+after the calculation or operation completes and, in all events, before the
+process, job, or user session ends, and ensure captured output does not retain
+Tiingo Data.
 
 The scheduled/manual `live-canary.yml` workflow is advisory operational
 evidence. Missing credentials, quota exhaustion, unavailable symbols, or a
@@ -205,7 +235,9 @@ must not be installed as the canonical production scheduler.
 
 The smoke will create a local DuckDB file, download ticker metadata, fetch a
 bounded price sample, and optionally export the sample to PostgreSQL. That
-DuckDB file is disposable validation state.
+DuckDB file is disposable validation state, but it is still persistent Tiingo
+Data. Use this smoke only when the applicable account terms or a separate
+written agreement permit persistence; it is not a Starter or Trial Plan path.
 
 On a small integration host, these settings reduce DuckDB memory pressure:
 
@@ -238,6 +270,9 @@ See [`deploy/README.md`](deploy/README.md) for their exact scope.
 
 A production consumer should:
 
+- verify that its current Tiingo plan or separate written agreement permits
+  every selected sink, retained artifact, log, backup, and disaster-recovery
+  copy, and operate the required deletion procedure;
 - supply the Tiingo API key and database connections at runtime;
 - keep the system PostgreSQL and any downstream serving database independently
   configured;
@@ -252,7 +287,8 @@ A production consumer should:
 
 Those workflow policies belong to the consuming application. Tiingo should
 remain usable by applications that select any one of PostgreSQL, Parquet, or
-DuckDB without importing Quansift deployment assumptions.
+DuckDB without importing Quansift deployment assumptions. That is a technical
+capability only; the provider account and data-retention gate still applies.
 
 ## Security and logging
 

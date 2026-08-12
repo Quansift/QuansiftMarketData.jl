@@ -9,6 +9,15 @@ and ETF prices and Fundamentals data, normalizing responses into `DataFrame`s, a
 persisting those frames through independent PostgreSQL, Parquet, or DuckDB
 primitives.
 
+## Data terms
+
+Persistence APIs are technical capabilities, not permission to retain Tiingo
+Data. The current Tiingo Terms restrict Starter and Trial Plans to transient
+processing without persistent storage; the user's current plan, applicable
+Supplemental Terms, and any separate written agreement govern. See the
+canonical [data terms and project identity](https://github.com/Quansift/Tiingo.jl#data-terms-and-project-identity)
+summary before selecting a sink.
+
 ## Responsibility boundary
 
 Tiingo owns:
@@ -24,8 +33,9 @@ QuantScreener/TATSU sequencing.
 
 ## Storage topology
 
-The Quansift production workflow selects system PostgreSQL as its authoritative
-relational store and Parquet as its full-history interchange/archive format:
+Where its provider agreement permits retention, the Quansift production
+workflow selects system PostgreSQL as its authoritative relational store and
+Parquet as its full-history interchange/archive format:
 
 1. Tiingo collects Tiingo EOD prices and Fundamentals, normalizes them into
    `DataFrame`s, and upserts them into the system PostgreSQL source of record.
@@ -36,8 +46,8 @@ relational store and Parquet as its full-history interchange/archive format:
 
 DuckDB remains available for local analysis and backward compatibility. It is not a
 required production source of record and not a third full-history archive; this
-package imposes no DuckDB retention period, so consumers bound local DuckDB state to
-their own analysis needs.
+package imposes no additional DuckDB retention period, so consumers bound local DuckDB
+state to their own analysis needs and applicable account terms.
 
 ## Collection and persistence API
 
@@ -46,7 +56,8 @@ Collection is sink-neutral. `collect_ticker_universe`, `collect_historical`, and
 `FundamentalCollectionResult`) and accept a caller-supplied writer, so the choice of
 backend belongs to the application rather than to this package.
 
-Persistence primitives are independent and can be combined freely:
+Persistence primitives are technically independent and can be combined where
+the applicable account terms or a separate written agreement permit them:
 
 - **PostgreSQL** — `create_tables`, `replace_ticker_universe`, `upsert_stock_data`,
   `upsert_stock_data_bulk`, `upsert_security_observations`,

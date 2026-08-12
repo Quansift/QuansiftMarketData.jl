@@ -143,7 +143,7 @@ Release validation has three intentionally different modes.
 
 - Development mode runs in ordinary CI and directly with
   `julia --project=. scripts/ci/validate_release_hygiene.jl`. It requires
-  coherent project compatibility, an `[Unreleased]` changelog, development CFF
+  coherent project compatibility, an `[Unreleased]` changelog, valid CFF
   metadata, valid config, no tracked secret env files, and valid migration
   metadata.
 - Strict preflight mode runs manually before Registrator. It requires a stable
@@ -163,15 +163,18 @@ checks remain enforceable.
 
 ### Release stop conditions
 
-Do not prepare or register a package release until maintainers have resolved
-the permanent package-name/repository-URL decision against current Julia
-General AutoMerge guidance. Immediately before release, also recheck General
-by package name and UUID, remote tags, and GitHub Releases. Never reuse a
-version found in any of those locations. Verify the Registrator App and the
+Do not register a package release until maintainers have provider/legal
+confirmation that the package name and non-affiliation presentation are
+acceptable and have reconciled the persistence documentation with the current
+Tiingo Terms. Immediately before release, also recheck the package name and
+repository URL against current Julia General AutoMerge guidance, then recheck
+General by package name and UUID, remote tags, and GitHub Releases. Never reuse
+a version found in any of those locations. Verify the Registrator App and the
 write-enabled `DOCUMENTER_KEY` before creating the release commit.
 
-The current repository state remains development metadata under
-`[Unreleased]`; it is not authorization to register or tag a release.
+Stable `2.0.0` Project, changelog, and CFF metadata is present. That metadata
+alone is not authorization to register or tag a release; the stop conditions,
+exact-SHA strict preflight, and ordered registration sequence still apply.
 
 ### Preflight to registration sequence
 

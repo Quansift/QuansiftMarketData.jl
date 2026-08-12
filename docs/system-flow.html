@@ -301,16 +301,16 @@
         <article class="card optional">
           <small>OPTIONAL</small>
           <h3>DuckDB</h3>
-          <p>永続的な分析replica／高速OLAP cache。正本ではなく、保持期間はconsumerが決める。</p>
+          <p>account termsで許可される場合の永続的な分析replica／高速OLAP cache。正本ではない。</p>
         </article>
         <article class="card archive">
           <small>ARCHIVE</small>
           <h3>Parquet</h3>
-          <p>検証済みatomic local artifact。off-host公開後は全履歴archive／交換形式。</p>
+          <p>account termsで許可される場合の検証済みatomic local artifact。off-host公開後は全履歴archive／交換形式。</p>
         </article>
       </div>
 
-      <p class="note"><strong>Package-only path:</strong> PostgreSQLの準備は不要です。Tiingo API keyからHTTP validation → collector → canonical DataFrameを経て、local DuckDBまたはParquetだけで収集・検証・分析できます。</p>
+      <p class="note"><strong>Data terms:</strong> sinkは技術的な選択肢であり、保存許可を与えるものではありません。Starter／Trial Planはcanonical DataFrameを一時的なmemory内で処理し、計算／操作完了直後に恒久的に削除し、かつ、いかなる場合でもprocess、job、user session終了前に削除します。local DuckDBまたはParquetはaccount termsまたは別途の書面契約が永続化を許可する場合だけ利用します。詳細は<a href="../README.md#data-terms-and-project-identity">Data terms and project identity</a>を参照してください。</p>
     </section>
 
     <section aria-labelledby="boundary-title">
@@ -347,7 +347,7 @@
         <li><div><strong>Archive &amp; publish</strong><br>Parquetを検証・atomic writeし、schedulerがSpacesへ全履歴を公開。</div></li>
         <li><div><strong>Serve downstream</strong><br>Managed PostgreSQLへrolling 3年を公開し、QuantScreener／TATSUを順序制御。</div></li>
       </ol>
-      <p class="footer-note">Rolling 3年ルールはManaged PostgreSQL publicationだけに適用。System PostgreSQLとoff-host Parquetは全履歴を保持します。</p>
+      <p class="footer-note">Rolling 3年ルールはManaged PostgreSQL publicationだけに適用。account termsが保持を許可する場合、System PostgreSQLとoff-host Parquetは全履歴を保持します。</p>
     </section>
 
     <section aria-labelledby="fundamentals-title">
@@ -461,7 +461,8 @@
         "scope": "Tiingo collection, normalization, persistence, scheduling, publication, and release boundaries",
         "source_of_truth": "System PostgreSQL",
         "archive": "Off-host Parquet",
-        "optional_analysis_store": "DuckDB"
+        "optional_analysis_store": "DuckDB",
+        "persistence_condition": "Only where the applicable Tiingo account terms or a separate written agreement permit retention"
     },
     "responsibility_boundary": {
         "tiingo_jl": [
@@ -523,7 +524,7 @@
             "id": "duckdb",
             "name": "DuckDB",
             "owner": "Library consumer",
-            "role": "Optional persistent analysis replica and high-performance OLAP cache",
+            "role": "Optional persistent analysis replica and high-performance OLAP cache when account terms permit retention",
             "kind": "optional_store",
             "optional": true
         },
@@ -531,7 +532,7 @@
             "id": "parquet",
             "name": "Parquet",
             "owner": "Library consumer",
-            "role": "Optional library sink and required Quansift production artifact; off-host full-history archive and interchange format after publication",
+            "role": "When account terms permit retention, optional library sink and required Quansift production artifact; off-host full-history archive and interchange format after publication",
             "kind": "archive",
             "optional": true
         },
@@ -643,12 +644,12 @@
                 {
                     "from": "normalized_frames",
                     "to": "duckdb",
-                    "action": "Analyze locally without PostgreSQL"
+                    "action": "When persistence is permitted, analyze locally without PostgreSQL"
                 },
                 {
                     "from": "normalized_frames",
                     "to": "parquet",
-                    "action": "Optionally write portable files"
+                    "action": "When persistence is permitted, optionally write portable files"
                 }
             ]
         },
@@ -822,12 +823,13 @@
         }
     ],
     "invariants": [
-        "Persistence sinks are independent; adopting Tiingo.jl does not require adopting quansift_scheduler.",
-        "A Tiingo API key and local DuckDB file are sufficient for package evaluation; PostgreSQL is not required.",
-        "System PostgreSQL and off-host Parquet retain full history.",
+        "Persistence sinks are technically independent; use them only where the applicable Tiingo account terms or a separate written agreement permit retention.",
+        "Starter and Trial Plan evaluation uses no persistent sink and permanently removes transient Tiingo Data immediately after the calculation or operation completes and, in all events, before the process, job, or user session ends.",
+        "When persistence is permitted, local DuckDB or Parquet can be used for package evaluation without PostgreSQL.",
+        "Where the applicable account terms permit retention, System PostgreSQL and off-host Parquet retain full history.",
         "The rolling three-year rule applies only to Managed PostgreSQL publication.",
-        "DuckDB is not a source of record and Tiingo.jl imposes no DuckDB retention period.",
-        "Remote upload, manifests, retention, and publication ordering belong to the calling application.",
+        "DuckDB is not a source of record; Tiingo.jl adds no retention period beyond the applicable provider terms.",
+        "Remote upload, manifests, retention, deletion, and publication ordering belong to the calling application and remain subject to the applicable provider terms.",
         "Split retry durability and cross-stage retry policy belong to quansift_scheduler.",
         "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
         "The canonical migration ledger tiingojulia_schema_migrations records schema version 1."

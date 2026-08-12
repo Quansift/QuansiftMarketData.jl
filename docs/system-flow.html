@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Tiingo.jl と本番データ基盤の構造、データフロー、責任境界を1ページで示す資料">
-  <title>Tiingo.jl — System Structure &amp; Flow</title>
+  <meta name="description" content="QuansiftMarketData.jl と本番データ基盤の構造、データフロー、責任境界を1ページで示す資料">
+  <title>QuansiftMarketData.jl — System Structure &amp; Flow</title>
   <style>
     :root {
       color-scheme: light;
@@ -272,7 +272,7 @@
   <a class="skip-link" href="#content">本文へ移動</a>
   <header>
     <p class="eyebrow">System Structure &amp; Flow</p>
-    <h1>Tiingo.jl データ基盤</h1>
+    <h1>QuansiftMarketData.jl データ基盤</h1>
     <p>Tiingo APIから正規化されたDataFrame、独立した3つの保存先、本番オーケストレーション、releaseとproduction deployまでを1枚にまとめた構造図です。</p>
     <ul class="badges" aria-label="主要原則">
       <li class="badge authoritative-label">PostgreSQL = AUTHORITATIVE</li>
@@ -284,10 +284,10 @@
   <main id="content" tabindex="-1">
     <section aria-labelledby="structure-title">
       <h2 id="structure-title">1. Collection → Normalization → Independent Sinks</h2>
-      <ol class="core-flow" aria-label="Tiingo.jlの基本データフロー">
+      <ol class="core-flow" aria-label="QuansiftMarketData.jlの基本データフロー">
         <li><article class="card"><small>SOURCE</small><h3>Tiingo API</h3><p>Ticker universe、EOD、Daily Metrics。</p></article></li>
-        <li><article class="card"><small>TIINGO.JL</small><h3>HTTP &amp; Validation</h3><p>検証、上限付きretry、安全なエラー報告。</p></article></li>
-        <li><article class="card"><small>TIINGO.JL</small><h3>Collectors</h3><p><code>collect_ticker_universe</code>、<code>collect_historical</code>、<code>collect_fundamentals</code>。</p></article></li>
+        <li><article class="card"><small>QUANSIFTMARKETDATA.JL</small><h3>HTTP &amp; Validation</h3><p>検証、上限付きretry、安全なエラー報告。</p></article></li>
+        <li><article class="card"><small>QUANSIFTMARKETDATA.JL</small><h3>Collectors</h3><p><code>collect_ticker_universe</code>、<code>collect_historical</code>、<code>collect_fundamentals</code>。</p></article></li>
         <li><article class="card"><small>BOUNDARY</small><h3>Canonical DataFrames</h3><p>保存先に依存しない正規化データ。</p></article></li>
       </ol>
 
@@ -317,7 +317,7 @@
       <h2 id="boundary-title">2. Responsibility Boundary</h2>
       <div class="boundary-grid">
         <article>
-          <h3>Tiingo.jl owns</h3>
+          <h3>QuansiftMarketData.jl owns</h3>
           <ul>
             <li>HTTP access、response validation</li>
             <li>Ticker universe、EOD、Daily Metrics collection</li>
@@ -364,7 +364,7 @@
       <h2 id="split-title">5. Split Recovery — Durable Per-Ticker Retry</h2>
       <ol class="step-list">
         <li><div>refresh前にtickerをschedulerのpending queueへ永続化。</div></li>
-        <li><div>対象tickerの全履歴をTiingo.jl collectorで再取得。</div></li>
+        <li><div>対象tickerの全履歴をQuansiftMarketData collectorで再取得。</div></li>
         <li><div>ticker単位のPostgreSQL transactionで履歴を置換しcommit。</div></li>
         <li><div><strong>Optional:</strong> DuckDBが構成されている場合だけanalysis replicaを更新。</div></li>
         <li><div>scheduler自身が、PostgreSQL commit後、かつDuckDB構成時はその更新完了後にpending entryを削除。</div></li>
@@ -413,9 +413,9 @@
         <article class="deploy">
           <h3>Production deployment</h3>
           <ol class="step-list">
-            <li><div>Tiingoとschedulerを<code>main</code>で検証</div></li>
-            <li><div>schedulerのTiingo SHA pinを一致させる</div></li>
-            <li><div>Tiingo → schedulerの順で<code>production</code>をfast-forward</div></li>
+            <li><div>QuansiftMarketDataとschedulerを<code>main</code>で検証</div></li>
+            <li><div>schedulerのQuansiftMarketData SHA pinを一致させる</div></li>
+            <li><div>QuansiftMarketData → schedulerの順で<code>production</code>をfast-forward</div></li>
             <li><div>cron停止・idle確認・<code>git pull --ff-only</code></div></li>
             <li><div>migration／health／pin確認後にcron復帰</div></li>
           </ol>
@@ -455,17 +455,17 @@
 
   <script type="application/json" id="system-flow-data">
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "system": {
-        "name": "Tiingo.jl data platform",
-        "scope": "Tiingo collection, normalization, persistence, scheduling, publication, and release boundaries",
+        "name": "QuansiftMarketData.jl data platform",
+        "scope": "QuansiftMarketData collection, normalization, persistence, scheduling, publication, and release boundaries",
         "source_of_truth": "System PostgreSQL",
         "archive": "Off-host Parquet",
         "optional_analysis_store": "DuckDB",
         "persistence_condition": "Only where the applicable Tiingo account terms or a separate written agreement permit retention"
     },
     "responsibility_boundary": {
-        "tiingo_jl": [
+        "quansift_market_data": [
             "Tiingo HTTP access and response validation",
             "Ticker-universe, EOD price, and Daily Metrics collection",
             "Canonical DataFrame normalization",
@@ -491,7 +491,7 @@
         {
             "id": "http_client",
             "name": "HTTP and validation",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Bounded retries, response validation, and safe error reporting",
             "kind": "library",
             "optional": false
@@ -499,7 +499,7 @@
         {
             "id": "collectors",
             "name": "Collectors",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "collect_ticker_universe, collect_historical, and collect_fundamentals",
             "kind": "library",
             "optional": false
@@ -507,7 +507,7 @@
         {
             "id": "normalized_frames",
             "name": "Canonical DataFrames",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Sink-neutral normalized ticker, EOD, security-observation, and Daily Metrics data",
             "kind": "boundary",
             "optional": false
@@ -571,7 +571,7 @@
         {
             "id": "migration_runner",
             "name": "PostgreSQL migration runner",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Applies ordered schema migrations under an advisory lock",
             "kind": "library",
             "optional": false
@@ -828,7 +828,7 @@
         "When persistence is permitted, local DuckDB or Parquet can be used for package evaluation without PostgreSQL.",
         "Where the applicable account terms permit retention, System PostgreSQL and off-host Parquet retain full history.",
         "The rolling three-year rule applies only to Managed PostgreSQL publication.",
-        "DuckDB is not a source of record; Tiingo.jl adds no retention period beyond the applicable provider terms.",
+        "DuckDB is not a source of record; QuansiftMarketData adds no retention period beyond the applicable provider terms.",
         "Remote upload, manifests, retention, deletion, and publication ordering belong to the calling application and remain subject to the applicable provider terms.",
         "Split retry durability and cross-stage retry policy belong to quansift_scheduler.",
         "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
@@ -880,9 +880,9 @@
             "Do not create or allow a competing version tag"
         ],
         "production_deployment": [
-            "Validate Tiingo and quansift_scheduler on main",
-            "Verify the scheduler pins the exact Tiingo revision",
-            "Fast-forward Tiingo production, then scheduler production",
+            "Validate QuansiftMarketData and quansift_scheduler on main",
+            "Verify the scheduler pins the exact QuansiftMarketData revision",
+            "Fast-forward QuansiftMarketData production, then scheduler production",
             "Pause scheduled writers and verify the system is idle",
             "Pull both production-tracking checkouts with --ff-only",
             "Apply and verify database migrations",

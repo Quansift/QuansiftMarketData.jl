@@ -2,7 +2,7 @@
 
 using DataFrames
 using Dates
-using Tiingo
+using QuansiftMarketData
 
 const LIVE_CANARY_ALLOWED_TICKERS = ("AAPL", "SPY")
 const LIVE_CANARY_DEFAULT_WINDOW_DAYS = 14
@@ -82,7 +82,7 @@ function run_live_canary(;
     window_days::Integer = LIVE_CANARY_DEFAULT_WINDOW_DAYS,
     end_date::Date = Date(now(UTC)) - Day(1),
     utc_today::Date = Date(now(UTC)),
-    fetcher = Tiingo.get_ticker_data,
+    fetcher = QuansiftMarketData.get_ticker_data,
 )::LiveCanaryReport
     symbols = _validate_live_canary_inputs(
         api_key,

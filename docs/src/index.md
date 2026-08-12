@@ -1,10 +1,10 @@
 ```@meta
-CurrentModule = Tiingo
+CurrentModule = QuansiftMarketData
 ```
 
-# Tiingo.jl
+# QuansiftMarketData.jl
 
-Tiingo is an open source Julia package for collecting Tiingo end-of-day stock
+QuansiftMarketData is an open source Julia package for collecting Tiingo end-of-day stock
 and ETF prices and Fundamentals data, normalizing responses into `DataFrame`s, and
 persisting those frames through independent PostgreSQL, Parquet, or DuckDB
 primitives.
@@ -15,19 +15,19 @@ Persistence APIs are technical capabilities, not permission to retain Tiingo
 Data. The current Tiingo Terms restrict Starter and Trial Plans to transient
 processing without persistent storage; the user's current plan, applicable
 Supplemental Terms, and any separate written agreement govern. See the
-canonical [data terms and project identity](https://github.com/Quansift/Tiingo.jl#data-terms-and-project-identity)
+canonical [data terms and project identity](https://github.com/Quansift/QuansiftMarketData.jl#data-terms-and-project-identity)
 summary before selecting a sink.
 
 ## Responsibility boundary
 
-Tiingo owns:
+QuansiftMarketData owns:
 
 - Tiingo HTTP access and response validation;
 - ticker, EOD price, and Fundamentals normalization into canonical `DataFrame`s;
 - idempotent EOD and Fundamentals upserts for PostgreSQL and DuckDB; and
 - verified atomic local Parquet writes with explicit overwrite behavior.
 
-Tiingo does not own cron or systemd scheduling, cross-stage retries,
+QuansiftMarketData does not own cron or systemd scheduling, cross-stage retries,
 object-store publication, Managed PostgreSQL deployment, notifications, or
 QuantScreener/TATSU sequencing.
 
@@ -37,7 +37,7 @@ Where its provider agreement permits retention, the Quansift production
 workflow selects system PostgreSQL as its authoritative relational store and
 Parquet as its full-history interchange/archive format:
 
-1. Tiingo collects Tiingo EOD prices and Fundamentals, normalizes them into
+1. QuansiftMarketData collects Tiingo EOD prices and Fundamentals, normalizes them into
    `DataFrame`s, and upserts them into the system PostgreSQL source of record.
 2. `quansift_scheduler` exports full history from system PostgreSQL as Parquet and
    publishes it to DigitalOcean Spaces.

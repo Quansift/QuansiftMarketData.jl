@@ -14,7 +14,7 @@ using Logging
 using LoggingExtras
 using TimeSeries
 
-using Tiingo
+using QuansiftMarketData
 using Test
 
 

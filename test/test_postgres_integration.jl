@@ -4,9 +4,9 @@ using Dates
 using DBInterface
 using DuckDB
 using LibPQ
-using Tiingo
+using QuansiftMarketData
 
-const MigrationSchemaIntegration = Tiingo.DB.Schema
+const MigrationSchemaIntegration = QuansiftMarketData.DB.Schema
 
 function _pg_integration_query(conn::LibPQ.Connection, sql::String)::DataFrame
     result = LibPQ.execute(conn, sql)

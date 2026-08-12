@@ -1,24 +1,24 @@
-# Tiingo.jl
+# QuansiftMarketData.jl
 
-Tiingo is a Julia library for collecting Tiingo end-of-day stock and ETF
+QuansiftMarketData is a Julia library for collecting Tiingo end-of-day stock and ETF
 prices and Fundamentals data, normalizing responses into `DataFrame`s, and
 persisting those frames through independent PostgreSQL, Parquet, or DuckDB
 primitives.
 
-[![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/Tiingo.jl/actions)
-[![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/Tiingo.jl/dev)
-[![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/Tiingo.jl/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/Tiingo.jl/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/QuansiftMarketData.jl/actions)
+[![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/QuansiftMarketData.jl/dev)
+[![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/QuansiftMarketData.jl/actions)
 
 ## Responsibility boundary
 
-Tiingo owns:
+QuansiftMarketData owns:
 
 - Tiingo HTTP access and response validation;
 - ticker, EOD price, and Fundamentals normalization;
 - idempotent EOD and Fundamentals upserts for PostgreSQL and DuckDB; and
 - verified atomic local Parquet writes with explicit overwrite behavior.
 
-Tiingo does not own cron or systemd scheduling, cross-stage retries,
+QuansiftMarketData does not own cron or systemd scheduling, cross-stage retries,
 object-store publication, Managed PostgreSQL deployment, notifications, or
 QuantScreener/TATSU sequencing.
 
@@ -49,12 +49,13 @@ and a pull request to `main`. Do not open pull requests to, or commit directly o
 `production`: it is the protected deployment pointer, not a development branch.
 Merging to `main` does not deploy automatically.
 
-For a Tiingo release, first merge and verify Tiingo on `main`. Then update the
-exact Tiingo revision in all `quansift_scheduler` pin locations, merge that
+For a QuansiftMarketData release, first merge and verify QuansiftMarketData on
+`main`. Then update the exact QuansiftMarketData revision in all
+`quansift_scheduler` pin locations, merge that
 scheduler pull request, and require both repositories' CI to pass. Promote the
-validated pair by fast-forwarding Tiingo `production` first and scheduler
+validated pair by fast-forwarding QuansiftMarketData `production` first and scheduler
 `production` second; never force-push either branch.
-For a scheduler-only release, keep the Tiingo pin unchanged and promote only
+For a scheduler-only release, keep the QuansiftMarketData pin unchanged and promote only
 scheduler `production`.
 
 The promotion commands derive the revisions from the remote branches, so the
@@ -64,23 +65,23 @@ operator does not need to remember a commit SHA:
 (
 set -euo pipefail
 
-git -C /path/to/Tiingo.jl fetch --prune origin
+git -C /path/to/QuansiftMarketData.jl fetch --prune origin
 git -C /path/to/quansift_scheduler fetch --prune origin
 
-TIINGO_RELEASE="$(git -C /path/to/Tiingo.jl rev-parse origin/main)"
+TIINGO_RELEASE="$(git -C /path/to/QuansiftMarketData.jl rev-parse origin/main)"
 SCHEDULER_RELEASE="$(git -C /path/to/quansift_scheduler rev-parse origin/main)"
 SCHEDULER_PIN="$(
   git -C /path/to/quansift_scheduler show origin/main:Project.toml |
-    awk -F'"' '/^Tiingo = \{rev = / {print $2}'
+    awk -F'"' '/^QuansiftMarketData = \{rev = / {print $2}'
 )"
 
 test "$TIINGO_RELEASE" = "$SCHEDULER_PIN"
-git -C /path/to/Tiingo.jl \
+git -C /path/to/QuansiftMarketData.jl \
   merge-base --is-ancestor origin/production "$TIINGO_RELEASE"
 git -C /path/to/quansift_scheduler \
   merge-base --is-ancestor origin/production "$SCHEDULER_RELEASE"
 
-git -C /path/to/Tiingo.jl \
+git -C /path/to/QuansiftMarketData.jl \
   push origin "$TIINGO_RELEASE:refs/heads/production"
 git -C /path/to/quansift_scheduler \
   push origin "$SCHEDULER_RELEASE:refs/heads/production"
@@ -90,9 +91,13 @@ git -C /path/to/quansift_scheduler \
 Do not pull either data-plane checkout unless both promotion pushes succeed.
 
 On data-plane, pause the scheduler cron entries and prove that no pipeline,
-lock, or PostgreSQL writer is active before updating. Pull Tiingo first, apply
+lock, or PostgreSQL writer is active before updating. Pull QuansiftMarketData first, apply
 and verify any database migration, then pull scheduler and recheck that its
-Tiingo pin equals `/opt/tiingojulia` `HEAD` before restoring cron:
+QuansiftMarketData pin equals `/opt/tiingojulia` `HEAD` before restoring cron:
+
+The first production cutover preserves the downstream contract
+`TIINGO_PROJECT_ROOT=/opt/tiingojulia`; the package rename does not move that
+checkout or rename the environment variable.
 
 ```bash
 git -C /opt/tiingojulia pull --ff-only
@@ -104,19 +109,19 @@ Therefore changes on `main` remain undeployed until an explicit promotion.
 
 ## Installation
 
-Until Tiingo is registered in Julia's General registry, install it directly
+Until QuansiftMarketData is registered in Julia's General registry, install it directly
 from this repository:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Quansift/Tiingo.jl")
+Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl")
 ```
 
 After General registration, name-based installation will be available:
 
 ```julia
 using Pkg
-Pkg.add("Tiingo")
+Pkg.add("QuansiftMarketData")
 ```
 
 For repository development:
@@ -154,10 +159,8 @@ operating within those terms.
 
 This is an operational summary, not legal advice. Confirm unclear storage,
 retention, deletion, or naming rights with Tiingo or qualified counsel. The
-Tiingo Terms identify `Tiingo` as a provider trademark. Tiingo.jl is an
+Tiingo Terms identify `Tiingo` as a provider trademark. QuansiftMarketData is an
 independent project and is not affiliated with or endorsed by Tiingo, Inc.
-Provider/legal confirmation that the package name and presentation are
-acceptable is a release gate for public registration under that name.
 
 ## Configuration
 
@@ -172,7 +175,7 @@ TIINGO_API_KEY=your_api_key_here
 ```
 
 `.env` is ignored by git. Do not commit secrets. Set overrides before running
-`using Tiingo`.
+`using QuansiftMarketData`.
 
 Common optional settings include:
 
@@ -204,7 +207,7 @@ Use `normalize_eod_prices` as the canonical schema and date-range validation
 boundary before passing externally supplied payloads to a persistence writer:
 
 ```julia
-using Tiingo
+using QuansiftMarketData
 using DataFrames
 using Dates
 
@@ -245,7 +248,7 @@ three-year initial backfill default.
 ## Choose a persistence primitive
 
 The sinks are independent. Applications can select PostgreSQL, Parquet,
-DuckDB, or more than one without adopting a Tiingo scheduler, but only where
+DuckDB, or more than one without adopting a scheduler, but only where
 the applicable account terms or a separate written agreement permit the
 selected persistence.
 
@@ -254,7 +257,7 @@ selected persistence.
 The PostgreSQL overloads use the same upsert names as the existing DuckDB API:
 
 ```julia
-using Tiingo
+using QuansiftMarketData
 
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
@@ -311,11 +314,11 @@ end
 
 `write_parquet` returns `ParquetWriteResult` with `path`, `rows`, `columns`, and
 `bytes`. The default is no-overwrite; pass `overwrite=true` only when replacing
-the target is intentional. Tiingo verifies the temporary file before an
+the target is intentional. QuansiftMarketData verifies the temporary file before an
 atomic local publication; the calling application owns remote upload,
 manifests, retention, and publication ordering.
 
-PostgreSQL table snapshots use DuckDB's `postgres` extension. Tiingo only
+PostgreSQL table snapshots use DuckDB's `postgres` extension. QuansiftMarketData only
 runs `LOAD postgres` and never downloads extensions at runtime. Preinstall the
 matching extension while building the deployment image or environment:
 
@@ -331,7 +334,7 @@ during the image build.
 The existing DuckDB workflow remains supported:
 
 ```julia
-using Tiingo
+using QuansiftMarketData
 
 conn = connect_duckdb("analysis.duckdb")
 try
@@ -429,7 +432,7 @@ TIINGO_TEST_PG_CONNECTION='postgresql://user:password@localhost:5432/tiingojulia
   `download_tickers_duckdb`, `update_historical`, `optimize_database`,
   `create_indexes`
 
-See the generated [documentation](https://quansift.github.io/Tiingo.jl/dev)
+See the generated [documentation](https://quansift.github.io/QuansiftMarketData.jl/dev)
 for complete signatures.
 
 ## Performance

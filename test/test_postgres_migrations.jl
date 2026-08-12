@@ -1,8 +1,8 @@
 using Test
 using LibPQ
-using Tiingo
+using QuansiftMarketData
 
-const MigrationSchema = Tiingo.DB.Schema
+const MigrationSchema = QuansiftMarketData.DB.Schema
 
 @testset "PostgreSQL migration public contract" begin
     @test POSTGRES_SCHEMA_VERSION == 1

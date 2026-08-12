@@ -2,7 +2,7 @@ using Test
 using Dates
 using DataFrames
 using TimeSeries
-using Tiingo
+using QuansiftMarketData
 
 struct OrdinaryFundamentalFetcherError <: Exception
     message::String

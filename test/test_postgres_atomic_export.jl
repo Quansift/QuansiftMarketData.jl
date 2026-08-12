@@ -1,9 +1,9 @@
 using Test
 using DataFrames
-using Tiingo
+using QuansiftMarketData
 
 @testset "single-table PostgreSQL export preflights before staging" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
     events = Any[]
     plan = postgres_module.prepare_single_postgres_export(
         :pg,
@@ -36,7 +36,7 @@ using Tiingo
 end
 
 @testset "deprecated PostgreSQL export plans are unique and validated" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
 
     @test_throws ArgumentError postgres_module.build_postgres_export_plans(String[])
     @test_throws ArgumentError postgres_module.build_postgres_export_plans([""])
@@ -58,8 +58,8 @@ end
 end
 
 @testset "unique staging tables retain the target key schema" begin
-    postgres_module = Tiingo.DB.Postgres
-    schema_module = Tiingo.DB.Schema
+    postgres_module = QuansiftMarketData.DB.Postgres
+    schema_module = QuansiftMarketData.DB.Schema
     staging = only(
         postgres_module.build_postgres_export_plans(["historical_data"]),
     ).staging
@@ -77,7 +77,7 @@ end
 end
 
 @testset "deprecated PostgreSQL batch publication owns one transaction" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
     plans = [
         (target = "prices", staging = "_tiingo_stage_1"),
         (target = "metrics", staging = "_tiingo_stage_2"),
@@ -133,7 +133,7 @@ end
 end
 
 @testset "deprecated PostgreSQL export orchestration always cleans owned stages" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
     plans = [
         (target = "prices", staging = "_tiingo_stage_1"),
         (target = "metrics", staging = "_tiingo_stage_2"),

@@ -1,11 +1,11 @@
 using Test
 using DataFrames
-using Tiingo
-using Tiingo.DB.Schema:
+using QuansiftMarketData
+using QuansiftMarketData.DB.Schema:
     generate_create_table_query,
     map_duckdb_to_postgres_type,
     quote_postgres_identifier
-using Tiingo.DB.Postgres:
+using QuansiftMarketData.DB.Postgres:
     generate_dataframe_insert_query,
     generate_refresh_upsert_query
 

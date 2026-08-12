@@ -5,10 +5,10 @@ using DBInterface
 using DuckDB
 using JSON3
 using LibPQ
-using Tiingo
+using QuansiftMarketData
 
 include(joinpath(@__DIR__, "..", "benchmark", "common.jl"))
-using .TiingoBench
+using .QuansiftMarketDataBench
 
 function _benchmark_test_config(; kwargs...)
     defaults = (
@@ -271,7 +271,7 @@ end
     project = read(joinpath(benchmark_directory, "Project.toml"), String)
     for dependency in (
         "BenchmarkTools", "DataFrames", "Dates", "DBInterface", "DuckDB",
-        "JSON3", "LibPQ", "Tiingo",
+        "JSON3", "LibPQ", "QuansiftMarketData",
     )
         @test occursin(dependency, project)
     end

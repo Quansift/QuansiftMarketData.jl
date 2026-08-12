@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-11
+
+### Changed
+
+- **Breaking:** renamed the package and module from `Tiingo` to
+  `QuansiftMarketData`, and moved the repository to
+  `Quansift/QuansiftMarketData.jl`. Consumers must replace `using Tiingo` with
+  `using QuansiftMarketData`. The UUID and exported API remain unchanged.
+- Renamed package, documentation, release, and container identities while
+  preserving Tiingo provider terminology and stable production paths,
+  environment variables, and PostgreSQL identifiers.
+
 ## [2.0.0] - 2026-08-11
 
 ### Added
@@ -114,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/Quansift/Tiingo.jl/releases/tag/v1.0.0
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v3.0.0
+[2.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v2.0.0
+[1.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v1.0.0

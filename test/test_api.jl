@@ -7,8 +7,8 @@ using HTTP
 using JSON3
 using Logging
 
-# Import the functions using Tiingo
-using Tiingo.API
+# Import the functions using QuansiftMarketData
+using QuansiftMarketData.API
 
 struct _InterruptingAPIResponseBody
     cancellation::InterruptException
@@ -373,7 +373,7 @@ end
 
             # Test the function with a simple case
             try
-                Tiingo.download_tickers_duckdb(conn)
+                QuansiftMarketData.download_tickers_duckdb(conn)
                 @test true
             catch e
                 @test e isa Exception
@@ -414,7 +414,7 @@ end
     #     )
 
     #     # Run the function
-    #     Tiingo.generate_filtered_tickers(conn)
+    #     QuansiftMarketData.generate_filtered_tickers(conn)
 
     #     # Check the results
     #     result =

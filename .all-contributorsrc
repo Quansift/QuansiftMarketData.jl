@@ -1,5 +1,5 @@
 {
-  "projectName": "Tiingo.jl",
+  "projectName": "QuansiftMarketData.jl",
   "projectOwner": "Quansift",
   "files": ["README.md", "docs/src/index.md"]
 }

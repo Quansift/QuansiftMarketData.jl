@@ -1,15 +1,15 @@
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "system": {
-        "name": "Tiingo.jl data platform",
-        "scope": "Tiingo collection, normalization, persistence, scheduling, publication, and release boundaries",
+        "name": "QuansiftMarketData.jl data platform",
+        "scope": "QuansiftMarketData collection, normalization, persistence, scheduling, publication, and release boundaries",
         "source_of_truth": "System PostgreSQL",
         "archive": "Off-host Parquet",
         "optional_analysis_store": "DuckDB",
         "persistence_condition": "Only where the applicable Tiingo account terms or a separate written agreement permit retention"
     },
     "responsibility_boundary": {
-        "tiingo_jl": [
+        "quansift_market_data": [
             "Tiingo HTTP access and response validation",
             "Ticker-universe, EOD price, and Daily Metrics collection",
             "Canonical DataFrame normalization",
@@ -35,7 +35,7 @@
         {
             "id": "http_client",
             "name": "HTTP and validation",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Bounded retries, response validation, and safe error reporting",
             "kind": "library",
             "optional": false
@@ -43,7 +43,7 @@
         {
             "id": "collectors",
             "name": "Collectors",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "collect_ticker_universe, collect_historical, and collect_fundamentals",
             "kind": "library",
             "optional": false
@@ -51,7 +51,7 @@
         {
             "id": "normalized_frames",
             "name": "Canonical DataFrames",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Sink-neutral normalized ticker, EOD, security-observation, and Daily Metrics data",
             "kind": "boundary",
             "optional": false
@@ -115,7 +115,7 @@
         {
             "id": "migration_runner",
             "name": "PostgreSQL migration runner",
-            "owner": "Tiingo.jl",
+            "owner": "QuansiftMarketData.jl",
             "role": "Applies ordered schema migrations under an advisory lock",
             "kind": "library",
             "optional": false
@@ -372,7 +372,7 @@
         "When persistence is permitted, local DuckDB or Parquet can be used for package evaluation without PostgreSQL.",
         "Where the applicable account terms permit retention, System PostgreSQL and off-host Parquet retain full history.",
         "The rolling three-year rule applies only to Managed PostgreSQL publication.",
-        "DuckDB is not a source of record; Tiingo.jl adds no retention period beyond the applicable provider terms.",
+        "DuckDB is not a source of record; QuansiftMarketData adds no retention period beyond the applicable provider terms.",
         "Remote upload, manifests, retention, deletion, and publication ordering belong to the calling application and remain subject to the applicable provider terms.",
         "Split retry durability and cross-stage retry policy belong to quansift_scheduler.",
         "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
@@ -424,9 +424,9 @@
             "Do not create or allow a competing version tag"
         ],
         "production_deployment": [
-            "Validate Tiingo and quansift_scheduler on main",
-            "Verify the scheduler pins the exact Tiingo revision",
-            "Fast-forward Tiingo production, then scheduler production",
+            "Validate QuansiftMarketData and quansift_scheduler on main",
+            "Verify the scheduler pins the exact QuansiftMarketData revision",
+            "Fast-forward QuansiftMarketData production, then scheduler production",
             "Pause scheduled writers and verify the system is idle",
             "Pull both production-tracking checkouts with --ff-only",
             "Apply and verify database migrations",

@@ -2,7 +2,7 @@ using Test
 using DataFrames
 using DuckDB
 using DBInterface
-using Tiingo
+using QuansiftMarketData
 
 refresh_script = joinpath(@__DIR__, "..", "scripts", "refresh_postgres_via_duckdb.jl")
 include(refresh_script)

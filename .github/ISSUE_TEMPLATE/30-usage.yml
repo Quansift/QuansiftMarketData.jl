@@ -10,12 +10,12 @@ body:
               Please, before submitting, make sure that:
 
               - You have checked the documentation and haven't found enough information
-              - There is not an [existing issue](https://github.com/Quansift/Tiingo.jl/issues) with the same question
+              - There is not an [existing issue](https://github.com/Quansift/QuansiftMarketData.jl/issues) with the same question
 
               - You have read the [contributing guide](docs/src/90-contributing.md)
 
 
-              - You are following the [code of conduct](https://github.com/Quansift/Tiingo.jl/blob/main/CODE_OF_CONDUCT.md)
+              - You are following the [code of conduct](https://github.com/Quansift/QuansiftMarketData.jl/blob/main/CODE_OF_CONDUCT.md)
 
 
               The form below should help you in filling out this issue.

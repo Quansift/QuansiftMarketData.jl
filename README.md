@@ -35,10 +35,12 @@ DigitalOcean Spaces and a rolling three-year dataset to DigitalOcean Managed
 PostgreSQL. DuckDB is not an additional source of record.
 
 The rolling three-year rule applies only to DigitalOcean Managed PostgreSQL
-publication. System PostgreSQL and Parquet retain full history, and Tiingo
-imposes no DuckDB retention period — consumers bound local DuckDB state to their
-own analysis needs. A separate three-year default exists for the `sync_fundamentals!`
-initial backfill window; it is unrelated to the Managed PostgreSQL publication rule.
+publication. Where the applicable Tiingo account terms or a separate written
+agreement permit that retention, system PostgreSQL and Parquet retain full
+history, and this package imposes no additional DuckDB retention period —
+consumers bound local DuckDB state to their own analysis needs. A separate
+three-year default exists for the `sync_fundamentals!` initial backfill window;
+it is unrelated to the Managed PostgreSQL publication rule.
 
 ## Production release channel
 
@@ -123,6 +125,40 @@ For repository development:
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 ```
 
+## Data terms and project identity
+
+Each user must use their own Tiingo account and API token. This package does
+not bundle or redistribute Tiingo market or Fundamentals data. The MIT license
+applies only to this software and grants no rights to Tiingo data. The storage
+APIs and examples in this repository describe technical capabilities, not
+permission to retain Tiingo Data.
+
+Under the current [Tiingo Terms of Use](https://api.tiingo.com/tos/), Starter
+and Trial Plan users may process Tiingo Data only transiently in volatile
+memory or a temporary, non-persistent cache. They may not write, save, archive,
+back up, or otherwise retain it in persistent or durable storage and must
+permanently remove it immediately after the calculation or operation completes
+and, in all events, before the process, job, or user session ends. This includes
+PostgreSQL, persistent DuckDB, Parquet and other files, logs, queues, object
+stores, archives, backups, and disaster-recovery systems.
+
+Eligible paid-plan users may persist Tiingo Data only to the extent permitted
+by their current plan and the Terms. On expiration, cancellation, termination,
+or downgrade to Starter or Trial, the Terms require prompt permanent deletion
+from every system, including backups and disaster recovery, unless Tiingo
+expressly agrees to different retention in a separate written agreement. The
+user's current plan, applicable Supplemental Terms, and any separate written
+agreement govern permitted use; this package's examples and Quansift's
+documented storage roles do not. Users are responsible for verifying and
+operating within those terms.
+
+This is an operational summary, not legal advice. Confirm unclear storage,
+retention, deletion, or naming rights with Tiingo or qualified counsel. The
+Tiingo Terms identify `Tiingo` as a provider trademark. Tiingo.jl is an
+independent project and is not affiliated with or endorsed by Tiingo, Inc.
+Provider/legal confirmation that the package name and presentation are
+acceptable is a release gate for public registration under that name.
+
 ## Configuration
 
 Create a local env file and set the Tiingo API key:
@@ -137,14 +173,6 @@ TIINGO_API_KEY=your_api_key_here
 
 `.env` is ignored by git. Do not commit secrets. Set overrides before running
 `using Tiingo`.
-
-Each user must use their own Tiingo account and API token. This package does
-not bundle or redistribute Tiingo market or Fundamentals data. The MIT license
-applies only to this software and grants no rights to Tiingo data. Use of the
-API and its data remains subject to the current
-[Tiingo Terms of Service](https://api.tiingo.com/tos/) and the user's account
-terms. This project is independent and is not affiliated with or endorsed by
-Tiingo, Inc.
 
 Common optional settings include:
 
@@ -217,7 +245,9 @@ three-year initial backfill default.
 ## Choose a persistence primitive
 
 The sinks are independent. Applications can select PostgreSQL, Parquet,
-DuckDB, or more than one without adopting a Tiingo scheduler.
+DuckDB, or more than one without adopting a Tiingo scheduler, but only where
+the applicable account terms or a separate written agreement permit the
+selected persistence.
 
 ### PostgreSQL
 
@@ -325,11 +355,18 @@ finally
 end
 ```
 
-PostgreSQL setup is not required to evaluate or analyze Tiingo data. A Tiingo
-API key and a local DuckDB file are sufficient to use the workflow above.
+PostgreSQL setup is not technically required to evaluate or analyze Tiingo
+data. Accounts whose terms permit durable storage can use an API key and a
+local DuckDB file for the workflow above. Starter and Trial Plan users should
+instead use sink-free in-memory collection or the
+[zero-persistence live canary](PRODUCTION.md#advisory-zero-persistence-live-canary)
+and permanently remove Tiingo Data immediately after the calculation or
+operation completes and, in all events, before the process, job, or user
+session ends.
 
 For production applications, bound any local DuckDB data to the consumer's
-analysis needs. Do not treat it as an additional required full-history archive.
+analysis needs and the applicable account terms. Do not treat it as an
+additional required full-history archive.
 
 #### Deprecated: the DuckDB-first full-history path
 
@@ -361,6 +398,10 @@ scripts/run_staging_smoke.sh
 ```
 
 This is an integration example, not the canonical production scheduler.
+It persists Tiingo Data to a local DuckDB file and optionally PostgreSQL, so
+use it only when the applicable account terms or a separate written agreement
+permit persistence. Starter and Trial Plan users should use the zero-persistence
+live canary instead.
 [`PRODUCTION.md`](PRODUCTION.md) and
 [`deploy/README.md`](deploy/README.md) describe its limited scope.
 

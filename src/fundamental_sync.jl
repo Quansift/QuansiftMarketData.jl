@@ -631,6 +631,19 @@ function sync_fundamentals!(
             error isa InterruptException && rethrow()
             continue_on_error || rethrow()
             push!(failed, perma_ticker)
+            # Log the reason. Swallowing it silently made a 44%-failure run
+            # (2,368 of 5,404 securities on 2026-08-13) indistinguishable from
+            # a healthy one in the log: the caller only sees a count, and
+            # FUNDAMENTALS_MAX_EXPORT_FAILURES then withholds the export with
+            # no way to tell an API outage from a data bug. Only the first few
+            # are logged in full — thousands of identical stacktraces would
+            # bury everything else — after which one line per failure keeps
+            # the record without the noise.
+            if length(failed) <= 5
+                @warn "Fundamentals fetch failed" perma_ticker start_date exception=(error, catch_backtrace())
+            else
+                @warn "Fundamentals fetch failed" perma_ticker start_date error=sprint(showerror, error)
+            end
         end
     end
 

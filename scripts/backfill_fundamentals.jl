@@ -112,6 +112,15 @@ function main()
 
     conn = connect_duckdb(duckdb_path)
     try
+        # connect_duckdb only opens the file — configure_database is a no-op, so
+        # without this call DuckDB runs untuned: no memory_limit sized to the
+        # host, no thread caps, and crucially no temp_directory, which is what
+        # lets it spill to disk instead of dying. On 2026-08-13 this backfill
+        # OOM'd twice on a 3.8 GiB droplet ("Out of Memory Error: failed to
+        # allocate data of size 4.0 KiB (1.5 GiB/1.5 GiB used)"), leaving market
+        # caps 19 days stale. The OHLCV pipeline has always called this; the
+        # fundamentals path never did.
+        optimize_database(conn)
         create_tables(conn)
         hydrate_existing_fundamentals!(conn, pg_conn_str)
         download_tickers_duckdb(conn)

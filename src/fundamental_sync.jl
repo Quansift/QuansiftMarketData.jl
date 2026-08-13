@@ -528,6 +528,11 @@ Daily Metrics for active, unambiguous stocks present in the local universe.
 Securities without a watermark request a three-year backfill; subsequent runs
 start on the day after the stable `permaTicker` watermark. Daily Metrics are
 always requested by `permaTicker`, never by the mutable ticker symbol.
+
+`checkpoint_every` (default 500, or `FUNDAMENTALS_CHECKPOINT_EVERY`) bounds
+DuckDB's memory by checkpointing after that many securities are written; 0
+disables it. Without periodic checkpoints the buffer manager grows with the
+size of the universe and eventually cannot allocate.
 """
 function sync_fundamentals!(
     conn::DuckDBConnection,
@@ -540,8 +545,13 @@ function sync_fundamentals!(
     fetched_at::DateTime = Dates.now(),
     daily_fetcher::Function = get_daily_fundamental,
     continue_on_error::Bool = true,
+    checkpoint_every::Int = parse(
+        Int, get(ENV, "FUNDAMENTALS_CHECKPOINT_EVERY", "500"),
+    ),
 )
     history_years > 0 || throw(ArgumentError("history_years must be positive"))
+    checkpoint_every >= 0 ||
+        throw(ArgumentError("checkpoint_every must be non-negative"))
 
     observations = normalize_security_observations(
         meta_payload,
@@ -598,10 +608,40 @@ function sync_fundamentals!(
             end
             metric_rows += upsert_fundamental_daily_metrics(conn, metrics)
             push!(requested, perma_ticker)
+            # DuckDB holds each upsert's changes in memory until a checkpoint
+            # writes them to the database file. Over a full universe that is
+            # thousands of upserts in one process, so the buffer manager grows
+            # monotonically and eventually cannot allocate at all. On
+            # 2026-08-13 this killed the market-cap refresh on a 3.8 GiB
+            # droplet after ~5,400 of 12,254 securities:
+            #   Out of Memory Error: failed to allocate data of size 4.0 KiB
+            #   (1.5 GiB/1.5 GiB used)
+            # Checkpointing periodically bounds the footprint by the batch
+            # size rather than by the size of the universe. Failure to
+            # checkpoint is not fatal — the rows are already committed — so
+            # warn and keep going rather than discard thousands of fetches.
+            if checkpoint_every > 0 && length(requested) % checkpoint_every == 0
+                try
+                    DBInterface.execute(conn, "CHECKPOINT")
+                catch checkpoint_error
+                    @warn "DuckDB checkpoint failed; continuing" securities=length(requested) exception=checkpoint_error
+                end
+            end
         catch error
             error isa InterruptException && rethrow()
             continue_on_error || rethrow()
             push!(failed, perma_ticker)
+        end
+    end
+
+    # Flush whatever the last partial batch left in memory, so the caller's
+    # validation and export steps start from a clean buffer rather than
+    # inheriting this loop's high-water mark.
+    if checkpoint_every > 0
+        try
+            DBInterface.execute(conn, "CHECKPOINT")
+        catch checkpoint_error
+            @warn "final DuckDB checkpoint failed; continuing" exception=checkpoint_error
         end
     end
 

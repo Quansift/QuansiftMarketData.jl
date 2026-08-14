@@ -541,6 +541,14 @@ A failed checkpoint aborts the run. DuckDB invalidates the entire database
 on a checkpoint FATAL, so every later write is guaranteed to fail; carrying
 on only burns API quota and buries the one useful error. Committed rows stay
 in the DuckDB for the next resume.
+
+`batch_size` (default 100, or `FUNDAMENTALS_UPSERT_BATCH`) is how many
+securities are buffered per DuckDB write. Writing once per security is what
+exhausted memory in production: each write registers a DataFrame with the
+driver and the registration is not fully released (~2.9 MB apiece, against
+33 KB for the same statement issued as pure SQL). If a batched write fails
+it is retried one security at a time, so batching never coarsens which
+security gets recorded as failed.
 """
 function sync_fundamentals!(
     conn::DuckDBConnection,
@@ -559,10 +567,18 @@ function sync_fundamentals!(
     checkpoint_every::Int = parse(
         Int, get(ENV, "FUNDAMENTALS_CHECKPOINT_EVERY", "100"),
     ),
+    # Securities buffered per DuckDB write. The driver leaks ~2.9 MB per
+    # registration, so this divides the leak: 100 turns ~5,400 registrations
+    # into ~54. Larger batches hold more rows in Julia memory before the
+    # write, which is cheap by comparison (a batch is ~25k small rows).
+    batch_size::Int = parse(
+        Int, get(ENV, "FUNDAMENTALS_UPSERT_BATCH", "100"),
+    ),
 )
     history_years > 0 || throw(ArgumentError("history_years must be positive"))
     checkpoint_every >= 0 ||
         throw(ArgumentError("checkpoint_every must be non-negative"))
+    batch_size > 0 || throw(ArgumentError("batch_size must be positive"))
 
     observations = normalize_security_observations(
         meta_payload,
@@ -579,13 +595,64 @@ function sync_fundamentals!(
     unavailable = String[]
     failed = String[]
     metric_rows = 0
-    # Counts UPSERT ATTEMPTS, not successes. Keying the checkpoint off the
-    # success count deadlocks: once memory is tight the upserts start failing,
-    # the success count stops advancing, and the checkpoint that would have
-    # released the memory can never fire. Measured on 2026-08-13 — two runs
-    # stalled at completed=461 and completed=459 against a 500 interval, so
-    # not one checkpoint ran and ~95% of securities failed with OOM.
+    # Metrics are buffered and written in batches. One DuckDB write per
+    # security is what actually exhausted memory in production: each write
+    # registers a DataFrame with the driver, and that registration is not
+    # fully released. Measured on 2026-08-13 against the same table and the
+    # same 1 GiB limit — the pure-SQL equivalent of this loop used 33 KB per
+    # upsert and ran 600 iterations on 16 MB, while the Julia
+    # register_data_frame path used ~2.9 MB per upsert and died at 359.
+    # Batching cuts the number of registrations by batch_size, and with it
+    # the leaked memory.
+    pending_metrics = DataFrame[]
+    pending_tickers = String[]
+    # Counts securities whose metrics have been WRITTEN (attempted, not
+    # necessarily stored) — the unit the checkpoint cadence is measured in.
+    # Keying anything here off the success count deadlocks: once memory is
+    # tight the writes start failing, the success count stops advancing, and
+    # the checkpoint that would release the memory can never fire. Measured
+    # on 2026-08-13 — two runs stalled at completed=461 and completed=459
+    # against a 500 interval, so not one checkpoint ran.
     upsert_attempts = 0
+    since_checkpoint = 0
+
+    # Write the buffer as one statement. On failure, retry the batch one
+    # security at a time: batching must not coarsen failure attribution, or a
+    # single malformed security would take out the other batch_size-1 with it
+    # and the caller could not tell which one was bad. The retry only runs on
+    # the failure path, so the happy path still pays for exactly one write.
+    function flush_pending!()
+        isempty(pending_tickers) && return nothing
+        n = length(pending_tickers)
+        try
+            metric_rows += upsert_fundamental_daily_metrics(
+                conn, reduce(vcat, pending_metrics),
+            )
+            append!(requested, pending_tickers)
+        catch batch_error
+            @warn "Batched metrics write failed; retrying one security at a time" securities=n error=sprint(showerror, batch_error)
+            for (frame, ticker) in zip(pending_metrics, pending_tickers)
+                try
+                    metric_rows += upsert_fundamental_daily_metrics(conn, frame)
+                    push!(requested, ticker)
+                catch write_error
+                    push!(failed, ticker)
+                    if length(failed) <= 5
+                        @warn "Fundamentals write failed" perma_ticker=ticker exception=(write_error, catch_backtrace())
+                    else
+                        @warn "Fundamentals write failed" perma_ticker=ticker error=sprint(showerror, write_error)
+                    end
+                end
+            end
+        finally
+            empty!(pending_metrics)
+            empty!(pending_tickers)
+            upsert_attempts += n
+            since_checkpoint += n
+        end
+        return nothing
+    end
+
     for security in eachrow(eligible_securities)
         perma_ticker = String(security.perma_ticker)
         has_watermark = haskey(watermarks, perma_ticker)
@@ -624,9 +691,8 @@ function sync_fundamentals!(
                 push!(has_watermark ? unchanged : unavailable, perma_ticker)
                 continue
             end
-            upsert_attempts += 1
-            metric_rows += upsert_fundamental_daily_metrics(conn, metrics)
-            push!(requested, perma_ticker)
+            push!(pending_metrics, metrics)
+            push!(pending_tickers, perma_ticker)
         catch error
             error isa InterruptException && rethrow()
             continue_on_error || rethrow()
@@ -646,19 +712,18 @@ function sync_fundamentals!(
             end
         end
 
-        # DuckDB holds each upsert's changes in memory until a checkpoint
-        # writes them to the database file. Across a full universe that is
-        # thousands of upserts in one process, so the buffer manager grows
-        # monotonically until it cannot allocate at all:
+        length(pending_tickers) >= batch_size && flush_pending!()
+
+        # DuckDB holds written changes in memory until a checkpoint puts them
+        # in the database file, so the buffer manager grows across a run:
         #   Out of Memory Error: failed to allocate data of size 4.0 KiB
-        # Checkpointing bounds the footprint by the batch size instead of by
-        # the size of the universe.
+        # Checkpointing bounds that by the interval rather than by the size of
+        # the universe.
         #
-        # This sits OUTSIDE the try/catch, and counts attempts rather than
-        # successes, deliberately. Both matter: once memory is tight the
-        # upserts themselves start failing, so a success-keyed counter stops
-        # advancing and the checkpoint that would release the memory can never
-        # run. Measured on 2026-08-13 — two runs stalled at 461 and 459
+        # The cadence counts securities WRITTEN, not stored, deliberately:
+        # when memory is tight the writes fail, so a success-keyed counter
+        # stops advancing and the checkpoint that would release the memory can
+        # never run. Measured on 2026-08-13 — two runs stalled at 461 and 459
         # successes against a 500 interval, fired zero checkpoints, and lost
         # ~95% of securities to OOM.
         #
@@ -667,17 +732,17 @@ function sync_fundamentals!(
         #   FATAL Error: database has been invalidated because of a previous
         #   fatal error. The database must be restarted prior to being used
         #   again.
-        # An earlier version of this code warned and carried on. On 2026-08-13
-        # that turned one checkpoint failure at attempt 1,400 into 3,458
-        # failures: every later security was still fetched from the API — real
-        # quota, real time — and then written to a dead connection, burying the
-        # single line that explained the run under ~3,300 identical cascade
-        # errors. Stopping immediately keeps the diagnosis legible and leaves
-        # the already-committed rows intact for the next resume.
-        if checkpoint_every > 0 && upsert_attempts > 0 &&
-           upsert_attempts % checkpoint_every == 0
+        # An earlier version warned and carried on. That turned one checkpoint
+        # failure at attempt 1,400 into 3,458 failures: every later security
+        # was still fetched from the API — real quota, real time — and then
+        # written to a dead connection, burying the single line that explained
+        # the run under ~3,300 identical cascade errors. Stopping immediately
+        # keeps the diagnosis legible and leaves committed rows intact for the
+        # next resume.
+        if checkpoint_every > 0 && since_checkpoint >= checkpoint_every
             try
                 DBInterface.execute(conn, "CHECKPOINT")
+                since_checkpoint = 0
             catch checkpoint_error
                 @error "DuckDB checkpoint failed; aborting run (the database is now invalidated, so every later write would fail)" upsert_attempts securities_completed=length(requested) exception=checkpoint_error
                 rethrow()
@@ -685,9 +750,12 @@ function sync_fundamentals!(
         end
     end
 
-    # Flush whatever the last partial batch left in memory, so the caller's
-    # validation and export steps start from a clean buffer rather than
-    # inheriting this loop's high-water mark.
+    # Whatever the last partial batch holds still has to be written.
+    flush_pending!()
+
+    # Then flush DuckDB itself, so the caller's validation and export steps
+    # start from a clean buffer rather than inheriting this loop's high-water
+    # mark.
     if checkpoint_every > 0
         try
             DBInterface.execute(conn, "CHECKPOINT")

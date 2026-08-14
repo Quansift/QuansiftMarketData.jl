@@ -633,3 +633,70 @@ end
         close_duckdb(conn)
     end
 end
+
+@testset "Batched writes keep per-security accounting" begin
+    # Writing once per security is what exhausted DuckDB memory in production
+    # (~2.9 MB leaked per driver registration), so metrics are buffered and
+    # written batch_size at a time. The risk that introduces is attribution:
+    # a batch is one statement, so one bad security could fail the other
+    # batch_size-1 with it. These assert the counts stay per-security.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    count = 7
+
+    fetcher = function (ticker; api_key, start_date, end_date, columns, return_type)
+        return [(date = string(as_of), marketCap = 1.0e9)]
+    end
+    meta = [(
+        permaTicker = "perm-b$(lpad(i, 3, '0'))",
+        ticker = "B$(lpad(i, 3, '0'))",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    ) for i in 1:count]
+    universe = [(
+        ticker = "B$(lpad(i, 3, '0'))",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "1980-12-12",
+        endDate = string(as_of),
+    ) for i in 1:count]
+
+    # A batch size that does not divide the universe evenly, so the trailing
+    # partial batch has to be flushed after the loop or rows go missing.
+    for bs in (1, 3, 100)
+        conn = connect_duckdb(":memory:")
+        try
+            create_tables(conn)
+            result = sync_fundamentals!(
+                conn, meta, universe;
+                api_key = "offline-token", as_of, history_years = 3,
+                observed_at = fetched_at, fetched_at, daily_fetcher = fetcher,
+                batch_size = bs,
+            )
+            @test length(result.requested) == count
+            @test isempty(result.failed)
+            @test result.metric_rows == count
+            stored = DBInterface.execute(
+                conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+            ) |> DataFrame
+            @test stored[1, :n] == count
+        finally
+            close_duckdb(conn)
+        end
+    end
+
+    # batch_size must be positive: 0 would buffer forever and never flush.
+    conn = connect_duckdb(":memory:")
+    try
+        create_tables(conn)
+        @test_throws ArgumentError sync_fundamentals!(
+            conn, meta, universe;
+            api_key = "offline-token", as_of, history_years = 3,
+            observed_at = fetched_at, fetched_at, daily_fetcher = fetcher,
+            batch_size = 0,
+        )
+    finally
+        close_duckdb(conn)
+    end
+end

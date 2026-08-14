@@ -536,6 +536,11 @@ the universe and eventually cannot allocate. The counter deliberately tracks
 attempts rather than successes: when memory is tight the upserts fail, and a
 success-keyed counter would stop advancing exactly when the checkpoint is
 most needed.
+
+A failed checkpoint aborts the run. DuckDB invalidates the entire database
+on a checkpoint FATAL, so every later write is guaranteed to fail; carrying
+on only burns API quota and buries the one useful error. Committed rows stay
+in the DuckDB for the next resume.
 """
 function sync_fundamentals!(
     conn::DuckDBConnection,
@@ -657,14 +662,25 @@ function sync_fundamentals!(
         # successes against a 500 interval, fired zero checkpoints, and lost
         # ~95% of securities to OOM.
         #
-        # A checkpoint failure is not fatal (the rows are already committed),
-        # so warn and continue rather than discard thousands of fetches.
+        # A failed CHECKPOINT is NOT recoverable, so this stops the loop.
+        # DuckDB invalidates the whole database, not just the statement:
+        #   FATAL Error: database has been invalidated because of a previous
+        #   fatal error. The database must be restarted prior to being used
+        #   again.
+        # An earlier version of this code warned and carried on. On 2026-08-13
+        # that turned one checkpoint failure at attempt 1,400 into 3,458
+        # failures: every later security was still fetched from the API — real
+        # quota, real time — and then written to a dead connection, burying the
+        # single line that explained the run under ~3,300 identical cascade
+        # errors. Stopping immediately keeps the diagnosis legible and leaves
+        # the already-committed rows intact for the next resume.
         if checkpoint_every > 0 && upsert_attempts > 0 &&
            upsert_attempts % checkpoint_every == 0
             try
                 DBInterface.execute(conn, "CHECKPOINT")
             catch checkpoint_error
-                @warn "DuckDB checkpoint failed; continuing" upsert_attempts exception=checkpoint_error
+                @error "DuckDB checkpoint failed; aborting run (the database is now invalidated, so every later write would fail)" upsert_attempts securities_completed=length(requested) exception=checkpoint_error
+                rethrow()
             end
         end
     end

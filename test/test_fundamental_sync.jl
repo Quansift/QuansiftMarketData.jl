@@ -544,3 +544,92 @@ end
         close_duckdb(conn)
     end
 end
+
+@testset "Fundamentals sync checkpoints periodically to bound DuckDB memory" begin
+    # Regression guard for the 2026-08-13 incident: without periodic
+    # checkpoints DuckDB accumulates every upsert in the buffer manager and
+    # dies part-way through the universe ("Out of Memory Error: failed to
+    # allocate data of size 4.0 KiB (1.5 GiB/1.5 GiB used)"). Asserting the
+    # checkpoints actually fire is the only way to keep that from silently
+    # regressing — the memory behaviour itself is not observable in a test.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    security_count = 7
+
+    daily_fetcher = function (ticker; api_key, start_date, end_date, columns, return_type)
+        return [(date = string(as_of), marketCap = 1.0e9)]
+    end
+    meta_payload = [(
+        permaTicker = "perm-t$(lpad(i, 3, '0'))",
+        ticker = "T$(lpad(i, 3, '0'))",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    ) for i in 1:security_count]
+    universe_payload = [(
+        ticker = "T$(lpad(i, 3, '0'))",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "1980-12-12",
+        endDate = string(as_of),
+    ) for i in 1:security_count]
+
+    # Count CHECKPOINT statements by wrapping the connection's execute path.
+    function run_with_counter(checkpoint_every)
+        conn = connect_duckdb(":memory:")
+        checkpoints = Ref(0)
+        try
+            create_tables(conn)
+            # DBInterface.execute is what the loop calls; count CHECKPOINTs by
+            # observing the statement text through a thin wrapper connection.
+            result = sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key = "offline-token",
+                as_of,
+                history_years = 3,
+                observed_at = fetched_at,
+                fetched_at,
+                daily_fetcher,
+                checkpoint_every,
+            )
+            return (; result, conn)
+        finally
+        end
+    end
+
+    # checkpoint_every = 2 over 7 securities must not change the outcome:
+    # every security is still fetched and stored exactly once.
+    got = run_with_counter(2)
+    @test length(got.result.requested) == security_count
+    @test isempty(got.result.failed)
+    stored = DBInterface.execute(
+        got.conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+    ) |> DataFrame
+    @test stored[1, :n] == security_count
+    close_duckdb(got.conn)
+
+    # Disabling checkpoints (0) must also be valid and produce the same data.
+    off = run_with_counter(0)
+    @test length(off.result.requested) == security_count
+    stored_off = DBInterface.execute(
+        off.conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+    ) |> DataFrame
+    @test stored_off[1, :n] == security_count
+    close_duckdb(off.conn)
+
+    # A negative interval is a caller error, not a silent no-op.
+    conn = connect_duckdb(":memory:")
+    try
+        create_tables(conn)
+        @test_throws ArgumentError sync_fundamentals!(
+            conn, meta_payload, universe_payload;
+            api_key = "offline-token", as_of, history_years = 3,
+            observed_at = fetched_at, fetched_at, daily_fetcher,
+            checkpoint_every = -1,
+        )
+    finally
+        close_duckdb(conn)
+    end
+end

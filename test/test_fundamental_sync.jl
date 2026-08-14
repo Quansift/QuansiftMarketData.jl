@@ -633,4 +633,3 @@ end
         close_duckdb(conn)
     end
 end
-

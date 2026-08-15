@@ -1,5 +1,6 @@
 using Test
 using JSON3
+using TOML
 
 const RELEASE_HYGIENE_SCRIPT = joinpath(
     @__DIR__,
@@ -549,6 +550,42 @@ supported_asset_types = ["Stock"]
         @test occursin("contents: write", tagbot)
         @test occursin("issues: read", tagbot)
         @test occursin("pull-requests: read", tagbot)
+    end
+
+    @testset "The repository passes its own hygiene gate" begin
+        # Every other testset here runs the gate against a fixture, so the
+        # repository's own Project.toml was never validated by the suite. That
+        # is a real hole: adding `Random` to [deps] passed the entire local
+        # suite and then failed CI on `Project.toml requires finite compat for
+        # Random`, because the gate exempts stdlibs through a hardcoded UUID
+        # allowlist rather than by asking Julia what a stdlib is. This runs
+        # what CI runs, so the next one lands here first.
+        #
+        # `environ` is empty rather than `ENV` so the assertion is about the
+        # repository, not about whichever release variables happen to be set
+        # in the shell. Everything else keeps its default: reading the real
+        # tracked files and real migration metadata is the point.
+        repository_root = normpath(joinpath(@__DIR__, ".."))
+
+        # This runs before the gate on purpose. The gate throws, so it would
+        # abort the testset and the reader would get a stacktrace instead of
+        # the name of the dependency that needs a compat entry.
+        project = TOML.parsefile(joinpath(repository_root, "Project.toml"))
+        compat = get(project, "compat", Dict{String,Any}())
+        uncovered = sort!([
+            name
+            for (name, uuid) in get(project, "deps", Dict{String,Any}())
+            if !(String(uuid) in STDLIB_UUIDS) && !haskey(compat, name)
+        ])
+        @test uncovered == String[]
+
+        result = validate_release_hygiene(
+            repository_root;
+            environ = Dict{String,String}(),
+        )
+
+        @test result.mode == :development
+        @test result.version isa VersionNumber
     end
 
     @testset "Package rename preserves production contracts" begin

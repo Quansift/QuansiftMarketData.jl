@@ -354,3 +354,27 @@ end
     close_duckdb(conn)
     rm(test_db_path_parallel; force=true)
 end
+
+@testset "PostgreSQL connect retries back off exponentially" begin
+    # A fixed delay retries three times inside 15 seconds, which is short
+    # enough that all three land inside the same failover or restart the
+    # connection was waiting out. Doubling spreads the attempts across it,
+    # and the cap keeps a large configured delay from stalling the run.
+    backoff = QuansiftMarketData.DB.Postgres._connect_retry_delay_seconds
+
+    @test backoff(5, 1) == 5
+    @test backoff(5, 2) == 10
+    @test backoff(5, 3) == 20
+    @test backoff(5, 4) == 40
+
+    # Monotonic, and capped rather than unbounded.
+    delays = [backoff(5, attempt) for attempt in 1:12]
+    @test issorted(delays)
+    @test all(delay -> delay <= 60, delays)
+    @test delays[end] == 60
+
+    # A zero delay stays zero: opting out of waiting must not resurrect it.
+    @test all(attempt -> backoff(0, attempt) == 0, 1:5)
+    # A huge configured delay is clamped, not multiplied.
+    @test backoff(1_000, 1) == 60
+end

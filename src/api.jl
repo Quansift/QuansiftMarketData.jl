@@ -4,6 +4,7 @@ using DataFrames
 using TimeSeries
 using Dates
 using DotEnv
+using Random
 
 using ..Config
 
@@ -69,12 +70,75 @@ function _redact_api_error(error)::String
     )
 end
 
-function _http_status_error(status, url, _body)::ErrorException
+"""
+    ApiStatusError(status, message)
+
+A non-success HTTP response, carrying the status alongside the sanitized
+message. Downstream classification used to recover the status by matching
+English substrings in the message, which made an upstream wording change
+enough to silently reclassify every failure of that kind.
+"""
+struct ApiStatusError <: Exception
+    status::Int
+    message::String
+end
+
+Base.showerror(io::IO, error::ApiStatusError) = print(io, error.message)
+
+"""
+    _is_retryable_status(status)
+
+Whether a status is worth another attempt: rate limiting and server-side
+failures are transient, everything else is the caller's problem.
+"""
+_is_retryable_status(status::Integer)::Bool =
+    status == 429 || (500 <= status <= 599)
+
+"""
+    _is_unavailable_status(status)
+
+Whether a status means the security has no data to give, as opposed to the
+request having failed. Unavailable is a recorded outcome, not a failure.
+"""
+_is_unavailable_status(status::Integer)::Bool = status == 404 || status == 410
+
+function _http_status_error(status, url, _body)::ApiStatusError
     safe_url = _redact_api_error(url)
-    return ErrorException("HTTP $status for $safe_url; response body omitted")
+    return ApiStatusError(
+        Int(status),
+        "HTTP $status for $safe_url; response body omitted",
+    )
 end
 
 const _MAX_RETRY_DELAY_SECONDS = 300
+
+# Fraction of the computed delay that jitter may add.
+const _RETRY_JITTER_FRACTION = 0.25
+
+"""
+    _jittered_delay_seconds(delay; rng=Random.default_rng())
+
+Spread a retry delay so concurrent callers do not re-burst in lockstep.
+
+The jitter is additive only. `Retry-After` is an instruction from the server,
+and a jitter able to undercut it would turn politeness into a second wave of
+429s — so the wait may grow, never shrink, and never past the ceiling.
+"""
+function _jittered_delay_seconds(
+    delay::Real;
+    rng::Random.AbstractRNG = Random.default_rng(),
+)::Float64
+    delay <= 0 && return float(delay)
+    jitter = rand(rng) * _RETRY_JITTER_FRACTION * delay
+    return min(float(delay) + jitter, float(_MAX_RETRY_DELAY_SECONDS))
+end
+
+# Ceiling on a response body before it is handed to the JSON parser. The body
+# is one allocation; parsing it into JSON3 and then a DataFrame multiplies it
+# many times over, so the useful place to stop is between the two. This does
+# NOT bound the socket read — HTTP.get returns with the body already in
+# memory — it bounds the blow-up that follows.
+const _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 function _retry_delay_seconds(
     base_delay::Int,
@@ -161,11 +225,16 @@ function fetch_api_data(
     connect_timeout::Real = 10,
     readtimeout::Real = 30,
     allow_empty::Bool = false,
+    max_response_bytes::Int = _MAX_RESPONSE_BYTES,
 )
     last_error = nothing
 
     if max_retries < 1
         throw(ArgumentError("max_retries must be >= 1"))
+    end
+
+    if max_response_bytes < 0
+        throw(ArgumentError("max_response_bytes must be non-negative"))
     end
 
     safe_url = _redact_api_error(url)
@@ -197,7 +266,7 @@ function fetch_api_data(
                     nothing,
                     Dates.now(Dates.UTC),
                 )
-                sleep(delay)
+                sleep(_jittered_delay_seconds(delay))
                 continue
             else
                 throw(safe_error)
@@ -206,6 +275,16 @@ function fetch_api_data(
 
         status = response.status
         if status == 200
+            body_bytes = length(response.body)
+            if max_response_bytes > 0 && body_bytes > max_response_bytes
+                # Permanent for this request, so it is thrown rather than
+                # retried: re-downloading an oversized response is the one
+                # thing that makes an oversized response worse.
+                throw(ErrorException(
+                    "Response from $safe_url is $body_bytes bytes, over the " *
+                    "$max_response_bytes byte limit; refusing to parse",
+                ))
+            end
             data = try
                 JSON3.read(String(response.body))
             catch error
@@ -218,7 +297,7 @@ function fetch_api_data(
             return data
         end
 
-        retryable = status == 429 || (status >= 500 && status <= 599)
+        retryable = _is_retryable_status(status)
         err = _http_status_error(status, url, response.body)
         last_error = err
 
@@ -231,7 +310,7 @@ function fetch_api_data(
                 Dates.now(Dates.UTC),
             )
             @warn "API request retryable failure" status=status delay_seconds=delay
-            sleep(delay)
+            sleep(_jittered_delay_seconds(delay))
         else
             throw(err)
         end

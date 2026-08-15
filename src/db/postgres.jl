@@ -473,6 +473,30 @@ module Postgres
         end
     end
 
+    # Ceiling on a single connect retry wait. Doubling without one turns a
+    # generous configured delay into a stalled run.
+    const _MAX_CONNECT_RETRY_DELAY_SECONDS = 60
+
+    """
+        _connect_retry_delay_seconds(retry_delay, attempt)
+
+    Exponential backoff for connection retries, capped.
+
+    A fixed delay retries three times inside 15 seconds, which is short enough
+    that all three attempts land inside the same failover or restart the
+    connection was waiting out. Doubling spreads them across it instead.
+    """
+    function _connect_retry_delay_seconds(retry_delay::Integer, attempt::Integer)::Int
+        retry_delay <= 0 && return 0
+        exponent = max(attempt - 1, 0)
+        # Compare in Float64 so a large configured delay clamps instead of
+        # overflowing on the way to the cap.
+        scaled = float(retry_delay) * 2.0^exponent
+        return scaled >= _MAX_CONNECT_RETRY_DELAY_SECONDS ?
+            _MAX_CONNECT_RETRY_DELAY_SECONDS :
+            Int(round(scaled))
+    end
+
     function connect_postgres(connection_string::String;
                              timeout_seconds::Int=30,
                              max_retries::Int=3,
@@ -497,8 +521,9 @@ module Postgres
                 @warn "PostgreSQL connection attempt $attempt/$max_retries failed" exception=(safe_error, catch_backtrace())
 
                 if attempt < max_retries
-                    @info "Retrying in $retry_delay seconds..."
-                    sleep(retry_delay)
+                    delay = _connect_retry_delay_seconds(retry_delay, attempt)
+                    @info "Retrying in $delay seconds..."
+                    sleep(delay)
                 end
             end
         end

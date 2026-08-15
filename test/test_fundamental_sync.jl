@@ -120,6 +120,49 @@ end
     @test all(normalized.join_status .== "duplicate_ticker")
 end
 
+@testset "A delisted predecessor does not quarantine the live security" begin
+    # Tiingo keeps every issuer that ever used a symbol. Treating the delisted
+    # ones as rival identities dropped PARA and MSGY from the sync for three
+    # weeks — their market caps stopped advancing and nothing reported it,
+    # because only `matched` rows are eligible for the backfill.
+    observed_at = DateTime(2026, 7, 19, 12)
+    universe = [
+        (ticker="DUP", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate="2026-07-19"),
+    ]
+
+    recycled_symbol = [
+        (permaTicker="perm-older", ticker="DUP", isActive=false, isADR=false, dailyLastUpdated=nothing),
+        (permaTicker="perm-old", ticker="DUP", isActive=false, isADR=false, dailyLastUpdated=nothing),
+        (permaTicker="perm-live", ticker="DUP", isActive=true, isADR=false, dailyLastUpdated=nothing),
+    ]
+    normalized = normalize_security_observations(recycled_symbol, universe; observed_at)
+    status = Dict(row.perma_ticker => row.join_status for row in eachrow(normalized))
+    @test status["perm-live"] == "matched"
+    @test status["perm-old"] == "inactive"
+    @test status["perm-older"] == "inactive"
+
+    # Same reasoning for a permaTicker that reappears alongside a delisted row.
+    recycled_perma = [
+        (permaTicker="perm-dup", ticker="DUP", isActive=false, isADR=false, dailyLastUpdated=nothing),
+        (permaTicker="perm-dup", ticker="DUP", isActive=true, isADR=false, dailyLastUpdated=nothing),
+    ]
+    normalized = normalize_security_observations(recycled_perma, universe; observed_at)
+    @test sort(normalized.join_status) == ["inactive", "matched"]
+
+    # Two live securities on one symbol stay quarantined: nothing in the payload
+    # says which of them the local price series belongs to.
+    both_live = [
+        (permaTicker="perm-1", ticker="DUP", isActive=true, isADR=false, dailyLastUpdated=nothing),
+        (permaTicker="perm-2", ticker="DUP", isActive=true, isADR=false, dailyLastUpdated=nothing),
+        (permaTicker="perm-gone", ticker="DUP", isActive=false, isADR=false, dailyLastUpdated=nothing),
+    ]
+    normalized = normalize_security_observations(both_live, universe; observed_at)
+    status = Dict(row.perma_ticker => row.join_status for row in eachrow(normalized))
+    @test status["perm-1"] == "duplicate_ticker"
+    @test status["perm-2"] == "duplicate_ticker"
+    @test status["perm-gone"] == "inactive"
+end
+
 @testset "Daily API payload normalizes nullable metrics and provenance" begin
     fetched_at = DateTime(2026, 7, 19, 12)
     payload = [

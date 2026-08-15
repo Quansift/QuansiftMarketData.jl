@@ -167,6 +167,7 @@ module API
     using TimeSeries
     using Dates
     using DotEnv
+    using Random
 
     using ..Config
 

@@ -930,3 +930,135 @@ end
     @test fetched == ["perm-a-cancel"]
     @test written == ["perm-a-cancel"]
 end
+
+@testset "Historical collection sweeps retryable failures when asked" begin
+    # `SyncFailure.retryable` was computed and never acted on: a transient
+    # 5xx that outlived `fetch_api_data`'s own retries dropped the ticker for
+    # the whole run. The sweep is opt-in here — these primitives are
+    # sink-neutral and report complete failure records so the caller decides.
+    tickers = DataFrame(
+        ticker = ["FLAKY", "SOLID"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    fetched = String[]
+    attempts = Dict{String,Int}()
+    fetcher = function (row; kwargs...)
+        ticker = String(row.ticker)
+        push!(fetched, ticker)
+        attempts[ticker] = get(attempts, ticker, 0) + 1
+        ticker == "FLAKY" && attempts[ticker] == 1 &&
+            error("HTTP 503 upstream timeout")
+        return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+        retry_rounds = 1,
+    )
+
+    @test isempty(result.failed)
+    @test isempty(result.failures)
+    @test result.updated == ["SOLID", "FLAKY"]
+    @test result.attempted == ["FLAKY", "SOLID"]
+    @test result.written_rows == 2
+    # The sweep trails the pass rather than retrying inline.
+    @test fetched == ["FLAKY", "SOLID", "FLAKY"]
+end
+
+@testset "Historical collection defaults to no sweep" begin
+    tickers = DataFrame(
+        ticker = ["FLAKY"],
+        start_date = [Date(2024, 1, 1)],
+        end_date = [Date(2024, 1, 2)],
+    )
+    attempts = Ref(0)
+    fetcher = function (row; kwargs...)
+        attempts[] += 1
+        error("HTTP 503 upstream timeout")
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+    )
+
+    @test result.failed == ["FLAKY"]
+    @test attempts[] == 1
+    @test only(result.failures).retryable
+end
+
+@testset "Historical sweep skips non-retryable and write failures" begin
+    # 404/410 is classified `unavailable`, not a failure, so a permanent
+    # FAILURE needs a status the unavailable classifier does not claim.
+    tickers = DataFrame(
+        ticker = ["BADREQ", "UNWRITABLE"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    attempts = Dict{String,Int}()
+    fetcher = function (row; kwargs...)
+        ticker = String(row.ticker)
+        attempts[ticker] = get(attempts, ticker, 0) + 1
+        ticker == "BADREQ" && error("HTTP 400 malformed request")
+        return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        # A write failure whose message would otherwise read as retryable.
+        writer = (_, _) -> error("connection reset while writing"),
+        retry_rounds = 3,
+    )
+
+    @test sort(result.failed) == ["BADREQ", "UNWRITABLE"]
+    @test attempts["BADREQ"] == 1
+    @test attempts["UNWRITABLE"] == 1
+    stages = Dict(failure.entity => failure.stage for failure in result.failures)
+    @test stages["BADREQ"] == :fetch
+    @test stages["UNWRITABLE"] == :write
+end
+
+@testset "Fundamentals collection sweeps retryable failures when asked" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [
+        (permaTicker="perm-flaky", ticker="FLAKY", isActive=true, isADR=false, dailyLastUpdated=string(as_of)),
+        (permaTicker="perm-solid", ticker="SOLID", isActive=true, isADR=false, dailyLastUpdated=string(as_of)),
+    ]
+    universe_payload = [
+        (ticker="FLAKY", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate=string(as_of)),
+        (ticker="SOLID", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate=string(as_of)),
+    ]
+    fetched = String[]
+    attempts = Dict{String,Int}()
+    daily_fetcher = function (perma_ticker; kwargs...)
+        push!(fetched, perma_ticker)
+        attempts[perma_ticker] = get(attempts, perma_ticker, 0) + 1
+        perma_ticker == "perm-flaky" && attempts[perma_ticker] == 1 &&
+            error("HTTP 503 upstream timeout")
+        return [(date=string(as_of), marketCap=200.0)]
+    end
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        daily_fetcher,
+        metric_writer = (_, frame) -> nrow(frame),
+        retry_rounds = 1,
+    )
+
+    @test isempty(result.failed)
+    @test isempty(result.failures)
+    @test result.updated == ["perm-solid", "perm-flaky"]
+    @test result.metric_rows == 2
+    @test fetched == ["perm-flaky", "perm-solid", "perm-flaky"]
+end

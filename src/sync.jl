@@ -704,6 +704,12 @@ end
     persisted. Strict mode processes every ticker and then throws
     `SyncIncompleteError` when one or more fetch, normalization, or write
     operations failed.
+    `retry_rounds` (default 0) sweeps tickers whose FETCH failed with a
+    retryable classification after the main pass; recovered tickers leave
+    `failed` and `failures`. It is opt-in because this entrypoint is
+    sink-neutral and reports complete failure records for the caller to act
+    on. Normalization failures are deterministic and write failures must not
+    be re-driven, so neither is ever swept.
     """
     function collect_historical(
         tickers::DataFrame,
@@ -714,7 +720,10 @@ end
         writer = nothing,
         continue_on_error::Bool = true,
         strict::Bool = false,
+        retry_rounds::Int = 0,
     )::HistoricalCollectionResult
+        retry_rounds >= 0 ||
+            throw(ArgumentError("retry_rounds must be non-negative"))
         latest_dates_lookup = _historical_latest_dates(latest_dates)
         attempted = String[]
         updated = String[]
@@ -724,19 +733,27 @@ end
         failures = SyncFailure[]
         written_rows = 0
 
-        for (row_index, row) in enumerate(eachrow(tickers))
+        # Tickers whose FETCH failed with a retryable classification, swept
+        # after the main pass when `retry_rounds > 0`. Normalization failures
+        # are deterministic and write failures must not be re-driven, so
+        # neither is ever queued here.
+        retry_queue = Tuple{Int,DataFrameRow}[]
+
+        function process_row!(row_index, row, sweeping::Bool)
             symbol = _historical_row_label(row_index)
             try
                 symbol = _historical_symbol(row)
             catch error
                 error isa InterruptException && rethrow()
-                push!(attempted, symbol)
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                if !sweeping
+                    push!(attempted, symbol)
+                    push!(failed, symbol)
+                    push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                end
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
-            push!(attempted, symbol)
+            sweeping || push!(attempted, symbol)
 
             ticker_end_date = try
                 _historical_date(
@@ -747,18 +764,20 @@ end
                 )
             catch error
                 error isa InterruptException && rethrow()
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                if !sweeping
+                    push!(failed, symbol)
+                    push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                end
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
             latest_date = get(latest_dates_lookup, symbol, nothing)
             if !isnothing(latest_date) && latest_date >= ticker_end_date
                 push!(unchanged, symbol)
-                continue
+                return nothing
             elseif isnothing(latest_date) && !add_missing
                 push!(unavailable, symbol)
-                continue
+                return nothing
             end
 
             start_date = if isnothing(latest_date)
@@ -771,13 +790,15 @@ end
                     )
                 catch error
                     error isa InterruptException && rethrow()
-                    push!(failed, symbol)
-                    push!(
-                        failures,
-                        _sync_failure(symbol, :normalize, error; retryable=false),
-                    )
+                    if !sweeping
+                        push!(failed, symbol)
+                        push!(
+                            failures,
+                            _sync_failure(symbol, :normalize, error; retryable=false),
+                        )
+                    end
                     (!continue_on_error && !strict) && rethrow()
-                    continue
+                    return nothing
                 end
             else
                 latest_date + Day(1)
@@ -797,11 +818,14 @@ end
                 error isa InterruptException && rethrow()
                 if _is_unavailable_historical_error(error)
                     push!(unavailable, symbol)
-                    continue
+                    return nothing
                 end
-                push!(failed, symbol)
                 failure = _sync_failure(symbol, :fetch, error)
-                push!(failures, failure)
+                if !sweeping
+                    push!(failed, symbol)
+                    push!(failures, failure)
+                end
+                failure.retryable && push!(retry_queue, (row_index, row))
                 (!continue_on_error && !strict) && rethrow()
                 @warn(
                     "Historical fetch failed for $symbol; continuing",
@@ -809,7 +833,7 @@ end
                     failure_message=failure.message,
                     retryable=failure.retryable,
                 )
-                continue
+                return nothing
             end
 
             frame = try
@@ -820,14 +844,16 @@ end
                 )
             catch error
                 error isa InterruptException && rethrow()
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                if !sweeping
+                    push!(failed, symbol)
+                    push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                end
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
             if nrow(frame) == 0
                 push!(isnothing(latest_date) ? unavailable : unchanged, symbol)
-                continue
+                return nothing
             end
 
             if !isnothing(writer)
@@ -840,13 +866,35 @@ end
                     written_rows += rows
                 catch error
                     error isa InterruptException && rethrow()
-                    push!(failed, symbol)
-                    push!(failures, _sync_failure(symbol, :write, error))
+                    if !sweeping
+                        push!(failed, symbol)
+                        push!(failures, _sync_failure(symbol, :write, error))
+                    end
                     (!continue_on_error && !strict) && rethrow()
-                    continue
+                    return nothing
                 end
             end
             push!(updated, symbol)
+            return nothing
+        end
+
+        for (row_index, row) in enumerate(eachrow(tickers))
+            process_row!(row_index, row, false)
+        end
+
+        for round in 1:retry_rounds
+            isempty(retry_queue) && break
+            round_queue = retry_queue
+            # Rebinding is what makes a repeat failure land in the NEXT
+            # round's queue instead of the one currently being drained.
+            retry_queue = Tuple{Int,DataFrameRow}[]
+            @info "Sweeping retryable historical fetch failures" round tickers=length(round_queue)
+            for (row_index, row) in round_queue
+                process_row!(row_index, row, true)
+            end
+            recovered = Set{String}(vcat(updated, unchanged, unavailable))
+            filter!(symbol -> !(symbol in recovered), failed)
+            filter!(failure -> !(failure.entity in recovered), failures)
         end
 
         result = HistoricalCollectionResult(

@@ -171,8 +171,23 @@ function normalize_security_observations(
     else
         throw(ArgumentError("meta payload is missing permaTicker"))
     end
-    meta_perma_counts = _count_values(perma_values)
-    meta_ticker_counts = _count_tickers(source.ticker)
+    # Ambiguity is decided among the active securities only. `!is_active` is the
+    # first branch below, so an inactive row is already excluded and can never be
+    # the identity this one is confused with — counting it anyway disqualifies a
+    # live security for sharing a symbol with its own delisted predecessor.
+    # Measured 2026-08-15: PARA had three meta rows and MSGY two, with exactly one
+    # active each, and both had been dropped from the sync for three weeks. Their
+    # market caps simply stopped advancing, with nothing reporting it.
+    active_flags = [
+        _required_payload_bool(row, (:isActive, :is_active), "isActive")
+        for row in eachrow(source)
+    ]
+    meta_perma_counts = _count_values(
+        value for (value, active) in zip(perma_values, active_flags) if active
+    )
+    meta_ticker_counts = _count_tickers(
+        value for (value, active) in zip(source.ticker, active_flags) if active
+    )
 
     universe_ticker_counts = :ticker in propertynames(universe) ?
         _count_tickers(universe.ticker) : Dict{String,Int}()

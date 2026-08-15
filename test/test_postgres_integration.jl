@@ -7,6 +7,7 @@ using LibPQ
 using QuansiftMarketData
 
 const MigrationSchemaIntegration = QuansiftMarketData.DB.Schema
+const PostgresIntegration = QuansiftMarketData.DB.Postgres
 
 function _pg_integration_query(conn::LibPQ.Connection, sql::String)::DataFrame
     result = LibPQ.execute(conn, sql)
@@ -1616,6 +1617,193 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     pg,
                     "DROP SCHEMA IF EXISTS $hostile_schema CASCADE",
                 )
+            end
+            @testset "Upserts bound their lock wait instead of hanging" begin
+                # Without a lock timeout the nightly upsert blocks forever
+                # behind any conflicting lock — a reader holding the table, an
+                # abandoned session — and the cron run stalls with no error
+                # and nothing to page on. A silent stall is worse than a
+                # crash, so the wait has to be bounded and loud.
+                _pg_integration_cleanup(pg)
+                migrate_postgres!(pg)
+                create_tables(pg)
+
+                blocker = connect_postgres(pg_connection_string; max_retries = 1)
+                try
+                    _pg_integration_command(blocker, "BEGIN")
+                    _pg_integration_command(
+                        blocker,
+                        "LOCK TABLE public.historical_data IN ACCESS EXCLUSIVE MODE",
+                    )
+
+                    frame = DataFrame(
+                        ticker = ["AAPL"],
+                        date = [Date(2024, 1, 2)],
+                        close = [1.0],
+                    )
+                    elapsed_seconds = @elapsed caught = try
+                        PostgresIntegration.transactional_upsert!(
+                            pg,
+                            "historical_data",
+                            frame,
+                            [:ticker, :date],
+                            [:close];
+                            lock_timeout_seconds = 1,
+                        )
+                        nothing
+                    catch error
+                        error
+                    end
+
+                    @test caught !== nothing
+                    @test occursin(
+                        "lock timeout",
+                        lowercase(sprint(showerror, caught)),
+                    )
+                    @test elapsed_seconds < 30
+                    # The failure must leave a usable, idle connection, and
+                    # the timeout must not outlive its transaction.
+                    @test LibPQ.transaction_status(pg) ==
+                        LibPQ.libpq_c.PQTRANS_IDLE
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT current_setting('lock_timeout') AS value",
+                    ).value) == "0"
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT current_setting('statement_timeout') AS value",
+                    ).value) == "0"
+                finally
+                    try
+                        _pg_integration_command(blocker, "ROLLBACK")
+                    finally
+                        close_postgres(blocker)
+                    end
+                end
+
+                # With the lock released the same upsert succeeds, so the
+                # timeout bounds the wait without weakening the write.
+                @test PostgresIntegration.transactional_upsert!(
+                    pg,
+                    "historical_data",
+                    DataFrame(
+                        ticker = ["AAPL"],
+                        date = [Date(2024, 1, 2)],
+                        close = [1.0],
+                    ),
+                    [:ticker, :date],
+                    [:close];
+                    lock_timeout_seconds = 1,
+                ) == 1
+
+                @test_throws ArgumentError PostgresIntegration.transactional_upsert!(
+                    pg,
+                    "historical_data",
+                    DataFrame(
+                        ticker = ["AAPL"],
+                        date = [Date(2024, 1, 2)],
+                        close = [1.0],
+                    ),
+                    [:ticker, :date],
+                    [:close];
+                    lock_timeout_seconds = -1,
+                )
+            end
+
+            @testset "FK-referenced targets publish by upsert, not drop" begin
+                # `publish_postgres_table!` probes for the target's existence
+                # before deciding between in-place upsert and drop+rename. The
+                # probe used to be wrapped in a swallowing catch, so a
+                # transient catalog failure routed an FK-referenced table
+                # straight to the branch that destroys its dependents. This
+                # pins the surviving behaviour.
+                _pg_integration_cleanup(pg)
+                for table in (
+                    "fk_publish_child",
+                    "fk_publish_stage",
+                    "fk_publish_parent",
+                )
+                    _pg_integration_command(
+                        pg,
+                        "DROP TABLE IF EXISTS public.$table CASCADE",
+                    )
+                end
+
+                try
+                    _pg_integration_command(pg, """
+                        CREATE TABLE public.fk_publish_parent (
+                            ticker VARCHAR PRIMARY KEY,
+                            note VARCHAR
+                        )
+                    """)
+                    _pg_integration_command(
+                        pg,
+                        "INSERT INTO public.fk_publish_parent " *
+                        "VALUES ('AAPL', 'original')",
+                    )
+                    _pg_integration_command(pg, """
+                        CREATE TABLE public.fk_publish_child (
+                            ticker VARCHAR
+                                REFERENCES public.fk_publish_parent (ticker)
+                        )
+                    """)
+                    _pg_integration_command(
+                        pg,
+                        "INSERT INTO public.fk_publish_child VALUES ('AAPL')",
+                    )
+                    _pg_integration_command(pg, """
+                        CREATE TABLE public.fk_publish_stage (
+                            ticker VARCHAR,
+                            note VARCHAR
+                        )
+                    """)
+                    _pg_integration_command(
+                        pg,
+                        "INSERT INTO public.fk_publish_stage VALUES " *
+                        "('AAPL', 'refreshed'), ('MSFT', 'new')",
+                    )
+
+                    PostgresIntegration.replace_postgres_table!(
+                        pg,
+                        "fk_publish_parent",
+                        "fk_publish_stage",
+                    )
+
+                    # The dependent row survives, so the parent was refreshed
+                    # in place rather than dropped and recreated.
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT count(*) AS count FROM public.fk_publish_child",
+                    ).count) == 1
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT count(*) AS count FROM pg_constraint " *
+                        "WHERE contype = 'f' AND confrelid = " *
+                        "'public.fk_publish_parent'::regclass",
+                    ).count) == 1
+                    @test _pg_integration_query(
+                        pg,
+                        "SELECT ticker, note FROM public.fk_publish_parent " *
+                        "ORDER BY ticker",
+                    ).note == ["refreshed", "new"]
+                    @test isempty(_pg_integration_query(
+                        pg,
+                        "SELECT 1 FROM information_schema.tables " *
+                        "WHERE table_schema = 'public' " *
+                        "AND table_name = 'fk_publish_stage'",
+                    ))
+                finally
+                    for table in (
+                        "fk_publish_child",
+                        "fk_publish_stage",
+                        "fk_publish_parent",
+                    )
+                        _pg_integration_command(
+                            pg,
+                            "DROP TABLE IF EXISTS public.$table CASCADE",
+                        )
+                    end
+                end
             end
         finally
             try

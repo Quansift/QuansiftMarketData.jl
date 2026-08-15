@@ -1,11 +1,18 @@
-# Tiingo performance guide
+# QuansiftMarketData performance guide
 
 This guide covers Tiingo request concurrency and sink-specific tuning.
-Tiingo does not prescribe a production scheduler or storage topology.
+QuansiftMarketData does not prescribe a production scheduler or storage topology.
 
 For Quansift production, system PostgreSQL plus Parquet is the selected path.
 DuckDB tuning applies only to consumers that choose the optional local-analysis
 or compatibility sink.
+
+These sinks are technical capabilities, not permission to retain Tiingo Data.
+Before using a live-data persistence example, read the canonical
+[data terms and project identity](https://github.com/Quansift/QuansiftMarketData.jl#data-terms-and-project-identity)
+summary and verify that the current account terms or a separate written
+agreement permit the selected sink. The benchmark examples below use seeded
+synthetic data.
 
 ## Measure your workload
 
@@ -159,7 +166,7 @@ For best results:
    retried idempotently.
 4. Measure database locks, write latency, and row counts at the consumer.
 
-Tiingo provides the persistence primitive. Connection pooling, job
+QuansiftMarketData provides the persistence primitive. Connection pooling, job
 parallelism, retry scheduling, and replica/publication policy remain consumer
 responsibilities.
 
@@ -189,7 +196,8 @@ Practical guidance:
 - let the consuming scheduler upload files and publish remote manifests only
   after required writes succeed.
 
-Remote object-store performance and retention are outside Tiingo.
+Remote object-store performance and retention are outside this package's
+responsibility, but remain subject to the provider account terms.
 PostgreSQL snapshots require DuckDB's `postgres` extension to be preinstalled
 for the matching DuckDB version and platform. Runtime collection only executes
 `LOAD postgres` and does not download extensions.

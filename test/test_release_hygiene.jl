@@ -1,4 +1,5 @@
 using Test
+using JSON3
 
 const RELEASE_HYGIENE_SCRIPT = joinpath(
     @__DIR__,
@@ -54,7 +55,7 @@ julia = "1.9"
 
 - Initial release.
 """
-        release_link = released ? "\n[$version]: https://github.com/Quansift/Tiingo.jl/compare/v1.0.0...v$version" : ""
+        release_link = released ? "\n[$version]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v1.0.0...v$version" : ""
         unreleased_base = released ? version : "1.0.0"
         unreleased_body = unreleased_entry ? "\n### Added\n\n- Not yet released.\n" : ""
         write(joinpath(directory, "CHANGELOG.md"), """
@@ -63,8 +64,8 @@ julia = "1.9"
 ## [Unreleased]
 $unreleased_body
 $release_section
-[unreleased]: https://github.com/Quansift/Tiingo.jl/compare/v$unreleased_base...HEAD$release_link
-[1.0.0]: https://github.com/Quansift/Tiingo.jl/releases/tag/v1.0.0
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v$unreleased_base...HEAD$release_link
+[1.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v1.0.0
 """)
         release_citation = complete_citation ? """
 version: $version
@@ -75,7 +76,7 @@ cff-version: 1.2.0
 title: FixturePackage.jl
 message: Please cite this software.
 type: software
-repository-code: https://github.com/Quansift/Tiingo.jl
+repository-code: https://github.com/Quansift/QuansiftMarketData.jl
 license: MIT
 $release_citation
 authors:
@@ -218,7 +219,7 @@ supported_asset_types = ["Stock"]
         for (field, original) in (
             ("title", "FixturePackage.jl"),
             ("message", "Please cite this software."),
-            ("repository-code", "https://github.com/Quansift/Tiingo.jl"),
+            ("repository-code", "https://github.com/Quansift/QuansiftMarketData.jl"),
             ("license", "MIT"),
         ), empty_value in ("\"\"", "\"   \"", "''", "'   '")
             mktempdir() do directory
@@ -429,7 +430,8 @@ supported_asset_types = ["Stock"]
             @test occursin("docker build", preflight)
             @test occursin("attest-release:", preflight)
             @test occursin("statuses: write", preflight)
-            @test occursin("tiingo/release-preflight/", preflight)
+            @test occursin("quansift-market-data/release-preflight/", preflight)
+            @test !occursin("tiingo/release-preflight/", preflight)
             @test occursin(
                 "run-name: Release preflight v\${{ inputs.release_version }} @ \${{ inputs.release_ref }}",
                 preflight,
@@ -488,7 +490,8 @@ supported_asset_types = ["Stock"]
             source = read(joinpath(workflow_directory, filename), String)
             @test occursin("git rev-parse 'HEAD^{commit}'", source)
             @test occursin("/statuses?per_page=100", source)
-            @test occursin("tiingo/release-preflight/", source)
+            @test occursin("quansift-market-data/release-preflight/", source)
+            @test !occursin("tiingo/release-preflight/", source)
             @test occursin("actions: read", source)
             @test occursin("contents: read", source)
             @test occursin("statuses: read", source)
@@ -511,6 +514,16 @@ supported_asset_types = ["Stock"]
         ci = read(joinpath(workflow_directory, "CI.yml"), String)
         @test occursin("- \"1.9\"", ci)
         @test occursin("- \"1.12\"", ci)
+        @test !occursin("secrets.TIINGO_API_KEY", ci)
+        @test !occursin("actions: write", ci)
+        @test occursin("TIINGO_API_KEY: mock-api-key-for-testing", ci)
+        checkout_count = count("uses: actions/checkout@", ci)
+        hardened_checkout_count = count(
+            r"(?m)^([ ]*)- uses: actions/checkout@[^\n]+\n\1  with:\n\1      persist-credentials: false$",
+            ci,
+        )
+        @test checkout_count > 0
+        @test hardened_checkout_count == checkout_count
         @test !occursin("Pkg.instantiate(); Pkg.resolve()", ci)
         @test occursin("VERSION < v\"1.12\"", ci)
         @test occursin("rm(manifest_path)", ci)
@@ -536,5 +549,140 @@ supported_asset_types = ["Stock"]
         @test occursin("contents: write", tagbot)
         @test occursin("issues: read", tagbot)
         @test occursin("pull-requests: read", tagbot)
+    end
+
+    @testset "Package rename preserves production contracts" begin
+        root = normpath(joinpath(@__DIR__, ".."))
+        project = TOML.parsefile(joinpath(root, "Project.toml"))
+        @test project["name"] == "QuansiftMarketData"
+        @test project["version"] == "3.0.0"
+        @test project["uuid"] == "1316d3df-ea13-4eef-8810-037e2b70086f"
+
+        entrypoint = joinpath(root, "src", "QuansiftMarketData.jl")
+        @test isfile(entrypoint)
+        old_package = "Tii" * "ngo"
+        @test !isfile(joinpath(root, "src", old_package * ".jl"))
+        if isfile(entrypoint)
+            @test occursin(r"(?m)^module QuansiftMarketData$", read(entrypoint, String))
+        end
+
+        new_repository = "github.com/Quansift/QuansiftMarketData.jl"
+        new_pages = "quansift.github.io/QuansiftMarketData.jl"
+        new_image = "ghcr.io/quansift/quansiftmarketdata"
+        readme = read(joinpath(root, "README.md"), String)
+        docs_make = read(joinpath(root, "docs", "make.jl"), String)
+        image_workflow = read(
+            joinpath(root, ".github", "workflows", "docker-publish.yml"),
+            String,
+        )
+        compose = read(
+            joinpath(root, "deploy", "compose", "docker-compose.pipeline.yml"),
+            String,
+        )
+        @test occursin(new_repository, readme)
+        @test occursin(new_pages, readme)
+        @test occursin(new_repository, docs_make)
+        @test occursin(new_pages, docs_make)
+        @test occursin(
+            "ghcr.io/\${{ github.repository_owner }}/quansiftmarketdata",
+            image_workflow,
+        )
+        @test occursin(new_image, compose)
+
+        changelog = read(joinpath(root, "CHANGELOG.md"), String)
+        active_release_links = [
+            matched.captures[1] for matched in eachmatch(
+                r"(?mi)^\[(?:unreleased|[0-9]+\.[0-9]+\.[0-9]+)\]:\s+(\S+)\s*$",
+                changelog,
+            )
+        ]
+        @test !isempty(active_release_links)
+        @test all(
+            link -> startswith(link, "https://" * new_repository * "/"),
+            active_release_links,
+        )
+
+        flow_json = read(joinpath(root, "docs", "system-flow.json"), String)
+        flow_html = read(joinpath(root, "docs", "system-flow.html"), String)
+        embedded_flow = match(
+            r"(?s)<script type=\"application/json\" id=\"system-flow-data\">\n(.*?)  </script>",
+            flow_html,
+        )
+        @test !isnothing(embedded_flow)
+        if !isnothing(embedded_flow)
+            @test embedded_flow.captures[1] == flow_json
+        end
+        @test haskey(JSON3.read(flow_json), :schema_version)
+
+        old_repository = "github.com/Quansift/" * old_package * ".jl"
+        old_pages = "quansift.github.io/" * old_package * ".jl"
+        old_image = "ghcr.io/quansift/" * lowercase(old_package) * "julia"
+        old_namespace = Regex(
+            "\\b(?:(?:using|import)\\s+(?:\\.\\.)?" * old_package *
+            "\\b|module\\s+" * old_package * "\\b|" * old_package *
+            "\\.[A-Za-z_])",
+        )
+        identity_files = filter(_tracked_files(root)) do path
+            isfile(joinpath(root, path)) && path != "CHANGELOG.md" &&
+                (endswith(path, ".jl") || endswith(path, ".md") ||
+                 endswith(path, ".yml") || endswith(path, ".yaml") ||
+                 endswith(path, ".toml") || endswith(path, ".json") ||
+                 endswith(path, ".html") || endswith(path, ".cff") ||
+                 endswith(path, ".example") || endswith(path, ".service") ||
+                 endswith(path, ".timer") || path == ".all-contributorsrc" ||
+                 path == "docker/Dockerfile")
+        end
+        violations = String[]
+        for path in identity_files
+            source = read(joinpath(root, path), String)
+            canonical_source = replace(source, "\\." => ".", "\\/" => "/")
+            if occursin(old_namespace, source) ||
+               occursin(old_repository, canonical_source) ||
+               occursin(old_pages, canonical_source) ||
+               occursin(old_image, canonical_source)
+                push!(violations, path)
+            end
+        end
+        @test isempty(violations)
+
+        deployment = join(
+            read.(
+                [
+                    joinpath(root, "README.md"),
+                    joinpath(root, "AGENTS.md"),
+                    joinpath(root, ".env.example"),
+                    joinpath(root, ".github", "workflows", "CI.yml"),
+                    joinpath(root, ".github", "workflows", "release-preflight.yml"),
+                    joinpath(root, "scripts", "ci", "validate_release_hygiene.jl"),
+                ],
+                String,
+            ),
+            '\n',
+        )
+        for preserved in (
+            "TIINGO_API_KEY",
+            "TIINGO_RELEASE_VERSION",
+            "TIINGO_RELEASE_REF",
+            "TIINGO_RELEASE_TAG",
+            "TIINGO_PROJECT_ROOT",
+            "/opt/tiingojulia",
+        )
+            @test occursin(preserved, deployment)
+        end
+        migrations = read(joinpath(root, "src", "db", "migrations.jl"), String)
+        for preserved in (
+            "tiingojulia_schema_migrations",
+            "tiingojulia_historical_data_pkey",
+            "tiingojulia_security_observations_pkey",
+            "tiingojulia_fundamental_daily_metrics_pkey",
+            "tiingojulia_us_tickers_filtered_ticker_bridge",
+        )
+            @test occursin(preserved, migrations)
+        end
+
+        @test occursin("https://api.tiingo.com/tos/", readme)
+        @test occursin(r"does\s+not bundle or redistribute Tiingo", readme)
+        @test occursin("not legal advice", readme)
+        @test occursin("provider trademark", readme)
     end
 end

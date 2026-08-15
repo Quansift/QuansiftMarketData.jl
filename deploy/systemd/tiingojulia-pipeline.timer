@@ -1,6 +1,6 @@
 [Unit]
 Description=Run the Tiingo data pipeline daily
-Documentation=https://github.com/Quansift/Tiingo.jl
+Documentation=https://github.com/Quansift/QuansiftMarketData.jl
 
 [Timer]
 # Daily at 06:00 (matches the previous macOS launchd schedule). Adjust as needed.

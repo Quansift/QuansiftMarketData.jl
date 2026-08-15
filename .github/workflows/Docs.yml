@@ -39,7 +39,7 @@ jobs:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   tag_commit="$(git rev-parse 'HEAD^{commit}')"
-                  context="tiingo/release-preflight/${GITHUB_REF_NAME}"
+                  context="quansift-market-data/release-preflight/${GITHUB_REF_NAME}"
                   expected_title="Release preflight ${GITHUB_REF_NAME} @ ${tag_commit}"
                   status_fields="$(gh api \
                     -H 'Accept: application/vnd.github+json' \

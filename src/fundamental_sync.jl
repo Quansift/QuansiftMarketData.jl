@@ -68,6 +68,7 @@ function _canonical_payload_date(value, field_name::String)::Date
     try
         return Date(first(text, 10))
     catch error
+        error isa InterruptException && rethrow()
         throw(ArgumentError("invalid $field_name: $error"))
     end
 end
@@ -85,6 +86,7 @@ function _nullable_payload_datetime(value, field_name::String)::Union{Missing,Da
     try
         return length(text) == 10 ? DateTime(Date(text)) : DateTime(first(text, 19))
     catch error
+        error isa InterruptException && rethrow()
         throw(ArgumentError("invalid $field_name: $error"))
     end
 end
@@ -417,6 +419,7 @@ function collect_fundamentals(
                 throw(ArgumentError("observation_writer row count must be non-negative"))
             observation_rows = rows
         catch error
+            error isa InterruptException && rethrow()
             entity = "security_observations"
             push!(failed, entity)
             push!(failures, _sync_failure(entity, :write, error))
@@ -446,6 +449,7 @@ function collect_fundamentals(
                 return_type = "original",
             )
         catch error
+            error isa InterruptException && rethrow()
             push!(failed, perma_ticker)
             push!(failures, _sync_failure(perma_ticker, :fetch, error))
             (!continue_on_error && !strict) && rethrow()
@@ -459,6 +463,7 @@ function collect_fundamentals(
                 fetched_at,
             )
         catch error
+            error isa InterruptException && rethrow()
             push!(failed, perma_ticker)
             push!(failures, _sync_failure(
                 perma_ticker,
@@ -490,6 +495,7 @@ function collect_fundamentals(
                     throw(ArgumentError("metric_writer row count must be non-negative"))
                 metric_rows += rows
             catch error
+                error isa InterruptException && rethrow()
                 push!(failed, perma_ticker)
                 push!(failures, _sync_failure(perma_ticker, :write, error))
                 (!continue_on_error && !strict) && rethrow()
@@ -522,6 +528,27 @@ Daily Metrics for active, unambiguous stocks present in the local universe.
 Securities without a watermark request a three-year backfill; subsequent runs
 start on the day after the stable `permaTicker` watermark. Daily Metrics are
 always requested by `permaTicker`, never by the mutable ticker symbol.
+
+`checkpoint_every` (default 100, or `FUNDAMENTALS_CHECKPOINT_EVERY`) bounds
+DuckDB's memory by checkpointing after that many upsert ATTEMPTS; 0 disables
+it. Without periodic checkpoints the buffer manager grows with the size of
+the universe and eventually cannot allocate. The counter deliberately tracks
+attempts rather than successes: when memory is tight the upserts fail, and a
+success-keyed counter would stop advancing exactly when the checkpoint is
+most needed.
+
+A failed checkpoint aborts the run. DuckDB invalidates the entire database
+on a checkpoint FATAL, so every later write is guaranteed to fail; carrying
+on only burns API quota and buries the one useful error. Committed rows stay
+in the DuckDB for the next resume.
+
+`batch_size` (default 100, or `FUNDAMENTALS_UPSERT_BATCH`) is how many
+securities are buffered per DuckDB write. Writing once per security is what
+exhausted memory in production: each write registers a DataFrame with the
+driver and the registration is not fully released (~2.9 MB apiece, against
+33 KB for the same statement issued as pure SQL). If a batched write fails
+it is retried one security at a time, so batching never coarsens which
+security gets recorded as failed.
 """
 function sync_fundamentals!(
     conn::DuckDBConnection,
@@ -534,8 +561,24 @@ function sync_fundamentals!(
     fetched_at::DateTime = Dates.now(),
     daily_fetcher::Function = get_daily_fundamental,
     continue_on_error::Bool = true,
+    # 100, not 500: the buffer manager was exhausted after roughly 460
+    # securities on a 3.8 GiB host, so an interval anywhere near that leaves
+    # no headroom. Small checkpoints are cheap; running out of memory is not.
+    checkpoint_every::Int = parse(
+        Int, get(ENV, "FUNDAMENTALS_CHECKPOINT_EVERY", "100"),
+    ),
+    # Securities buffered per DuckDB write. The driver leaks ~2.9 MB per
+    # registration, so this divides the leak: 100 turns ~5,400 registrations
+    # into ~54. Larger batches hold more rows in Julia memory before the
+    # write, which is cheap by comparison (a batch is ~25k small rows).
+    batch_size::Int = parse(
+        Int, get(ENV, "FUNDAMENTALS_UPSERT_BATCH", "100"),
+    ),
 )
     history_years > 0 || throw(ArgumentError("history_years must be positive"))
+    checkpoint_every >= 0 ||
+        throw(ArgumentError("checkpoint_every must be non-negative"))
+    batch_size > 0 || throw(ArgumentError("batch_size must be positive"))
 
     observations = normalize_security_observations(
         meta_payload,
@@ -552,6 +595,64 @@ function sync_fundamentals!(
     unavailable = String[]
     failed = String[]
     metric_rows = 0
+    # Metrics are buffered and written in batches. One DuckDB write per
+    # security is what actually exhausted memory in production: each write
+    # registers a DataFrame with the driver, and that registration is not
+    # fully released. Measured on 2026-08-13 against the same table and the
+    # same 1 GiB limit — the pure-SQL equivalent of this loop used 33 KB per
+    # upsert and ran 600 iterations on 16 MB, while the Julia
+    # register_data_frame path used ~2.9 MB per upsert and died at 359.
+    # Batching cuts the number of registrations by batch_size, and with it
+    # the leaked memory.
+    pending_metrics = DataFrame[]
+    pending_tickers = String[]
+    # Counts securities whose metrics have been WRITTEN (attempted, not
+    # necessarily stored) — the unit the checkpoint cadence is measured in.
+    # Keying anything here off the success count deadlocks: once memory is
+    # tight the writes start failing, the success count stops advancing, and
+    # the checkpoint that would release the memory can never fire. Measured
+    # on 2026-08-13 — two runs stalled at completed=461 and completed=459
+    # against a 500 interval, so not one checkpoint ran.
+    upsert_attempts = 0
+    since_checkpoint = 0
+
+    # Write the buffer as one statement. On failure, retry the batch one
+    # security at a time: batching must not coarsen failure attribution, or a
+    # single malformed security would take out the other batch_size-1 with it
+    # and the caller could not tell which one was bad. The retry only runs on
+    # the failure path, so the happy path still pays for exactly one write.
+    function flush_pending!()
+        isempty(pending_tickers) && return nothing
+        n = length(pending_tickers)
+        try
+            metric_rows += upsert_fundamental_daily_metrics(
+                conn, reduce(vcat, pending_metrics),
+            )
+            append!(requested, pending_tickers)
+        catch batch_error
+            @warn "Batched metrics write failed; retrying one security at a time" securities=n error=sprint(showerror, batch_error)
+            for (frame, ticker) in zip(pending_metrics, pending_tickers)
+                try
+                    metric_rows += upsert_fundamental_daily_metrics(conn, frame)
+                    push!(requested, ticker)
+                catch write_error
+                    push!(failed, ticker)
+                    if length(failed) <= 5
+                        @warn "Fundamentals write failed" perma_ticker=ticker exception=(write_error, catch_backtrace())
+                    else
+                        @warn "Fundamentals write failed" perma_ticker=ticker error=sprint(showerror, write_error)
+                    end
+                end
+            end
+        finally
+            empty!(pending_metrics)
+            empty!(pending_tickers)
+            upsert_attempts += n
+            since_checkpoint += n
+        end
+        return nothing
+    end
+
     for security in eachrow(eligible_securities)
         perma_ticker = String(security.perma_ticker)
         has_watermark = haskey(watermarks, perma_ticker)
@@ -590,11 +691,76 @@ function sync_fundamentals!(
                 push!(has_watermark ? unchanged : unavailable, perma_ticker)
                 continue
             end
-            metric_rows += upsert_fundamental_daily_metrics(conn, metrics)
-            push!(requested, perma_ticker)
-        catch
+            push!(pending_metrics, metrics)
+            push!(pending_tickers, perma_ticker)
+        catch error
+            error isa InterruptException && rethrow()
             continue_on_error || rethrow()
             push!(failed, perma_ticker)
+            # Log the reason. Swallowing it silently made a 44%-failure run
+            # (2,368 of 5,404 securities on 2026-08-13) indistinguishable from
+            # a healthy one in the log: the caller only sees a count, and
+            # FUNDAMENTALS_MAX_EXPORT_FAILURES then withholds the export with
+            # no way to tell an API outage from a data bug. Only the first few
+            # are logged in full — thousands of identical stacktraces would
+            # bury everything else — after which one line per failure keeps
+            # the record without the noise.
+            if length(failed) <= 5
+                @warn "Fundamentals fetch failed" perma_ticker start_date exception=(error, catch_backtrace())
+            else
+                @warn "Fundamentals fetch failed" perma_ticker start_date error=sprint(showerror, error)
+            end
+        end
+
+        length(pending_tickers) >= batch_size && flush_pending!()
+
+        # DuckDB holds written changes in memory until a checkpoint puts them
+        # in the database file, so the buffer manager grows across a run:
+        #   Out of Memory Error: failed to allocate data of size 4.0 KiB
+        # Checkpointing bounds that by the interval rather than by the size of
+        # the universe.
+        #
+        # The cadence counts securities WRITTEN, not stored, deliberately:
+        # when memory is tight the writes fail, so a success-keyed counter
+        # stops advancing and the checkpoint that would release the memory can
+        # never run. Measured on 2026-08-13 — two runs stalled at 461 and 459
+        # successes against a 500 interval, fired zero checkpoints, and lost
+        # ~95% of securities to OOM.
+        #
+        # A failed CHECKPOINT is NOT recoverable, so this stops the loop.
+        # DuckDB invalidates the whole database, not just the statement:
+        #   FATAL Error: database has been invalidated because of a previous
+        #   fatal error. The database must be restarted prior to being used
+        #   again.
+        # An earlier version warned and carried on. That turned one checkpoint
+        # failure at attempt 1,400 into 3,458 failures: every later security
+        # was still fetched from the API — real quota, real time — and then
+        # written to a dead connection, burying the single line that explained
+        # the run under ~3,300 identical cascade errors. Stopping immediately
+        # keeps the diagnosis legible and leaves committed rows intact for the
+        # next resume.
+        if checkpoint_every > 0 && since_checkpoint >= checkpoint_every
+            try
+                DBInterface.execute(conn, "CHECKPOINT")
+                since_checkpoint = 0
+            catch checkpoint_error
+                @error "DuckDB checkpoint failed; aborting run (the database is now invalidated, so every later write would fail)" upsert_attempts securities_completed=length(requested) exception=checkpoint_error
+                rethrow()
+            end
+        end
+    end
+
+    # Whatever the last partial batch holds still has to be written.
+    flush_pending!()
+
+    # Then flush DuckDB itself, so the caller's validation and export steps
+    # start from a clean buffer rather than inheriting this loop's high-water
+    # mark.
+    if checkpoint_every > 0
+        try
+            DBInterface.execute(conn, "CHECKPOINT")
+        catch checkpoint_error
+            @warn "final DuckDB checkpoint failed; continuing" exception=checkpoint_error
         end
     end
 

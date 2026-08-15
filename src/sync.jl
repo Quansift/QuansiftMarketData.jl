@@ -1,7 +1,7 @@
 using ..DB.Core: DuckDBConnection, validate_identifier, validate_file_path, validate_sql_value
 using ..DB.Operations
 using ..API: get_ticker_data, get_api_key
-using ..Tiingo: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
+using ..QuansiftMarketData: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
 
 function _canonical_ticker_universe_frame()::DataFrame
     return DataFrame(
@@ -36,6 +36,7 @@ function _universe_date(value, field_name::String)::Union{Missing,Date}
     try
         return Date(first(String(value), 10))
     catch error
+        error isa InterruptException && rethrow()
         throw(ArgumentError("invalid $field_name: $error"))
     end
 end
@@ -500,6 +501,7 @@ end
         try
             return Date(first(String(value), 10))
         catch error
+            error isa InterruptException && rethrow()
             throw(ArgumentError("invalid EOD date: $error"))
         end
     end
@@ -626,7 +628,8 @@ end
 
             ticker = try
                 String(row.ticker)
-            catch
+            catch error
+                error isa InterruptException && rethrow()
                 throw(ArgumentError("ticker at row $row_index must be convertible to String"))
             end
             split_date = row.date isa Date ? row.date : throw(ArgumentError(
@@ -661,7 +664,8 @@ end
             throw(ArgumentError("ticker is required"))
         symbol = try
             String(value)
-        catch
+        catch error
+            error isa InterruptException && rethrow()
             throw(ArgumentError("ticker must be convertible to String"))
         end
         isempty(strip(symbol)) && throw(ArgumentError("ticker cannot be empty"))
@@ -683,7 +687,8 @@ end
                 value isa Date && return value
                 value isa DateTime && return Date(value)
                 return Date(first(String(value), 10))
-            catch
+            catch error
+                error isa InterruptException && rethrow()
                 throw(ArgumentError("$field_name must be a valid date"))
             end
         end
@@ -724,6 +729,7 @@ end
             try
                 symbol = _historical_symbol(row)
             catch error
+                error isa InterruptException && rethrow()
                 push!(attempted, symbol)
                 push!(failed, symbol)
                 push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
@@ -740,6 +746,7 @@ end
                     Date(now()) - Day(1),
                 )
             catch error
+                error isa InterruptException && rethrow()
                 push!(failed, symbol)
                 push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
                 (!continue_on_error && !strict) && rethrow()
@@ -763,6 +770,7 @@ end
                         nothing,
                     )
                 catch error
+                    error isa InterruptException && rethrow()
                     push!(failed, symbol)
                     push!(
                         failures,
@@ -811,6 +819,7 @@ end
                     end_date = ticker_end_date,
                 )
             catch error
+                error isa InterruptException && rethrow()
                 push!(failed, symbol)
                 push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
                 (!continue_on_error && !strict) && rethrow()
@@ -830,6 +839,7 @@ end
                         throw(ArgumentError("writer row count must be non-negative"))
                     written_rows += rows
                 catch error
+                    error isa InterruptException && rethrow()
                     push!(failed, symbol)
                     push!(failures, _sync_failure(symbol, :write, error))
                     (!continue_on_error && !strict) && rethrow()
@@ -906,6 +916,7 @@ end
                             push!(updated_tickers, symbol)
                         end
                     catch e
+                        e isa InterruptException && rethrow()
                         if (isa(e, ErrorException) && occursin("No data returned", e.msg)) ||
                            (isa(e, AssertionError) && occursin("No data returned", e.msg))
                             @info "$i : $symbol has no new data"
@@ -1046,6 +1057,7 @@ end
             batch_missing = String[]
 
             for (ticker, success, data_written, error) in results
+                error isa InterruptException && throw(error)
                 if data_written
                     push!(batch_updated, ticker)
                 end
@@ -1096,6 +1108,7 @@ end
                 @warn "No data retrieved for $symbol"
             end
         catch e
+            e isa InterruptException && rethrow()
             @warn "Failed to add historical data for $symbol: $e"
         end
     end

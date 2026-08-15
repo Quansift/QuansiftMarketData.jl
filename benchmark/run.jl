@@ -7,10 +7,10 @@ using DBInterface
 using DuckDB
 using JSON3
 using LibPQ
-using Tiingo
+using QuansiftMarketData
 
 include(joinpath(@__DIR__, "common.jl"))
-using .TiingoBench
+using .QuansiftMarketDataBench
 
 const CANONICAL_EOD_SELECT =
     "ticker, date, close, high, low, open, volume, " *

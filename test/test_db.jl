@@ -3,8 +3,8 @@ using DataFrames
 using Dates
 using DuckDB
 using DBInterface
-using Tiingo
-using Tiingo:
+using QuansiftMarketData
+using QuansiftMarketData:
     DatabaseConnectionError,
     DatabaseQueryError,
     DuckDBConnection,
@@ -18,7 +18,7 @@ using Tiingo:
     connect_postgres,
     close_postgres,
     optimize_database
-using Tiingo.DB.Postgres: connection_options_map, normalize_postgres_connection_string, postgres_env_vars
+using QuansiftMarketData.DB.Postgres: connection_options_map, normalize_postgres_connection_string, postgres_env_vars
 
 # Define mock function for fetch_single_ticker_data that works without Mocking
 function mock_fetch_single_ticker_data(row, latest_dates_dict, latest_market_date, api_key)

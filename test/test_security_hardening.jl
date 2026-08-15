@@ -1,16 +1,16 @@
 using Test
 using DataFrames
 using Logging
-using Tiingo
-using Tiingo.DB.Schema:
+using QuansiftMarketData
+using QuansiftMarketData.DB.Schema:
     generate_create_table_query,
     qualified_postgres_identifier
-using Tiingo.DB.Postgres:
+using QuansiftMarketData.DB.Postgres:
     generate_dataframe_insert_query,
     generate_refresh_upsert_query
 
 @testset "PostgreSQL connection errors never expose credentials" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
     fake_user = "security-review-user"
     fake_secret = "security-review-password"
     malformed = "postgresql://$fake_user:$fake_secret@[invalid/database"
@@ -55,7 +55,7 @@ using Tiingo.DB.Postgres:
 end
 
 @testset "Canonical PostgreSQL SQL is public-schema qualified" begin
-    postgres_module = Tiingo.DB.Postgres
+    postgres_module = QuansiftMarketData.DB.Postgres
     @test qualified_postgres_identifier("Historical_Data") ==
           "\"public\".\"historical_data\""
     @test qualified_postgres_identifier("stage"; schema="pg_temp") ==

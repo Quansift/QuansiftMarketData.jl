@@ -1,7 +1,12 @@
-using Tiingo
+using QuansiftMarketData
 using Documenter
 
-DocMeta.setdocmeta!(Tiingo, :DocTestSetup, :(using Tiingo); recursive = true)
+DocMeta.setdocmeta!(
+    QuansiftMarketData,
+    :DocTestSetup,
+    :(using QuansiftMarketData);
+    recursive = true,
+)
 
 const page_rename = Dict("developer.md" => "Developer docs") # Without the numbers
 const numbered_pages = [
@@ -10,17 +15,22 @@ const numbered_pages = [
 ]
 
 makedocs(;
-    modules = [Tiingo],
+    modules = [QuansiftMarketData],
     authors = "Kojiroh <kojiroh.homma@gmail.com> and contributors",
-    repo = "https://github.com/Quansift/Tiingo.jl/blob/{commit}{path}#{line}",
-    sitename = "Tiingo.jl",
+    repo = "https://github.com/Quansift/QuansiftMarketData.jl/blob/{commit}{path}#{line}",
+    sitename = "QuansiftMarketData.jl",
     warnonly = [:missing_docs, :cross_references],
-    format = Documenter.HTML(; canonical = "https://quansift.github.io/Tiingo.jl"),
+    format = Documenter.HTML(;
+        canonical = "https://quansift.github.io/QuansiftMarketData.jl",
+    ),
     pages = ["index.md"; numbered_pages],
 )
 
 if lowercase(get(ENV, "DOCS_DEPLOY", "true")) in ("1", "true", "yes")
-    deploydocs(; repo = "github.com/Quansift/Tiingo.jl", devbranch = "main")
+    deploydocs(;
+        repo = "github.com/Quansift/QuansiftMarketData.jl",
+        devbranch = "main",
+    )
 else
     @info "DOCS_DEPLOY is false; skipping deploydocs"
 end

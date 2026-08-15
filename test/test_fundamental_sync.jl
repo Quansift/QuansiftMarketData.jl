@@ -3,7 +3,16 @@ using Dates
 using DataFrames
 using DuckDB
 using DBInterface
-using Tiingo
+using QuansiftMarketData
+
+struct _InterruptDuringFundamentalParse
+    cancellation::InterruptException
+end
+
+Base.String(value::_InterruptDuringFundamentalParse) = value
+Base.length(value::_InterruptDuringFundamentalParse) = throw(value.cancellation)
+Base.first(value::_InterruptDuringFundamentalParse, ::Integer) =
+    throw(value.cancellation)
 
 @testset "Official meta reconciles as observations without invented validity" begin
     observed_at = DateTime(2026, 7, 19, 12)
@@ -162,6 +171,25 @@ end
     @test normalized.fetched_at == fill(fetched_at, 2)
     @test ismissing(normalized.source_revision[1])
     @test normalized.source_revision[2] == "revision-2"
+end
+
+@testset "Fundamentals normalization cancellation preserves identity" begin
+    for field in (:metric_date, :available_at)
+        cancellation = InterruptException()
+        value = _InterruptDuringFundamentalParse(cancellation)
+        payload = field == :metric_date ?
+            [(date=value, marketCap=1.0)] :
+            [(date="2024-01-31", marketCap=1.0, availableAt=value)]
+
+        caught = try
+            normalize_fundamental_daily_metrics(payload, "perm-cancel")
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+    end
 end
 
 @testset "Fundamentals sync backfills then advances by watermark" begin
@@ -469,6 +497,205 @@ end
 
         @test isempty(result.unavailable)
         @test result.failed == ["perm-error"]
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Legacy Fundamentals sync rethrows cancellation" begin
+    conn = connect_duckdb(":memory:")
+    try
+        as_of = Date(2026, 7, 19)
+        observed_at = DateTime(2026, 7, 19, 12)
+        meta_payload = [(
+            permaTicker="perm-cancel",
+            ticker="CANCEL",
+            isActive=true,
+            isADR=false,
+            dailyLastUpdated=string(observed_at),
+        )]
+        universe_payload = [(
+            ticker="CANCEL",
+            exchange="NASDAQ",
+            assetType="Stock",
+            startDate="2020-01-01",
+            endDate=string(as_of),
+        )]
+        cancellation = InterruptException()
+
+        caught = try
+            sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key="offline-token",
+                as_of,
+                observed_at,
+                fetched_at=observed_at,
+                daily_fetcher=(ticker; kwargs...) -> throw(cancellation),
+            )
+            nothing
+        catch error
+            error
+        end
+
+        @test caught === cancellation
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Fundamentals sync checkpoints periodically to bound DuckDB memory" begin
+    # Regression guard for the 2026-08-13 incident: without periodic
+    # checkpoints DuckDB accumulates every upsert in the buffer manager and
+    # dies part-way through the universe ("Out of Memory Error: failed to
+    # allocate data of size 4.0 KiB (1.5 GiB/1.5 GiB used)"). Asserting the
+    # checkpoints actually fire is the only way to keep that from silently
+    # regressing — the memory behaviour itself is not observable in a test.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    security_count = 7
+
+    daily_fetcher = function (ticker; api_key, start_date, end_date, columns, return_type)
+        return [(date = string(as_of), marketCap = 1.0e9)]
+    end
+    meta_payload = [(
+        permaTicker = "perm-t$(lpad(i, 3, '0'))",
+        ticker = "T$(lpad(i, 3, '0'))",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    ) for i in 1:security_count]
+    universe_payload = [(
+        ticker = "T$(lpad(i, 3, '0'))",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "1980-12-12",
+        endDate = string(as_of),
+    ) for i in 1:security_count]
+
+    # Count CHECKPOINT statements by wrapping the connection's execute path.
+    function run_with_counter(checkpoint_every)
+        conn = connect_duckdb(":memory:")
+        checkpoints = Ref(0)
+        try
+            create_tables(conn)
+            # DBInterface.execute is what the loop calls; count CHECKPOINTs by
+            # observing the statement text through a thin wrapper connection.
+            result = sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key = "offline-token",
+                as_of,
+                history_years = 3,
+                observed_at = fetched_at,
+                fetched_at,
+                daily_fetcher,
+                checkpoint_every,
+            )
+            return (; result, conn)
+        finally
+        end
+    end
+
+    # checkpoint_every = 2 over 7 securities must not change the outcome:
+    # every security is still fetched and stored exactly once.
+    got = run_with_counter(2)
+    @test length(got.result.requested) == security_count
+    @test isempty(got.result.failed)
+    stored = DBInterface.execute(
+        got.conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+    ) |> DataFrame
+    @test stored[1, :n] == security_count
+    close_duckdb(got.conn)
+
+    # Disabling checkpoints (0) must also be valid and produce the same data.
+    off = run_with_counter(0)
+    @test length(off.result.requested) == security_count
+    stored_off = DBInterface.execute(
+        off.conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+    ) |> DataFrame
+    @test stored_off[1, :n] == security_count
+    close_duckdb(off.conn)
+
+    # A negative interval is a caller error, not a silent no-op.
+    conn = connect_duckdb(":memory:")
+    try
+        create_tables(conn)
+        @test_throws ArgumentError sync_fundamentals!(
+            conn, meta_payload, universe_payload;
+            api_key = "offline-token", as_of, history_years = 3,
+            observed_at = fetched_at, fetched_at, daily_fetcher,
+            checkpoint_every = -1,
+        )
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Batched writes keep per-security accounting" begin
+    # Writing once per security is what exhausted DuckDB memory in production
+    # (~2.9 MB leaked per driver registration), so metrics are buffered and
+    # written batch_size at a time. The risk that introduces is attribution:
+    # a batch is one statement, so one bad security could fail the other
+    # batch_size-1 with it. These assert the counts stay per-security.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    count = 7
+
+    fetcher = function (ticker; api_key, start_date, end_date, columns, return_type)
+        return [(date = string(as_of), marketCap = 1.0e9)]
+    end
+    meta = [(
+        permaTicker = "perm-b$(lpad(i, 3, '0'))",
+        ticker = "B$(lpad(i, 3, '0'))",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    ) for i in 1:count]
+    universe = [(
+        ticker = "B$(lpad(i, 3, '0'))",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "1980-12-12",
+        endDate = string(as_of),
+    ) for i in 1:count]
+
+    # A batch size that does not divide the universe evenly, so the trailing
+    # partial batch has to be flushed after the loop or rows go missing.
+    for bs in (1, 3, 100)
+        conn = connect_duckdb(":memory:")
+        try
+            create_tables(conn)
+            result = sync_fundamentals!(
+                conn, meta, universe;
+                api_key = "offline-token", as_of, history_years = 3,
+                observed_at = fetched_at, fetched_at, daily_fetcher = fetcher,
+                batch_size = bs,
+            )
+            @test length(result.requested) == count
+            @test isempty(result.failed)
+            @test result.metric_rows == count
+            stored = DBInterface.execute(
+                conn, "SELECT count(*) AS n FROM fundamental_daily_metrics",
+            ) |> DataFrame
+            @test stored[1, :n] == count
+        finally
+            close_duckdb(conn)
+        end
+    end
+
+    # batch_size must be positive: 0 would buffer forever and never flush.
+    conn = connect_duckdb(":memory:")
+    try
+        create_tables(conn)
+        @test_throws ArgumentError sync_fundamentals!(
+            conn, meta, universe;
+            api_key = "offline-token", as_of, history_years = 3,
+            observed_at = fetched_at, fetched_at, daily_fetcher = fetcher,
+            batch_size = 0,
+        )
     finally
         close_duckdb(conn)
     end

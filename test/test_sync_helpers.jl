@@ -2,14 +2,14 @@ using Test
 using Dates
 using DataFrames
 using DBInterface
-using Tiingo
+using QuansiftMarketData
 
 @testset "Sync Helper Lookups" begin
     latest_dates_df = DataFrame(
         ticker = ["AAPL", "MSFT"],
         latest_date = [Date("2024-01-02"), Date("2024-01-03")],
     )
-    latest_dates_lookup = Tiingo.Sync.build_latest_date_lookup(latest_dates_df)
+    latest_dates_lookup = QuansiftMarketData.Sync.build_latest_date_lookup(latest_dates_df)
     @test latest_dates_lookup["AAPL"] == Date("2024-01-02")
     @test latest_dates_lookup["MSFT"] == Date("2024-01-03")
 
@@ -20,7 +20,7 @@ using Tiingo
         start_date = [Date("2020-01-01"), Date("2021-01-01")],
         end_date = [Date("2024-01-05"), Date("2024-01-05")],
     )
-    ticker_lookup = Tiingo.Sync.build_ticker_row_lookup(tickers)
+    ticker_lookup = QuansiftMarketData.Sync.build_ticker_row_lookup(tickers)
     @test ticker_lookup["AAPL"].start_date == Date("2020-01-01")
     @test ticker_lookup["MSFT"].end_date == Date("2024-01-05")
 end
@@ -43,7 +43,7 @@ end
             """,
         )
 
-        split_targets = Tiingo.Sync.get_split_refresh_targets(conn, Date("2024-06-10"))
+        split_targets = QuansiftMarketData.Sync.get_split_refresh_targets(conn, Date("2024-06-10"))
         @test nrow(split_targets) == 2
         @test split_targets.ticker == ["AAPL", "NVDA"]
         @test all(split_targets.split_date .== Date("2024-06-10"))

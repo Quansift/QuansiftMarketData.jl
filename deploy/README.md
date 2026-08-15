@@ -9,6 +9,13 @@ Quansift production scheduler.
 DigitalOcean Spaces publication, DigitalOcean Managed PostgreSQL loading,
 notifications, and QuantScreener/TATSU sequencing.
 
+The smoke writes live Tiingo Data to persistent DuckDB and optionally
+PostgreSQL. Use it only when the current account terms or a separate written
+agreement permit persistence. Starter and Trial Plan users should use the
+sink-free `scripts/live_canary.jl` path and follow the canonical
+[data terms and project identity](../README.md#data-terms-and-project-identity)
+summary instead.
+
 ## What the smoke validates
 
 The bounded smoke can:

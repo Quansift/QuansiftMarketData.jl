@@ -1037,7 +1037,7 @@ function _validate_ledger(ledger::DataFrame, migrations=POSTGRES_MIGRATIONS)::In
     maximum(versions) <= length(migrations) || throw(PostgresMigrationError(
         nothing,
         "ledger",
-        "database schema is newer than this Tiingo build",
+        "database schema is newer than this QuansiftMarketData build",
     ))
     for row in eachrow(ledger)
         migration = migrations[Int(row.version)]

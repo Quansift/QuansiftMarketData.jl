@@ -1,5 +1,5 @@
 using Test
-using Tiingo
+using QuansiftMarketData
 
 struct CallablePostgresOpener
     connection
@@ -23,7 +23,7 @@ end
         push!(events, :close)
     end
 
-    @test Tiingo.DB.initialize_owned_duckdb(
+    @test QuansiftMarketData.DB.initialize_owned_duckdb(
         "offline.duckdb";
         connector,
         initializer = _ -> push!(events, :initialize),
@@ -32,7 +32,7 @@ end
     @test events == [:open, :initialize]
 
     empty!(events)
-    @test_throws ErrorException Tiingo.DB.initialize_owned_duckdb(
+    @test_throws ErrorException QuansiftMarketData.DB.initialize_owned_duckdb(
         "offline.duckdb";
         connector,
         initializer = _ -> begin
@@ -53,7 +53,7 @@ end
         push!(events, :close)
     end
 
-    @test Tiingo.DB.Postgres.open_validated_postgres_connection(
+    @test QuansiftMarketData.DB.Postgres.open_validated_postgres_connection(
         "offline";
         opener,
         validator = _ -> push!(events, :validate),
@@ -62,7 +62,7 @@ end
     @test events == [:open, :validate]
 
     empty!(events)
-    @test_throws ErrorException Tiingo.DB.Postgres.open_validated_postgres_connection(
+    @test_throws ErrorException QuansiftMarketData.DB.Postgres.open_validated_postgres_connection(
         "offline";
         opener,
         validator = _ -> begin

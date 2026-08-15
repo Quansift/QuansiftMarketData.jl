@@ -74,6 +74,42 @@ function _http_status_error(status, url, _body)::ErrorException
     return ErrorException("HTTP $status for $safe_url; response body omitted")
 end
 
+const _MAX_RETRY_DELAY_SECONDS = 300
+
+function _retry_delay_seconds(
+    base_delay::Int,
+    attempt::Int,
+    retry_after,
+    now::DateTime,
+)::Int
+    fallback = clamp(base_delay, 0, _MAX_RETRY_DELAY_SECONDS)
+    remaining_doublings = max(attempt - 1, 0)
+    while fallback > 0 && fallback < _MAX_RETRY_DELAY_SECONDS && remaining_doublings > 0
+        fallback = min(fallback * 2, _MAX_RETRY_DELAY_SECONDS)
+        remaining_doublings -= 1
+    end
+    server_delay = nothing
+
+    if retry_after !== nothing
+        value = strip(String(retry_after))
+        delta_seconds = tryparse(Int, value)
+        if delta_seconds !== nothing
+            delta_seconds >= 0 && (server_delay = delta_seconds)
+        elseif endswith(value, " GMT")
+            retry_at = tryparse(
+                DateTime,
+                chop(value; tail=4),
+                Dates.RFC1123Format,
+            )
+            if retry_at !== nothing && retry_at > now
+                server_delay = ceil(Int, Dates.value(retry_at - now) / 1_000)
+            end
+        end
+    end
+
+    return clamp(max(fallback, something(server_delay, fallback)), 0, _MAX_RETRY_DELAY_SECONDS)
+end
+
 
 """
     get_ticker_data(
@@ -143,15 +179,25 @@ function fetch_api_data(
                 query=query,
                 headers=headers,
                 connect_timeout=connect_timeout,
-                readtimeout=readtimeout
+                readtimeout=readtimeout,
+                status_exception=false,
+                retry=false,
+                redirect=false,
             )
         catch e
+            e isa InterruptException && rethrow()
             safe_error = ErrorException(_redact_api_error(e))
             last_error = safe_error
             @warn "API request attempt $attempt failed" error=safe_error.msg
 
             if attempt < max_retries
-                sleep(retry_delay * 2^(attempt - 1))  # Exponential backoff
+                delay = _retry_delay_seconds(
+                    retry_delay,
+                    attempt,
+                    nothing,
+                    Dates.now(Dates.UTC),
+                )
+                sleep(delay)
                 continue
             else
                 throw(safe_error)
@@ -162,7 +208,8 @@ function fetch_api_data(
         if status == 200
             data = try
                 JSON3.read(String(response.body))
-            catch
+            catch error
+                error isa InterruptException && rethrow()
                 throw(ErrorException("Invalid JSON response from $safe_url"))
             end
             if isempty(data) && !allow_empty
@@ -177,17 +224,12 @@ function fetch_api_data(
 
         if retryable && attempt < max_retries
             retry_after = HTTP.header(response, "Retry-After")
-            delay = retry_delay * 2^(attempt - 1)
-            if retry_after !== nothing
-                parsed = try
-                    parse(Int, retry_after)
-                catch
-                    nothing
-                end
-                if parsed !== nothing
-                    delay = max(delay, parsed)
-                end
-            end
+            delay = _retry_delay_seconds(
+                retry_delay,
+                attempt,
+                retry_after,
+                Dates.now(Dates.UTC),
+            )
             @warn "API request retryable failure" status=status delay_seconds=delay
             sleep(delay)
         else

@@ -4,9 +4,9 @@ using Dates
 using DBInterface
 using DuckDB
 using LibPQ
-using Tiingo
+using QuansiftMarketData
 
-const MigrationSchemaIntegration = Tiingo.DB.Schema
+const MigrationSchemaIntegration = QuansiftMarketData.DB.Schema
 
 function _pg_integration_query(conn::LibPQ.Connection, sql::String)::DataFrame
     result = LibPQ.execute(conn, sql)
@@ -476,12 +476,15 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     end
                     @test_throws PostgresMigrationError migrate_postgres!(pg)
                     _pg_integration_command(pg, "SET ROLE $deployed_owner")
-                    deployed_before = Dict(name => only(_pg_integration_query(
-                        pg,
-                        "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
-                        "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
-                        "FROM public.$name t",
-                    ).fingerprint) for name in deployed_tables)
+                    deployed_fingerprints = names -> Dict(
+                        name => only(_pg_integration_query(
+                            pg,
+                            "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
+                            "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
+                            "FROM public.$name t",
+                        ).fingerprint) for name in names
+                    )
+                    deployed_before = deployed_fingerprints(deployed_tables)
                     @test MigrationSchemaIntegration.classify_preledger_manifest(
                         MigrationSchemaIntegration.inspect_postgres_manifest(pg),
                     ) == :deployed_first_party_composition
@@ -489,12 +492,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     @test deployed_result.from_version == 0
                     @test deployed_result.to_version == 1
                     @test deployed_result.applied_versions == [1]
-                    deployed_after = Dict(name => only(_pg_integration_query(
-                        pg,
-                        "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
-                        "ORDER BY to_jsonb(t)::text)) AS fingerprint " *
-                        "FROM public.$name t",
-                    ).fingerprint) for name in deployed_tables)
+                    deployed_after = deployed_fingerprints(deployed_tables)
                     @test deployed_after == deployed_before
                     @test only(_pg_integration_query(
                         pg,
@@ -514,26 +512,28 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                             index.columns == ("ticker",),
                         filtered_indexes,
                     )
-                    deployed_fk = only(eachrow(_pg_integration_query(
-                        pg,
-                        """
+                    read_deployed_fk = () -> NamedTuple(only(eachrow(
+                        _pg_integration_query(pg, """
                         SELECT
                             fk.conname,
                             pg_get_constraintdef(fk.oid, false) AS definition,
                             fk.conindid::regclass::text AS referenced_index,
-                            pg_get_userbyid(child.relowner) AS child_owner
+                            pg_get_userbyid(child.relowner) AS child_owner,
+                            fk.convalidated
                         FROM pg_constraint fk
                         JOIN pg_class child ON child.oid = fk.conrelid
                         WHERE fk.conrelid = 'public.filtered_stocks'::regclass
                           AND fk.contype = 'f'
-                        """,
+                        """)
                     )))
+                    deployed_fk = read_deployed_fk()
                     @test deployed_fk.conname == "filtered_stocks_ticker_fkey"
                     @test deployed_fk.definition ==
                           "FOREIGN KEY (ticker) REFERENCES us_tickers_filtered(ticker) ON DELETE CASCADE"
                     @test deployed_fk.referenced_index ==
                           "tiingojulia_us_tickers_filtered_ticker_bridge"
                     @test deployed_fk.child_owner == deployed_owner
+                    @test deployed_fk.convalidated
                     for columns in (("ticker",), ("assettype",), ("exchange",))
                         @test any(
                             index -> !index.unique && !index.primary &&
@@ -541,6 +541,107 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                             filtered_indexes,
                         )
                     end
+
+                    replacement_universe = DataFrame(
+                        ticker = ["EXPORTED", "NEW"],
+                        exchange = ["NYSE", "NASDAQ"],
+                        asset_type = ["Stock", "Stock"],
+                        price_currency = ["USD", "USD"],
+                        start_date = fill(Date(2024, 1, 1), 2),
+                        end_date = fill(Date(2024, 12, 31), 2),
+                    )
+                    replacement_filtered = replacement_universe[[1], :]
+                    @test replace_ticker_universe(
+                        pg,
+                        replacement_universe,
+                        replacement_filtered,
+                    ) == (all_rows = 2, filtered_rows = 1)
+                    @test _pg_integration_query(
+                        pg,
+                        "SELECT ticker FROM public.us_tickers ORDER BY ticker",
+                    ).ticker == ["EXPORTED", "NEW"]
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT retained_value FROM public.filtered_stocks " *
+                        "WHERE ticker = 'EXPORTED'",
+                    ).retained_value) == 7
+                    @test read_deployed_fk() == deployed_fk
+
+                    atomic_tables = (
+                        "us_tickers",
+                        "us_tickers_filtered",
+                        "filtered_stocks",
+                    )
+                    omitted_before = deployed_fingerprints(atomic_tables)
+                    omitted_error = try
+                        replace_ticker_universe(
+                            pg,
+                            replacement_universe[[2], :],
+                            replacement_universe[[2], :],
+                        )
+                        nothing
+                    catch error
+                        error
+                    end
+                    @test omitted_error isa LibPQ.Errors.PQResultError
+                    @test occursin(
+                        "filtered_stocks_ticker_fkey",
+                        sprint(showerror, omitted_error),
+                    )
+                    @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+                    @test isequal(
+                        deployed_fingerprints(atomic_tables),
+                        omitted_before,
+                    )
+                    @test read_deployed_fk() == deployed_fk
+
+                    _pg_integration_command(pg, """
+                        CREATE TABLE public.tiingo_test_filtered_fk (
+                            ticker VARCHAR,
+                            CONSTRAINT tiingo_test_unknown_filtered_fkey
+                              FOREIGN KEY (ticker)
+                              REFERENCES public.us_tickers_filtered (ticker)
+                        )
+                    """)
+                    _pg_integration_command(
+                        pg,
+                        "INSERT INTO public.tiingo_test_filtered_fk " *
+                        "VALUES ('EXPORTED')",
+                    )
+                    unknown_fk_tables = (atomic_tables..., "tiingo_test_filtered_fk")
+                    unknown_fk_before = deployed_fingerprints(unknown_fk_tables)
+                    unknown_dependency_error = try
+                        replace_ticker_universe(
+                            pg,
+                            replacement_universe,
+                            replacement_filtered,
+                        )
+                        nothing
+                    catch error
+                        error
+                    end
+                    @test unknown_dependency_error isa ArgumentError
+                    @test occursin(
+                        "tiingo_test_unknown_filtered_fkey",
+                        sprint(showerror, unknown_dependency_error),
+                    )
+                    @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+                    @test isequal(
+                        deployed_fingerprints(unknown_fk_tables),
+                        unknown_fk_before,
+                    )
+                    @test read_deployed_fk() == deployed_fk
+                    @test only(_pg_integration_query(
+                        pg,
+                        "SELECT count(*) FROM pg_constraint " *
+                        "WHERE contype = 'f' AND confrelid = " *
+                        "'public.us_tickers_filtered'::regclass",
+                    ).count) == 2
+                    _pg_integration_command(
+                        pg,
+                        "DROP TABLE public.tiingo_test_filtered_fk",
+                    )
+
                     _pg_integration_command(pg, """
                         INSERT INTO public.us_tickers_filtered
                           (ticker, exchange, assettype)

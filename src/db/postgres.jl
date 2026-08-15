@@ -706,6 +706,80 @@ module Postgres
     const POSTGRES_TRUNCATE_TICKER_UNIVERSE_SQL =
         "TRUNCATE TABLE \"public\".\"us_tickers\", " *
         "\"public\".\"us_tickers_filtered\""
+    const POSTGRES_LOCK_TICKER_UNIVERSE_SQL =
+        "LOCK TABLE \"public\".\"us_tickers\", " *
+        "\"public\".\"us_tickers_filtered\" IN ACCESS EXCLUSIVE MODE"
+    const POSTGRES_FILTERED_STOCKS_FK = "filtered_stocks_ticker_fkey"
+
+    function ticker_universe_foreign_key_state(
+        pg_conn::PostgreSQLConnection,
+    )::Symbol
+        result = LibPQ.execute(pg_conn, """
+            SELECT COALESCE(
+                       foreign_key.conname = '$POSTGRES_FILTERED_STOCKS_FK'
+                       AND foreign_key.connamespace = 'public'::regnamespace
+                       AND foreign_key.conrelid =
+                           pg_catalog.to_regclass('public.filtered_stocks')
+                       AND foreign_key.confrelid =
+                           'public.us_tickers_filtered'::regclass
+                       AND foreign_key.conindid = pg_catalog.to_regclass(
+                           'public.tiingojulia_us_tickers_filtered_ticker_bridge'
+                       )
+                       AND foreign_key.conkey = ARRAY[child_ticker.attnum]::smallint[]
+                       AND foreign_key.confkey = ARRAY[parent_ticker.attnum]::smallint[]
+                       AND foreign_key.convalidated
+                       AND NOT foreign_key.condeferrable
+                       AND NOT foreign_key.condeferred
+                       AND foreign_key.confmatchtype = 's'
+                       AND foreign_key.confupdtype = 'a'
+                       AND foreign_key.confdeltype = 'c'
+                       AND foreign_key.confdelsetcols IS NULL
+                       AND foreign_key.conparentid = 0
+                       AND foreign_key.conislocal
+                       AND foreign_key.coninhcount = 0
+                       AND foreign_key.connoinherit
+                       AND pg_catalog.obj_description(
+                           foreign_key.oid,
+                           'pg_constraint'
+                       ) IS NULL,
+                       false
+                   ) AS expected,
+                   pg_catalog.pg_describe_object(
+                       'pg_constraint'::regclass,
+                       foreign_key.oid,
+                       0
+                   ) AS dependency
+            FROM pg_catalog.pg_constraint foreign_key
+            LEFT JOIN pg_catalog.pg_attribute child_ticker
+              ON child_ticker.attrelid = foreign_key.conrelid
+             AND child_ticker.attname = 'ticker'
+             AND child_ticker.attnum > 0
+             AND NOT child_ticker.attisdropped
+            LEFT JOIN pg_catalog.pg_attribute parent_ticker
+              ON parent_ticker.attrelid = foreign_key.confrelid
+             AND parent_ticker.attname = 'ticker'
+             AND parent_ticker.attnum > 0
+             AND NOT parent_ticker.attisdropped
+            WHERE foreign_key.contype = 'f'
+              AND foreign_key.confrelid IN (
+                  'public.us_tickers'::regclass,
+                  'public.us_tickers_filtered'::regclass
+              )
+            """)
+        foreign_keys = try
+            DataFrame(result)
+        finally
+            close(result)
+        end
+        isempty(foreign_keys) && return :none
+        nrow(foreign_keys) == 1 && Bool(foreign_keys.expected[1]) &&
+            return :filtered_stocks
+        dependencies = join(String.(foreign_keys.dependency), ", ")
+        throw(ArgumentError(
+            "ticker-universe tables have unsupported foreign-key dependencies: " *
+            dependencies,
+        ))
+    end
 
     """
         replace_ticker_universe(pg_conn, all_data, filtered_data)
@@ -726,9 +800,33 @@ module Postgres
             TICKER_UNIVERSE_COLUMN_MAPPINGS,
         )
         require_idle_transaction(pg_conn, "replace_ticker_universe")
+        filtered_stocks_fk = quote_postgres_identifier(POSTGRES_FILTERED_STOCKS_FK)
 
         close(LibPQ.execute(pg_conn, "BEGIN"))
         try
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('lock_timeout', \$1, true)",
+                Any["30000ms"],
+            ))
+            close(LibPQ.execute(pg_conn, POSTGRES_LOCK_TICKER_UNIVERSE_SQL))
+            foreign_key_state = ticker_universe_foreign_key_state(pg_conn)
+            if foreign_key_state == :filtered_stocks
+                close(LibPQ.execute(
+                    pg_conn,
+                    "LOCK TABLE \"public\".\"filtered_stocks\" " *
+                    "IN ACCESS EXCLUSIVE MODE",
+                ))
+                ticker_universe_foreign_key_state(pg_conn) == :filtered_stocks ||
+                    throw(ArgumentError(
+                        "filtered_stocks foreign key changed while acquiring locks",
+                    ))
+                close(LibPQ.execute(
+                    pg_conn,
+                    "ALTER TABLE \"public\".\"filtered_stocks\" " *
+                    "DROP CONSTRAINT $filtered_stocks_fk",
+                ))
+            end
             close(LibPQ.execute(
                 pg_conn,
                 POSTGRES_TRUNCATE_TICKER_UNIVERSE_SQL,
@@ -741,6 +839,19 @@ module Postgres
             )
             all_rows = postgres_table_row_count(pg_conn, "us_tickers")
             filtered_rows = postgres_table_row_count(pg_conn, "us_tickers_filtered")
+            if foreign_key_state == :filtered_stocks
+                close(LibPQ.execute(pg_conn, """
+                    ALTER TABLE "public"."filtered_stocks"
+                    ADD CONSTRAINT $filtered_stocks_fk
+                    FOREIGN KEY ("ticker")
+                    REFERENCES "public"."us_tickers_filtered" ("ticker")
+                    ON DELETE CASCADE
+                    """))
+                ticker_universe_foreign_key_state(pg_conn) == :filtered_stocks ||
+                    throw(ArgumentError(
+                        "filtered_stocks foreign key was not restored exactly",
+                    ))
+            end
             close(LibPQ.execute(pg_conn, "COMMIT"))
             return (; all_rows, filtered_rows)
         catch

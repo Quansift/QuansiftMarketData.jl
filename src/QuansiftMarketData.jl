@@ -1,4 +1,4 @@
-module Tiingo
+module QuansiftMarketData
 
 using CSV
 using DataFrames
@@ -89,7 +89,7 @@ module DB
         TIINGO_LOG_FILE_HANDLE[] = io
         logger = SimpleLogger(io)
         if tee_console
-            logger = LoggingExtras.TeeLogger(logger, Tiingo.build_console_logger())
+            logger = LoggingExtras.TeeLogger(logger, QuansiftMarketData.build_console_logger())
         end
         global_logger(logger)
     end
@@ -100,9 +100,9 @@ module DB
             try
                 close(TIINGO_LOG_FILE_HANDLE[])
                 TIINGO_LOG_FILE_HANDLE[] = nothing
-                @info "Tiingo log file handle closed successfully"
+                @info "QuansiftMarketData log file handle closed successfully"
             catch e
-                @warn "Error closing Tiingo log file" exception=e
+                @warn "Error closing QuansiftMarketData log file" exception=e
             end
         end
     end
@@ -236,4 +236,4 @@ export postgres_schema_version, migrate_postgres!
 export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQLConnection
 export SyncFailure, HistoricalCollectionResult, FundamentalCollectionResult, SyncIncompleteError
 
-end # module Tiingo
+end # module QuansiftMarketData

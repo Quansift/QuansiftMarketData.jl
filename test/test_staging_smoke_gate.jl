@@ -1,5 +1,5 @@
 using Test
-using Tiingo
+using QuansiftMarketData
 
 staging_smoke_script = joinpath(@__DIR__, "..", "scripts", "staging_smoke_test.jl")
 include(staging_smoke_script)

@@ -1,7 +1,7 @@
 using Test
 using Dates
 using DataFrames
-using Tiingo
+using QuansiftMarketData
 
 @testset "Sink-neutral split refresh targets cover an inclusive missed-run range" begin
     observations = DataFrame(

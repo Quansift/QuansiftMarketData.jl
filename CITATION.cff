@@ -1,12 +1,14 @@
 # Go to https://citation-file-format.github.io/cff-initializer-javascript/#/ to finish this
 cff-version: 1.2.0
-title: Tiingo.jl
+title: QuansiftMarketData.jl
 message: >-
   If you use this software, please cite it using the
   metadata from this file.
 type: software
-repository-code: https://github.com/Quansift/Tiingo.jl
+repository-code: https://github.com/Quansift/QuansiftMarketData.jl
 license: MIT
+version: 3.0.0
+date-released: 2026-08-11
 authors:
   - given-names: Kojiroh
     email: kojiroh.homma@gmail.com

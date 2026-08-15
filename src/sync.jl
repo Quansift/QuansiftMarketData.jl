@@ -587,6 +587,12 @@ end
     end
 
     function _is_unavailable_historical_error(error)::Bool
+        # The status is authoritative when the error carries one: a 503 whose
+        # body happens to say "no data returned" is a failure to retry, not a
+        # security with nothing to give. Substring matching remains the
+        # fallback for errors that never had a status.
+        error isa API.ApiStatusError &&
+            return API._is_unavailable_status(error.status)
         message = lowercase(sprint(showerror, error))
         return occursin("no data returned", message) ||
             occursin("no data retrieved", message) ||

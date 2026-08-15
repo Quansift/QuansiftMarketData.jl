@@ -16,6 +16,7 @@ _hygiene_fail(message::AbstractString) = throw(ReleaseHygieneError(String(messag
 const STDLIB_UUIDS = Set([
     "ade2ca70-3891-5945-98fb-dc099432e06a", # Dates
     "56ddb016-857b-54e1-b83d-db4d58db5568", # Logging
+    "9a3f8284-a2c9-5f02-9a11-845980a1fd5c", # Random
     "ea8e919c-243c-51af-8825-aaa63cd721ce", # SHA
 ])
 

@@ -6,6 +6,7 @@ using DBInterface
 using HTTP
 using JSON3
 using Logging
+using Random
 
 # Import the functions using QuansiftMarketData
 using QuansiftMarketData.API
@@ -15,6 +16,10 @@ struct _InterruptingAPIResponseBody
 end
 
 Base.String(value::_InterruptingAPIResponseBody) = throw(value.cancellation)
+# A real response body is a byte vector, so it answers `length` before
+# anything tries to stringify it. The stand-in has to do the same, or the
+# size check reaches it first and a MethodError masks the cancellation.
+Base.length(::_InterruptingAPIResponseBody) = 0
 
 function _with_loopback_api(test::Function, handler::Function)
     listener = HTTP.Servers.Listener("127.0.0.1", 0; listenany=true)
@@ -109,7 +114,8 @@ end
             end
 
             message = sprint(showerror, caught)
-            @test caught isa ErrorException
+            @test caught isa API.ApiStatusError
+            @test caught.status == status
             @test requests[] == 1
             @test occursin("HTTP $status", message)
             @test occursin("response body omitted", message)
@@ -174,7 +180,8 @@ end
             end
         end
         message = sprint(showerror, caught)
-        @test caught isa ErrorException
+        @test caught isa API.ApiStatusError
+        @test caught.status == 503
         @test requests[] == 2
         @test occursin("HTTP 503", message)
         @test occursin("response body omitted", message)
@@ -220,10 +227,11 @@ end
                 end
 
                 @test (
-                    caught isa ErrorException,
+                    caught isa API.ApiStatusError,
+                    caught.status,
                     target_requests[],
                     target_authorization[],
-                ) == (true, 0, "")
+                ) == (true, 302, 0, "")
             finally
                 close(redirect_server)
             end
@@ -253,6 +261,135 @@ end
                 now,
             ) == expected
         end
+    end
+
+    @testset "Retry jitter only ever lengthens the wait" begin
+        # Jitter decorrelates retries so concurrent callers do not re-burst in
+        # lockstep. It is additive-only on purpose: `Retry-After` is an
+        # instruction from the server, and a jitter that could undercut it
+        # would turn politeness into a second wave of 429s.
+        rng = Random.MersenneTwister(20260815)
+
+        @test API._jittered_delay_seconds(0; rng) == 0
+        @test API._jittered_delay_seconds(-3; rng) == -3
+
+        for base in (1, 2, 30, 300)
+            for _ in 1:200
+                delayed = API._jittered_delay_seconds(base; rng)
+                @test delayed >= base
+                @test delayed <= API._MAX_RETRY_DELAY_SECONDS
+            end
+        end
+
+        # The cap holds even when the base is already at it.
+        @test API._jittered_delay_seconds(
+            API._MAX_RETRY_DELAY_SECONDS;
+            rng,
+        ) == API._MAX_RETRY_DELAY_SECONDS
+
+        # Same seed, same sequence: the jitter is random, not unpredictable.
+        first_run = [
+            API._jittered_delay_seconds(8; rng = Random.MersenneTwister(7))
+            for _ in 1:3
+        ]
+        second_run = [
+            API._jittered_delay_seconds(8; rng = Random.MersenneTwister(7))
+            for _ in 1:3
+        ]
+        @test first_run == second_run
+        # And it actually varies, or it is not jitter.
+        varying_rng = Random.MersenneTwister(11)
+        samples = [API._jittered_delay_seconds(8; rng = varying_rng) for _ in 1:20]
+        @test length(unique(samples)) > 1
+    end
+
+    @testset "Oversized responses are refused before parsing" begin
+        # The body is one allocation; parsing it into JSON3 and then a
+        # DataFrame multiplies it many times over. Rejecting between the two
+        # bounds the blow-up. This does NOT bound the socket read itself —
+        # the body is already in memory by the time HTTP.get returns.
+        requests = Ref(0)
+        payload = "[" * join(("{\"index\":$index}" for index in 1:200), ",") * "]"
+        handler = function (_)
+            requests[] += 1
+            return HTTP.Response(
+                200,
+                ["Content-Type" => "application/json"],
+                payload,
+            )
+        end
+
+        caught = _with_loopback_api(handler) do url
+            try
+                fetch_api_data(
+                    url,
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries = 3,
+                    retry_delay = 0,
+                    max_response_bytes = 16,
+                )
+                nothing
+            catch error
+                error
+            end
+        end
+
+        message = sprint(showerror, caught)
+        @test caught isa ErrorException
+        @test occursin("over the", message)
+        # An oversized response is a permanent condition, so it must not be
+        # retried — re-downloading it is the one thing that makes it worse.
+        @test requests[] == 1
+
+        # The same response passes under a limit that accommodates it, and a
+        # limit of 0 disables the check entirely.
+        for limit in (length(payload), 0)
+            requests[] = 0
+            data = _with_loopback_api(handler) do url
+                fetch_api_data(
+                    url,
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries = 1,
+                    retry_delay = 0,
+                    max_response_bytes = limit,
+                )
+            end
+            @test length(data) == 200
+            @test requests[] == 1
+        end
+    end
+
+    @testset "Failure classification reads the status, not the wording" begin
+        # `_is_unavailable_historical_error` and the retryable inference used
+        # to match English substrings on an error whose HTTP status was known
+        # at the point it was thrown. An upstream wording change silently
+        # reclassified failures. The status now travels with the error.
+        @test API._is_retryable_status(429)
+        @test API._is_retryable_status(500)
+        @test API._is_retryable_status(599)
+        @test !API._is_retryable_status(400)
+        @test !API._is_retryable_status(404)
+        @test !API._is_retryable_status(200)
+
+        @test API._is_unavailable_status(404)
+        @test API._is_unavailable_status(410)
+        @test !API._is_unavailable_status(503)
+        @test !API._is_unavailable_status(400)
+
+        # Wording that disagrees with the status must lose to the status.
+        misleading_permanent = API.ApiStatusError(
+            400,
+            "connection reset while the request timed out",
+        )
+        misleading_transient = API.ApiStatusError(
+            503,
+            "no data returned for this security",
+        )
+        @test !API._is_retryable_status(misleading_permanent.status)
+        @test API._is_retryable_status(misleading_transient.status)
+        @test !API._is_unavailable_status(misleading_transient.status)
     end
 
     @testset "transport retries use the bounded delay policy" begin

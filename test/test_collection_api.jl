@@ -1062,3 +1062,65 @@ end
     @test result.metric_rows == 2
     @test fetched == ["perm-flaky", "perm-solid", "perm-flaky"]
 end
+
+@testset "Collection classification follows the HTTP status, not the wording" begin
+    # A typed status error carries the fact both classifiers used to
+    # reconstruct by matching English substrings. When the wording and the
+    # status disagree, the status has to win — otherwise an upstream copy
+    # change silently reclassifies every failure of that kind.
+    tickers = DataFrame(
+        ticker = ["MISLEADING-GONE", "MISLEADING-FAIL"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    fetcher = function (row; kwargs...)
+        ticker = String(row.ticker)
+        # Wording says transient, status says permanently gone.
+        ticker == "MISLEADING-GONE" && throw(QuansiftMarketData.API.ApiStatusError(
+            410,
+            "connection reset while the request timed out",
+        ))
+        # Wording says gone, status says transient.
+        throw(QuansiftMarketData.API.ApiStatusError(
+            503,
+            "no data returned for this security",
+        ))
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+    )
+
+    @test result.unavailable == ["MISLEADING-GONE"]
+    @test result.failed == ["MISLEADING-FAIL"]
+    @test only(result.failures).retryable
+
+    # A 400 whose message reads transient must stay non-retryable, so the
+    # sweep does not burn quota re-requesting a malformed request.
+    attempts = Ref(0)
+    permanent = DataFrame(
+        ticker = ["BADREQ"],
+        start_date = [Date(2024, 1, 1)],
+        end_date = [Date(2024, 1, 2)],
+    )
+    permanent_result = collect_historical(
+        permanent,
+        "offline-token";
+        fetcher = function (row; kwargs...)
+            attempts[] += 1
+            throw(QuansiftMarketData.API.ApiStatusError(
+                400,
+                "temporary timeout, rate limit exceeded",
+            ))
+        end,
+        writer = (_, frame) -> nrow(frame),
+        retry_rounds = 2,
+    )
+
+    @test permanent_result.failed == ["BADREQ"]
+    @test !only(permanent_result.failures).retryable
+    @test attempts[] == 1
+end

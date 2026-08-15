@@ -192,7 +192,7 @@ module Postgres
 
     function drop_postgres_table_if_exists(pg_conn::PostgreSQLConnection, table_name::String)
         safe_name = validate_identifier(table_name)
-        LibPQ.execute(pg_conn, generate_drop_postgres_table_query(safe_name))
+        close(LibPQ.execute(pg_conn, generate_drop_postgres_table_query(safe_name)))
     end
 
     function generate_drop_postgres_table_query(table_name::String)::String
@@ -248,8 +248,11 @@ module Postgres
                   AND confrelid = '$qualified_name'::regclass
             )
         """)
-        df = DataFrame(result)
-        return df[1, 1]
+        try
+            return DataFrame(result)[1, 1]
+        finally
+            close(result)
+        end
     end
 
     """
@@ -269,8 +272,11 @@ module Postgres
               AND i.indisprimary
             ORDER BY a.attnum
         """)
-        df = DataFrame(result)
-        return String.(df[!, :attname])
+        try
+            return String.(DataFrame(result)[!, :attname])
+        finally
+            close(result)
+        end
     end
 
     function generate_refresh_upsert_query(
@@ -322,17 +328,22 @@ module Postgres
         qualified_staging = qualified_postgres_identifier(safe_staging)
         quoted_target_name = quote_postgres_identifier(lowercase(safe_target))
 
-        # Check if the target table exists and is referenced by foreign keys
-        target_exists = false
-        try
-            res = LibPQ.execute(pg_conn, """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = '$safe_target'
-                )
-            """)
-            target_exists = DataFrame(res)[1, 1]
-        catch
+        # Check if the target table exists and is referenced by foreign keys.
+        # This probe must NOT be wrapped in a swallowing catch: a failure
+        # would leave target_exists false, skip the FK check, and take the
+        # drop+rename path on a table that does have FK dependents — the
+        # exact outcome the FK check exists to prevent. Let it abort the
+        # surrounding transaction instead.
+        existence_result = LibPQ.execute(pg_conn, """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = '$safe_target'
+            )
+        """)
+        target_exists = try
+            DataFrame(existence_result)[1, 1]
+        finally
+            close(existence_result)
         end
 
         fk_referenced = target_exists && is_fk_referenced(pg_conn, safe_target)
@@ -351,7 +362,11 @@ module Postgres
                 WHERE table_schema = 'public' AND table_name = '$safe_staging'
                 ORDER BY ordinal_position
             """)
-            all_cols = String.(DataFrame(col_result)[!, :column_name])
+            all_cols = try
+                String.(DataFrame(col_result)[!, :column_name])
+            finally
+                close(col_result)
+            end
             upsert_query = generate_refresh_upsert_query(
                 safe_target,
                 safe_staging,
@@ -360,15 +375,15 @@ module Postgres
             )
 
             @info "Table $safe_target is FK-referenced; using upsert instead of drop+rename"
-            LibPQ.execute(pg_conn, upsert_query)
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;")
+            close(LibPQ.execute(pg_conn, upsert_query))
+            close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;"))
         else
             # Fast path: drop + rename (no FK dependents)
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_target;")
-            LibPQ.execute(
+            close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_target;"))
+            close(LibPQ.execute(
                 pg_conn,
                 "ALTER TABLE $qualified_staging RENAME TO $quoted_target_name;",
-            )
+            ))
         end
         return nothing
     end
@@ -382,14 +397,14 @@ module Postgres
         safe_staging = validate_identifier(staging_table)
         require_idle_transaction(pg_conn, "PostgreSQL table replacement")
 
-        LibPQ.execute(pg_conn, "BEGIN")
+        close(LibPQ.execute(pg_conn, "BEGIN"))
         try
             publish_postgres_table!(pg_conn, safe_target, safe_staging)
-            LibPQ.execute(pg_conn, "COMMIT")
+            close(LibPQ.execute(pg_conn, "COMMIT"))
             return nothing
         catch e
             try
-                LibPQ.execute(pg_conn, "ROLLBACK")
+                close(LibPQ.execute(pg_conn, "ROLLBACK"))
             catch
             end
             try
@@ -541,8 +556,14 @@ module Postgres
         conflict_columns::Vector{Symbol},
         update_columns::Vector{Symbol};
         select_expressions::Union{Nothing,Vector{String}}=nothing,
+        lock_timeout_seconds::Integer=30,
+        statement_timeout_seconds::Integer=300,
     )::Int
         nrow(data) == 0 && return 0
+        lock_timeout_seconds >= 0 ||
+            throw(ArgumentError("lock_timeout_seconds must be non-negative"))
+        statement_timeout_seconds >= 0 ||
+            throw(ArgumentError("statement_timeout_seconds must be non-negative"))
 
         safe_table = validate_identifier(table_name)
         staging_name = validate_identifier("_tiingo_$(safe_table)_$(time_ns())")
@@ -574,6 +595,21 @@ module Postgres
         require_idle_transaction(pg_conn, "PostgreSQL DataFrame upsert")
         close(LibPQ.execute(pg_conn, "BEGIN"))
         try
+            # Bound the wait. Without these the nightly upsert blocks forever
+            # behind any conflicting lock (a reader holding the table, an
+            # abandoned session) — the cron run stalls with no error, no
+            # timeout, and nothing to page on. `true` scopes both to this
+            # transaction, so the connection is left as it was found.
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('lock_timeout', \$1, true)",
+                Any["$(Int(lock_timeout_seconds) * 1000)ms"],
+            ))
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('statement_timeout', \$1, true)",
+                Any["$(Int(statement_timeout_seconds) * 1000)ms"],
+            ))
             close(LibPQ.execute(
                 pg_conn,
                 "CREATE TEMP TABLE $quoted_staging " *
@@ -1184,7 +1220,7 @@ module Postgres
             base_table_name=safe_name,
         )
         drop_postgres_table_if_exists(pg_conn, safe_staging)
-        LibPQ.execute(pg_conn, create_table_query)
+        close(LibPQ.execute(pg_conn, create_table_query))
 
         insert_query = generate_dataframe_insert_query(safe_staging, names(df))
         LibPQ.load!(df, pg_conn, insert_query)
@@ -1279,7 +1315,7 @@ module Postgres
                     base_table_name=safe_name,
                 )
                 drop_postgres_table_if_exists(pg_conn, safe_staging)
-                LibPQ.execute(pg_conn, create_table_query)
+                close(LibPQ.execute(pg_conn, create_table_query))
 
                 # Copy data from parquet to PostgreSQL
                 setup_postgres_connection(

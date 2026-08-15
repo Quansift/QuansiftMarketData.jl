@@ -502,6 +502,241 @@ end
     end
 end
 
+@testset "Retryable fetch failures are swept after the main pass" begin
+    # The 2026-08-13 run lost 2,368 of 5,404 securities to transient fetch
+    # errors. `SyncFailure.retryable` already classified them; nothing acted
+    # on it, so every one was dropped until the next night's cron. The sweep
+    # runs AFTER the pass, not inline: with 5,400 sequential securities an
+    # inline retry stalls the whole run behind one bad security.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    meta_payload = [
+        (
+            permaTicker = "perm-flaky",
+            ticker = "FLAKY",
+            isActive = true,
+            isADR = false,
+            dailyLastUpdated = string(fetched_at),
+        ),
+        (
+            permaTicker = "perm-solid",
+            ticker = "SOLID",
+            isActive = true,
+            isADR = false,
+            dailyLastUpdated = string(fetched_at),
+        ),
+    ]
+    universe_payload = [
+        (
+            ticker = "FLAKY",
+            exchange = "NASDAQ",
+            assetType = "Stock",
+            startDate = "2020-01-01",
+            endDate = string(as_of),
+        ),
+        (
+            ticker = "SOLID",
+            exchange = "NASDAQ",
+            assetType = "Stock",
+            startDate = "2020-01-01",
+            endDate = string(as_of),
+        ),
+    ]
+
+    conn = connect_duckdb(":memory:")
+    try
+        order = String[]
+        attempts = Dict{String,Int}()
+        daily_fetcher = function (ticker; kwargs...)
+            push!(order, ticker)
+            attempts[ticker] = get(attempts, ticker, 0) + 1
+            ticker == "perm-flaky" && attempts[ticker] == 1 &&
+                error("HTTP 503 upstream timeout")
+            return [(date = string(as_of), marketCap = 1.0e9)]
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at = fetched_at,
+            fetched_at,
+            daily_fetcher,
+        )
+
+        @test isempty(result.failed)
+        @test sort(result.requested) == ["perm-flaky", "perm-solid"]
+        @test result.metric_rows == 2
+        # The sweep trails the pass; it does not re-fetch inline.
+        @test order == ["perm-flaky", "perm-solid", "perm-flaky"]
+        @test attempts["perm-solid"] == 1
+        stored = DBInterface.execute(
+            conn,
+            "SELECT count(*) AS n FROM fundamental_daily_metrics",
+        ) |> DataFrame
+        @test stored[1, :n] == 2
+    finally
+        close_duckdb(conn)
+    end
+
+    # retry_rounds = 0 restores the previous single-pass behaviour exactly.
+    conn = connect_duckdb(":memory:")
+    try
+        attempts = Dict{String,Int}()
+        daily_fetcher = function (ticker; kwargs...)
+            attempts[ticker] = get(attempts, ticker, 0) + 1
+            ticker == "perm-flaky" && attempts[ticker] == 1 &&
+                error("HTTP 503 upstream timeout")
+            return [(date = string(as_of), marketCap = 1.0e9)]
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at = fetched_at,
+            fetched_at,
+            daily_fetcher,
+            retry_rounds = 0,
+        )
+
+        @test result.failed == ["perm-flaky"]
+        @test result.requested == ["perm-solid"]
+        @test attempts["perm-flaky"] == 1
+    finally
+        close_duckdb(conn)
+    end
+
+    # A negative round count is a caller error, not a silent no-op.
+    conn = connect_duckdb(":memory:")
+    try
+        @test_throws ArgumentError sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at = fetched_at,
+            fetched_at,
+            daily_fetcher = (ticker; kwargs...) ->
+                [(date = string(as_of), marketCap = 1.0e9)],
+            retry_rounds = -1,
+        )
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Non-retryable fetch failures are not swept" begin
+    # Sweeping a permanent failure just burns API quota. `retryable` already
+    # distinguishes them; the sweep has to honour it.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    meta_payload = [(
+        permaTicker = "perm-gone",
+        ticker = "GONE",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    )]
+    universe_payload = [(
+        ticker = "GONE",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "2020-01-01",
+        endDate = string(as_of),
+    )]
+
+    conn = connect_duckdb(":memory:")
+    try
+        attempts = Ref(0)
+        daily_fetcher = function (ticker; kwargs...)
+            attempts[] += 1
+            error("HTTP 404 for security")
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at = fetched_at,
+            fetched_at,
+            daily_fetcher,
+        )
+
+        @test result.failed == ["perm-gone"]
+        @test attempts[] == 1
+    finally
+        close_duckdb(conn)
+    end
+end
+
+@testset "Write failures are never swept" begin
+    # A DuckDB checkpoint FATAL invalidates the whole database, so every
+    # later write is guaranteed to fail. Re-driving writes through the sweep
+    # would reproduce exactly the cascade that turned one checkpoint failure
+    # into 3,458 failures on 2026-08-13 — real API quota spent writing to a
+    # dead connection. The sweep re-attempts fetch-stage failures only.
+    as_of = Date(2026, 7, 19)
+    fetched_at = DateTime(2026, 7, 19, 12)
+    meta_payload = [(
+        permaTicker = "perm-write",
+        ticker = "WRITE",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(fetched_at),
+    )]
+    universe_payload = [(
+        ticker = "WRITE",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "2020-01-01",
+        endDate = string(as_of),
+    )]
+
+    conn = connect_duckdb(":memory:")
+    try
+        # Narrow the write target so every metrics upsert fails on its column
+        # list, while the watermark query, the observation upsert, and the
+        # fetch all still succeed.
+        DBInterface.execute(conn, "DROP TABLE fundamental_daily_metrics")
+        DBInterface.execute(conn, """
+            CREATE TABLE fundamental_daily_metrics (
+                perma_ticker VARCHAR,
+                metric_date DATE
+            )
+        """)
+        attempts = Ref(0)
+        daily_fetcher = function (ticker; kwargs...)
+            attempts[] += 1
+            return [(date = string(as_of), marketCap = 1.0e9)]
+        end
+
+        result = sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of,
+            observed_at = fetched_at,
+            fetched_at,
+            daily_fetcher,
+        )
+
+        @test result.failed == ["perm-write"]
+        @test isempty(result.requested)
+        @test attempts[] == 1
+    finally
+        close_duckdb(conn)
+    end
+end
+
 @testset "Legacy Fundamentals sync rethrows cancellation" begin
     conn = connect_duckdb(":memory:")
     try

@@ -1124,3 +1124,55 @@ end
     @test !only(permanent_result.failures).retryable
     @test attempts[] == 1
 end
+
+@testset "Legacy parallel update separates real failures from skips" begin
+    # The OHLCV export gate needs a genuine failure count. `missing` cannot
+    # serve: with add_missing=false it also collects every ticker intentionally
+    # skipped for not being in historical_data yet, so a gate on its length
+    # would fire during entirely normal operation. `failed_tickers` carries
+    # only the tickers that actually errored.
+    conn = connect_duckdb(":memory:")
+    try
+        tickers = DataFrame(
+            ticker = ["SKIPPED", "BROKEN"],
+            exchange = fill("NYSE", 2),
+            asset_type = fill("Stock", 2),
+            start_date = fill(Date(2024, 1, 1), 2),
+            end_date = fill(Date(2024, 1, 2), 2),
+        )
+
+        # Neither ticker is in historical_data, so with add_missing=false both
+        # land in `missing`. Only one of them is a failure.
+        failed = String[]
+        updated, missing_tickers = update_historical(
+            conn,
+            tickers,
+            "offline-token";
+            use_parallel = true,
+            batch_size = 2,
+            max_concurrent = 1,
+            add_missing = false,
+            failed_tickers = failed,
+        )
+
+        @test isempty(updated)
+        @test sort(missing_tickers) == ["BROKEN", "SKIPPED"]
+        # Intentional skips carry no error, so nothing is recorded as failed.
+        @test isempty(failed)
+
+        # Omitting the keyword must stay valid: every existing caller
+        # destructures the same two-tuple.
+        result = update_historical(
+            conn,
+            tickers,
+            "offline-token";
+            use_parallel = true,
+            batch_size = 2,
+            max_concurrent = 1,
+            add_missing = false,
+        )
+        @test length(result) == 2
+    finally
+        close_duckdb(conn)
+    end
+end

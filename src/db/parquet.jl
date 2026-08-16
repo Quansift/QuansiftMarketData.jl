@@ -6,7 +6,7 @@ module Parquet
 
     using ..Core: validate_identifier, validate_file_path
     using ..Postgres: PostgreSQLConnection
-    using ..Postgres: connection_options_map, postgres_env_vars, with_temporary_env
+    using ..Postgres: with_attached_postgres
     using ..Schema: quote_postgres_identifier
 
     const PARQUET_SOURCE_VIEW = "_tiingo_parquet_source"
@@ -197,9 +197,7 @@ module Parquet
         qualified_source = "\"postgres_source\".\"public\".$quoted_table"
         compression_sql = validated_compression(compression)
         conn = DBInterface.connect(DuckDB.DB)
-        attached = false
         try
-            env_vars = postgres_env_vars(connection_options_map(pg_conn))
             try
                 DBInterface.execute(conn, "LOAD postgres")
             catch error
@@ -210,46 +208,45 @@ module Parquet
                     "DuckDB error: $(sprint(showerror, error))",
                 ))
             end
-            with_temporary_env(env_vars) do
-                DBInterface.execute(
-                    conn,
-                    "ATTACH '' AS postgres_source (TYPE postgres, READ_ONLY)",
-                )
-            end
-            attached = true
 
-            source_rows = DBInterface.execute(
+            # Every read below runs inside the attachment scope. The count, the
+            # DESCRIBE and the COPY are each served by the scanner's connection
+            # pool, and a pooled connection opened after the libpq environment
+            # had been restored would resolve against ambient defaults rather
+            # than this PostgreSQL.
+            return with_attached_postgres(
                 conn,
-                "SELECT count(*) AS row_count FROM $qualified_source",
-            ) |> DataFrame
-            expected_rows = Int(source_rows[1, :row_count])
-            source_schema = DBInterface.execute(
-                conn,
-                "DESCRIBE SELECT * FROM $qualified_source",
-            ) |> DataFrame
-            expected_columns = String.(source_schema.column_name)
-
-            return write_atomic_parquet(
-                path,
-                expected_rows,
-                expected_columns;
-                overwrite,
-            ) do temporary
-                DBInterface.execute(
+                pg_conn;
+                alias="postgres_source",
+                read_only=true,
+            ) do
+                source_rows = DBInterface.execute(
                     conn,
-                    """
-                    COPY (SELECT * FROM $qualified_source)
-                    TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
-                    """,
-                )
-            end
-        finally
-            if attached
-                try
-                    DBInterface.execute(conn, "DETACH postgres_source")
-                catch
+                    "SELECT count(*) AS row_count FROM $qualified_source",
+                ) |> DataFrame
+                expected_rows = Int(source_rows[1, :row_count])
+                source_schema = DBInterface.execute(
+                    conn,
+                    "DESCRIBE SELECT * FROM $qualified_source",
+                ) |> DataFrame
+                expected_columns = String.(source_schema.column_name)
+
+                return write_atomic_parquet(
+                    path,
+                    expected_rows,
+                    expected_columns;
+                    overwrite,
+                ) do temporary
+                    DBInterface.execute(
+                        conn,
+                        """
+                        COPY (SELECT * FROM $qualified_source)
+                        TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
+                        """,
+                    )
                 end
             end
+        finally
             try
                 DBInterface.close!(conn)
             catch

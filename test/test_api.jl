@@ -1,8 +1,6 @@
 using Test
-using Dates
 using DataFrames
-using DuckDB
-using DBInterface
+using Dates
 using HTTP
 using JSON3
 using Logging
@@ -34,6 +32,7 @@ end
 @testset "API Tests" begin
     @testset "get_api_key" begin
         original_key = get(ENV, "TIINGO_API_KEY", nothing)
+        original_load_attempted = API.ENV_LOAD_ATTEMPTED[]
         temp_env_path = tempname()
         missing_env_path = tempname()
 
@@ -46,6 +45,7 @@ end
             @test_throws ErrorException get_api_key(env_path=missing_env_path, reload_env=true)
         finally
             rm(temp_env_path; force=true)
+            API.ENV_LOAD_ATTEMPTED[] = original_load_attempted
             if !isnothing(original_key)
                 ENV["TIINGO_API_KEY"] = original_key
             else
@@ -54,39 +54,64 @@ end
         end
     end
 
-    @testset "get_ticker_data" begin
-        # Create a mock ticker info DataFrameRow
-        ticker_df = DataFrame(
-            ticker = ["AAPL"],
-            start_date = [Date("2023-05-01")],
-            end_date = [Date("2023-05-01")]
+    @testset "fetch_api_data rejects invalid resource limits before I/O" begin
+        arguments = (
+            "http://example.invalid",
+            Dict{String,String}(),
+            Dict{String,String}(),
         )
-        ticker_info = ticker_df[1, :]
-
-        # Run live API tests only when explicitly enabled
-        if get(ENV, "TIINGO_TEST_LIVE_API", "false") == "true"
-            try
-                get_ticker_data(ticker_info)
-                @test true
-            catch e
-                @test e isa Exception
-            end
-        else
-            @test_skip "Skipping live API test (set TIINGO_TEST_LIVE_API=true to enable)"
-        end
+        @test_throws ArgumentError("max_retries must be >= 1") fetch_api_data(
+            arguments...;
+            max_retries=0,
+        )
+        @test_throws ArgumentError(
+            "max_response_bytes must be non-negative",
+        ) fetch_api_data(
+            arguments...;
+            max_response_bytes=-1,
+        )
     end
 
-    @testset "fetch_api_data" begin
-        if get(ENV, "TIINGO_TEST_LIVE_API", "false") == "true"
-            # Test the error handling path using a known-bad URL
-            @test_throws ErrorException fetch_api_data(
-                "http://invalid-url-for-testing.com",
-                Dict("param" => "value"),
-                Dict("Authorization" => "Token invalid-key")
+    @testset "get_ticker_data sends the Tiingo request contract" begin
+        observed_target = Ref("")
+        observed_authorization = Ref("")
+        handler = function (request)
+            observed_target[] = request.target
+            observed_authorization[] = something(
+                HTTP.header(request, "Authorization"),
+                "",
             )
-        else
-            @test_skip "Skipping live network test (set TIINGO_TEST_LIVE_API=true to enable)"
+            return HTTP.Response(
+                200,
+                ["Content-Type" => "application/json"],
+                "[{\"date\":\"2024-01-02\",\"close\":101.25}]",
+            )
         end
+        ticker_info = DataFrame(
+            ticker = ["AAPL"],
+            start_date = [Date(2024, 1, 2)],
+            end_date = [Date(2024, 1, 3)],
+        )[1, :]
+
+        result = _with_loopback_api(handler) do base_url
+            get_ticker_data(
+                ticker_info;
+                api_key="loopback-key",
+                base_url,
+            )
+        end
+
+        request_uri = HTTP.URI(observed_target[])
+        @test request_uri.path == "/test/AAPL/prices"
+        @test HTTP.queryparams(request_uri) == Dict(
+            "startDate" => "2024-01-02",
+            "endDate" => "2024-01-03",
+        )
+        @test observed_authorization[] == "Token loopback-key"
+        @test result isa DataFrame
+        @test names(result) == ["date", "close"]
+        @test only(result.date) == "2024-01-02"
+        @test only(result.close) == 101.25
     end
 
     @testset "fetch_api_data owns HTTP status retries" begin
@@ -304,10 +329,8 @@ end
     end
 
     @testset "Oversized responses are refused before parsing" begin
-        # The body is one allocation; parsing it into JSON3 and then a
-        # DataFrame multiplies it many times over. Rejecting between the two
-        # bounds the blow-up. This does NOT bound the socket read itself —
-        # the body is already in memory by the time HTTP.get returns.
+        # Parsing JSON and then constructing a DataFrame multiplies the body
+        # allocation, so the transport must reject before either operation.
         requests = Ref(0)
         payload = "[" * join(("{\"index\":$index}" for index in 1:200), ",") * "]"
         handler = function (_)
@@ -361,6 +384,43 @@ end
         end
     end
 
+    @testset "Oversized responses abort during socket streaming" begin
+        limit = 16
+        reached_after_limit = Ref(false)
+        attempts = Ref(0)
+        layer = _handler -> function (request; kwargs...)
+            attempts[] += 1
+            write(request.response.body, fill(UInt8('x'), limit))
+            write(request.response.body, UInt8[UInt8('x')])
+            reached_after_limit[] = true
+            return HTTP.Response(200, "[]")
+        end
+
+        HTTP.pushlayer!(layer)
+        caught = try
+            try
+                fetch_api_data(
+                    "http://example.invalid",
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries = 3,
+                    retry_delay = 0,
+                    max_response_bytes = limit,
+                )
+                nothing
+            catch error
+                error
+            end
+        finally
+            HTTP.poplayer!()
+        end
+
+        @test caught isa ErrorException
+        @test occursin("over the $limit byte limit", sprint(showerror, caught))
+        @test attempts[] == 1
+        @test !reached_after_limit[]
+    end
+
     @testset "Failure classification reads the status, not the wording" begin
         # `_is_unavailable_historical_error` and the retryable inference used
         # to match English substrings on an error whose HTTP status was known
@@ -393,22 +453,35 @@ end
     end
 
     @testset "transport retries use the bounded delay policy" begin
-        caught = with_logger(NullLogger()) do
-            try
-                fetch_api_data(
-                    "not a url",
-                    Dict{String,String}(),
-                    Dict{String,String}();
-                    max_retries=2,
-                    retry_delay=-1,
-                )
-                nothing
-            catch error
-                error
+        attempts = Ref(0)
+        layer = _handler -> function (_request; kwargs...)
+            attempts[] += 1
+            error("injected transport failure")
+        end
+
+        HTTP.pushlayer!(layer)
+        caught = try
+            with_logger(NullLogger()) do
+                try
+                    fetch_api_data(
+                        "http://example.invalid",
+                        Dict{String,String}(),
+                        Dict{String,String}();
+                        max_retries=2,
+                        retry_delay=-1,
+                    )
+                    nothing
+                catch error
+                    error
+                end
             end
+        finally
+            HTTP.poplayer!()
         end
 
         @test caught isa ErrorException
+        @test occursin("injected transport failure", sprint(showerror, caught))
+        @test attempts[] == 2
     end
 
     @testset "fetch_api_data preserves cancellation identity" begin
@@ -501,26 +574,39 @@ end
         @test !occursin("url-secret", status_message)
         @test !occursin("arbitrary unlabelled body secret", status_message)
         @test occursin("response body omitted", status_message)
-    end
 
-    @testset "download_tickers_duckdb" begin
-        if get(ENV, "TIINGO_TEST_LIVE_API", "false") == "true"
-            # Create a mock DuckDB connection
-            conn = DBInterface.connect(DuckDB.DB)
+        hostile_url =
+            "http://review-user:uri-secret@example.invalid/private/path?token=query-secret"
+        redacted_url = API._redact_api_error(hostile_url)
+        @test !occursin("review-user", redacted_url)
+        @test !occursin("uri-secret", redacted_url)
+        @test !occursin("query-secret", redacted_url)
+        @test occursin("http://[REDACTED]@example.invalid/private/path", redacted_url)
+        @test occursin("token=[REDACTED]", redacted_url)
 
-            # Test the function with a simple case
-            try
-                QuansiftMarketData.download_tickers_duckdb(conn)
-                @test true
-            catch e
-                @test e isa Exception
-            end
-
-            # Clean up
-            DBInterface.close!(conn)
-        else
-            @test_skip "Skipping live download test (set TIINGO_TEST_LIVE_API=true to enable)"
+        log_output = IOBuffer()
+        layer = _handler -> function (_request; kwargs...)
+            return HTTP.Response(200, "[]")
         end
+        HTTP.pushlayer!(layer)
+        try
+            with_logger(SimpleLogger(log_output, Logging.Info)) do
+                fetch_api_data(
+                    hostile_url,
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries=1,
+                    allow_empty=true,
+                )
+            end
+        finally
+            HTTP.poplayer!()
+        end
+        captured_log = String(take!(log_output))
+        @test !occursin("review-user", captured_log)
+        @test !occursin("uri-secret", captured_log)
+        @test !occursin("query-secret", captured_log)
+        @test occursin("example.invalid/private/path", captured_log)
     end
 
     # @testset "generate_filtered_tickers" begin

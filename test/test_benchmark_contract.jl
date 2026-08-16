@@ -141,6 +141,8 @@ end
 @testset "benchmark DuckDB upsert is idempotent" begin
     config = _benchmark_test_config()
     frame = synthetic_eod_frame(config, 1)
+    run_fetched_at = DateTime(2026, 8, 16, 12)
+    frame[!, :fetched_at] = fill(run_fetched_at, nrow(frame))
     with_benchmark_tempdir() do directory
         connection = connect_duckdb(joinpath(directory, "state.duckdb"))
         try
@@ -148,12 +150,13 @@ end
             @test upsert_stock_data_bulk(connection, frame, "SYN0001") == nrow(frame)
             stored = DBInterface.execute(
                 connection,
-                "SELECT date, close FROM historical_data " *
+                "SELECT date, close, fetched_at FROM historical_data " *
                 "WHERE ticker = 'SYN0001' ORDER BY date",
             ) |> DataFrame
             @test nrow(stored) == nrow(frame)
             @test stored.date == frame.date
             @test all(isapprox.(stored.close, frame.close; rtol=1e-6))
+            @test stored.fetched_at == fill(run_fetched_at, nrow(frame))
         finally
             close_duckdb(connection)
         end

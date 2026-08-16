@@ -2,7 +2,6 @@ module Parquet
     using DBInterface
     using DataFrames
     using DuckDB
-    using LibPQ
 
     using ..Core: validate_identifier, validate_file_path
     using ..Postgres: PostgreSQLConnection
@@ -10,6 +9,7 @@ module Parquet
     using ..Schema: quote_postgres_identifier
 
     const PARQUET_SOURCE_VIEW = "_tiingo_parquet_source"
+    const PARQUET_POSTGRES_SNAPSHOT = "_tiingo_postgres_snapshot"
     const SUPPORTED_COMPRESSIONS = Set([:zstd, :snappy, :gzip, :uncompressed])
 
     struct ParquetWriteResult
@@ -209,42 +209,46 @@ module Parquet
                 ))
             end
 
-            # Every read below runs inside the attachment scope. The count, the
-            # DESCRIBE and the COPY are each served by the scanner's connection
-            # pool, and a pooled connection opened after the libpq environment
-            # had been restored would resolve against ambient defaults rather
-            # than this PostgreSQL.
-            return with_attached_postgres(
+            # One PostgreSQL SELECT statement owns one MVCC snapshot. Materialize
+            # that scan locally before count/schema/COPY so later verification
+            # cannot observe different commits and SELECT-only roles remain valid.
+            with_attached_postgres(
                 conn,
                 pg_conn;
                 alias="postgres_source",
                 read_only=true,
             ) do
-                source_rows = DBInterface.execute(
+                DBInterface.execute(
                     conn,
-                    "SELECT count(*) AS row_count FROM $qualified_source",
-                ) |> DataFrame
-                expected_rows = Int(source_rows[1, :row_count])
-                source_schema = DBInterface.execute(
-                    conn,
-                    "DESCRIBE SELECT * FROM $qualified_source",
-                ) |> DataFrame
-                expected_columns = String.(source_schema.column_name)
+                    "CREATE TEMP TABLE $PARQUET_POSTGRES_SNAPSHOT " *
+                    "AS SELECT * FROM $qualified_source",
+                )
+            end
 
-                return write_atomic_parquet(
-                    path,
-                    expected_rows,
-                    expected_columns;
-                    overwrite,
-                ) do temporary
-                    DBInterface.execute(
-                        conn,
-                        """
-                        COPY (SELECT * FROM $qualified_source)
-                        TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
-                        """,
-                    )
-                end
+            source_rows = DBInterface.execute(
+                conn,
+                "SELECT count(*) AS row_count FROM $PARQUET_POSTGRES_SNAPSHOT",
+            ) |> DataFrame
+            expected_rows = Int(source_rows[1, :row_count])
+            source_schema = DBInterface.execute(
+                conn,
+                "DESCRIBE SELECT * FROM $PARQUET_POSTGRES_SNAPSHOT",
+            ) |> DataFrame
+            expected_columns = String.(source_schema.column_name)
+
+            return write_atomic_parquet(
+                path,
+                expected_rows,
+                expected_columns;
+                overwrite,
+            ) do temporary
+                DBInterface.execute(
+                    conn,
+                    """
+                    COPY (SELECT * FROM $PARQUET_POSTGRES_SNAPSHOT)
+                    TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
+                    """,
+                )
             end
         finally
             try

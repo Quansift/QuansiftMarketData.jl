@@ -60,6 +60,8 @@ module Schema
                 adjVolume BIGINT,
                 divCash FLOAT,
                 splitFactor FLOAT,
+                fetched_at TIMESTAMP NOT NULL
+                    DEFAULT make_timestamp_ms(epoch_ms(current_timestamp)),
                 UNIQUE (ticker, date)
             )
             """),
@@ -108,6 +110,31 @@ module Schema
 
         if !isempty(failures)
             throw(first(failures))
+        end
+
+        historical_columns = DBInterface.execute(conn, """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'historical_data'
+              AND column_name = 'fetched_at'
+        """) |> DataFrame
+        if isempty(historical_columns)
+            DBInterface.execute(conn, """
+                ALTER TABLE historical_data
+                ADD COLUMN fetched_at TIMESTAMP
+                DEFAULT TIMESTAMP '1970-01-01 00:00:00'
+            """)
+            DBInterface.execute(conn, """
+                ALTER TABLE historical_data
+                ALTER COLUMN fetched_at SET NOT NULL
+            """)
+            DBInterface.execute(conn, """
+                ALTER TABLE historical_data
+                ALTER COLUMN fetched_at SET DEFAULT
+                    make_timestamp_ms(epoch_ms(current_timestamp))
+            """)
+            DBInterface.execute(conn, "CHECKPOINT")
         end
     end
 
@@ -186,29 +213,50 @@ module Schema
     Create or replace a table in PostgreSQL.
     """
     function create_or_replace_table(pg_conn::LibPQ.Connection, table_name::String, create_table_query::String)
-        safe_name = validate_identifier(table_name)
-        backup_name = validate_identifier("$(table_name)_backup")
+        safe_name = lowercase(validate_identifier(table_name))
+        backup_name = validate_identifier("$(safe_name)_backup")
         qualified_name = qualified_postgres_identifier(safe_name)
         qualified_backup = qualified_postgres_identifier(backup_name)
+        LibPQ.transaction_status(pg_conn) == LibPQ.libpq_c.PQTRANS_IDLE ||
+            throw(ArgumentError(
+                "create_or_replace_table requires an idle PostgreSQL connection",
+            ))
 
-        # Check if the table exists in PostgreSQL (use parameterized query for value)
-        table_exists_pg = LibPQ.execute(
-            pg_conn,
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = \$1;",
-            [safe_name]
-        ) |> DataFrame
+        close(LibPQ.execute(pg_conn, "BEGIN"))
+        try
+            existence_result = LibPQ.execute(
+                pg_conn,
+                "SELECT table_name FROM information_schema.tables " *
+                "WHERE table_schema = 'public' AND table_name = \$1",
+                [safe_name],
+            )
+            table_exists_pg = try
+                DataFrame(existence_result)
+            finally
+                close(existence_result)
+            end
 
-        if isempty(table_exists_pg)
-            # If the table doesn't exist, create it
-            LibPQ.execute(pg_conn, create_table_query)
-            @info "Created table $safe_name in PostgreSQL"
-        else
-            # If the table exists, rename it as a backup
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_backup;")
-            LibPQ.execute(pg_conn, "CREATE TABLE $qualified_backup AS TABLE $qualified_name;")
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_name;")
-            LibPQ.execute(pg_conn, create_table_query)
-            @info "Created new table $safe_name in PostgreSQL, old table is stored as $backup_name"
+            if isempty(table_exists_pg)
+                close(LibPQ.execute(pg_conn, create_table_query))
+                @info "Created table $safe_name in PostgreSQL"
+            else
+                close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_backup"))
+                close(LibPQ.execute(
+                    pg_conn,
+                    "CREATE TABLE $qualified_backup AS TABLE $qualified_name",
+                ))
+                close(LibPQ.execute(pg_conn, "DROP TABLE $qualified_name"))
+                close(LibPQ.execute(pg_conn, create_table_query))
+                @info "Created new table $safe_name in PostgreSQL, old table is stored as $backup_name"
+            end
+            close(LibPQ.execute(pg_conn, "COMMIT"))
+            return nothing
+        catch
+            try
+                close(LibPQ.execute(pg_conn, "ROLLBACK"))
+            catch
+            end
+            rethrow()
         end
     end
 

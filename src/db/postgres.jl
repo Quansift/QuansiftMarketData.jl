@@ -9,7 +9,9 @@ module Postgres
     using ..Core: DuckDBConnection, validate_identifier, validate_file_path
     import ..Operations: upsert_stock_data, upsert_stock_data_bulk
     import ..Operations: upsert_security_observations, upsert_fundamental_daily_metrics
-    using ..Operations: validate_fundamental_daily_metrics_keys
+    using ..Operations:
+        validate_fundamental_daily_metrics_keys,
+        validate_security_observation_keys
     using ..Schema:
         create_or_replace_table,
         generate_create_table_query,
@@ -279,6 +281,22 @@ module Postgres
         end
     end
 
+    function generate_missing_primary_keys_query(
+        target_table::String,
+        staging_table::String,
+        primary_key_columns::AbstractVector{<:AbstractString},
+    )::String
+        columns_sql = join(
+            quote_postgres_identifier.(lowercase.(primary_key_columns)),
+            ", ",
+        )
+        return "SELECT EXISTS (SELECT $columns_sql FROM " *
+               "$(qualified_postgres_identifier(validate_identifier(target_table))) " *
+               "EXCEPT SELECT $columns_sql FROM " *
+               "$(qualified_postgres_identifier(validate_identifier(staging_table)))) " *
+               "AS missing_primary_keys"
+    end
+
     function generate_refresh_upsert_query(
         target_table::String,
         staging_table::String,
@@ -322,8 +340,8 @@ module Postgres
         target_table::String,
         staging_table::String,
     )::Nothing
-        safe_target = validate_identifier(target_table)
-        safe_staging = validate_identifier(staging_table)
+        safe_target = lowercase(validate_identifier(target_table))
+        safe_staging = lowercase(validate_identifier(staging_table))
         qualified_target = qualified_postgres_identifier(safe_target)
         qualified_staging = qualified_postgres_identifier(safe_staging)
         quoted_target_name = quote_postgres_identifier(lowercase(safe_target))
@@ -346,6 +364,14 @@ module Postgres
             close(existence_result)
         end
 
+        if target_exists
+            close(LibPQ.execute(
+                pg_conn,
+                "LOCK TABLE $qualified_target " *
+                "IN SHARE ROW EXCLUSIVE MODE NOWAIT",
+            ))
+        end
+
         fk_referenced = target_exists && is_fk_referenced(pg_conn, safe_target)
 
         if fk_referenced
@@ -355,6 +381,49 @@ module Postgres
                 error("Table $safe_target is referenced by foreign keys but has no primary key; " *
                       "an upsert key is required to refresh in-place without dropping the table")
             end
+
+            close(LibPQ.execute(
+                pg_conn,
+                "LOCK TABLE $qualified_staging " *
+                "IN SHARE ROW EXCLUSIVE MODE NOWAIT",
+            ))
+
+            missing_columns_result = LibPQ.execute(pg_conn, """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '$safe_target'
+                EXCEPT
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '$safe_staging'
+                ORDER BY column_name
+            """)
+            missing_columns = try
+                String.(DataFrame(missing_columns_result)[!, :column_name])
+            finally
+                close(missing_columns_result)
+            end
+            isempty(missing_columns) || throw(ArgumentError(
+                "Cannot replace $safe_target: staging is missing target columns: " *
+                join(missing_columns, ", "),
+            ))
+
+            missing_result = LibPQ.execute(
+                pg_conn,
+                generate_missing_primary_keys_query(
+                    safe_target,
+                    safe_staging,
+                    pk_cols,
+                ),
+            )
+            missing_primary_keys = try
+                Bool(DataFrame(missing_result)[1, :missing_primary_keys])
+            finally
+                close(missing_result)
+            end
+            missing_primary_keys && throw(ArgumentError(
+                "Cannot replace $safe_target: target primary keys are absent from staging",
+            ))
 
             # Get column list from the staging table
             col_result = LibPQ.execute(pg_conn, """
@@ -378,8 +447,18 @@ module Postgres
             close(LibPQ.execute(pg_conn, upsert_query))
             close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;"))
         else
-            # Fast path: drop + rename (no FK dependents)
-            close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_target;"))
+            # Fast path: publish by rename when there are no FK dependents.
+            if target_exists
+                close(LibPQ.execute(
+                    pg_conn,
+                    "LOCK TABLE $qualified_target " *
+                    "IN ACCESS EXCLUSIVE MODE NOWAIT",
+                ))
+                close(LibPQ.execute(
+                    pg_conn,
+                    "DROP TABLE IF EXISTS $qualified_target;",
+                ))
+            end
             close(LibPQ.execute(
                 pg_conn,
                 "ALTER TABLE $qualified_staging RENAME TO $quoted_target_name;",
@@ -393,8 +472,8 @@ module Postgres
         target_table::String,
         staging_table::String,
     )::Nothing
-        safe_target = validate_identifier(target_table)
-        safe_staging = validate_identifier(staging_table)
+        safe_target = lowercase(validate_identifier(target_table))
+        safe_staging = lowercase(validate_identifier(staging_table))
         require_idle_transaction(pg_conn, "PostgreSQL table replacement")
 
         close(LibPQ.execute(pg_conn, "BEGIN"))
@@ -581,6 +660,7 @@ module Postgres
         conflict_columns::Vector{Symbol},
         update_columns::Vector{Symbol};
         select_expressions::Union{Nothing,Vector{String}}=nothing,
+        update_guard_column::Union{Nothing,Symbol}=nothing,
         lock_timeout_seconds::Integer=30,
         statement_timeout_seconds::Integer=300,
     )::Int
@@ -616,6 +696,12 @@ module Postgres
         source_sql = isnothing(select_expressions) ?
             column_sql :
             join(select_expressions, ", ")
+        update_guard_sql = if isnothing(update_guard_column)
+            ""
+        else
+            quoted_guard = quote_postgres_identifier(string(update_guard_column))
+            "WHERE EXCLUDED.$quoted_guard >= $qualified_table.$quoted_guard"
+        end
 
         require_idle_transaction(pg_conn, "PostgreSQL DataFrame upsert")
         close(LibPQ.execute(pg_conn, "BEGIN"))
@@ -651,6 +737,7 @@ module Postgres
                 INSERT INTO $qualified_table ($column_sql)
                 SELECT $source_sql FROM $qualified_staging
                 ON CONFLICT ($conflict_sql) DO UPDATE SET $update_sql
+                $update_guard_sql
                 """,
             )
             affected_rows = try
@@ -684,6 +771,7 @@ module Postgres
         :adjVolume => :adjvolume,
         :divCash => :divcash,
         :splitFactor => :splitfactor,
+        :fetched_at => :fetched_at,
     ]
 
     const SECURITY_OBSERVATION_COLUMN_MAPPINGS = [
@@ -860,6 +948,24 @@ module Postgres
             filtered_data,
             TICKER_UNIVERSE_COLUMN_MAPPINGS,
         )
+        nrow(all_frame) > 0 || throw(ArgumentError(
+            "all ticker universe must not be empty",
+        ))
+        nrow(filtered_frame) > 0 || throw(ArgumentError(
+            "filtered ticker universe must not be empty",
+        ))
+        for (label, frame) in (("all", all_frame), ("filtered", filtered_frame))
+            duplicate_rows = findall(nonunique(frame, [:ticker]))
+            isempty(duplicate_rows) || throw(ArgumentError(
+                "$label ticker universe contains duplicate canonical ticker keys " *
+                "at rows: $(join(duplicate_rows, ", "))",
+            ))
+        end
+        filtered_only = setdiff(Set(filtered_frame.ticker), Set(all_frame.ticker))
+        isempty(filtered_only) || throw(ArgumentError(
+            "filtered ticker universe contains keys absent from all ticker universe: " *
+            join(sort!(string.(collect(filtered_only))), ", "),
+        ))
         require_idle_transaction(pg_conn, "replace_ticker_universe")
         filtered_stocks_fk = quote_postgres_identifier(POSTGRES_FILTERED_STOCKS_FK)
 
@@ -935,6 +1041,9 @@ module Postgres
         data::DataFrame,
         ticker::String,
     )::Int
+        :fetched_at in propertynames(data) || throw(ArgumentError(
+            "EOD data is missing required provenance column: fetched_at",
+        ))
         nrow(data) == 0 && return 0
         frame = select_upsert_columns(data, STOCK_COLUMN_MAPPINGS)
         insertcols!(frame, 1, :ticker => fill(ticker, nrow(frame)))
@@ -953,6 +1062,7 @@ module Postgres
             "COALESCE(adjvolume, 0)",
             "COALESCE(divcash, 0.0)",
             "COALESCE(splitfactor, 1.0)",
+            "fetched_at",
         ]
         return transactional_upsert!(
             pg_conn,
@@ -961,6 +1071,7 @@ module Postgres
             [:ticker, :date],
             Symbol.(names(frame)[3:end]);
             select_expressions,
+            update_guard_column=:fetched_at,
         )
     end
 
@@ -975,6 +1086,9 @@ module Postgres
         data::DataFrame,
         ticker::String,
     )::Int
+        :fetched_at in propertynames(data) || throw(ArgumentError(
+            "EOD data is missing required provenance column: fetched_at",
+        ))
         nrow(data) == 0 && return 0
         ticker_data = if :ticker in propertynames(data)
             filter(
@@ -998,6 +1112,7 @@ module Postgres
         pg_conn::PostgreSQLConnection,
         data::DataFrame,
     )::Int
+        validate_security_observation_keys(data; require_columns=true)
         nrow(data) == 0 && return 0
         frame = select_upsert_columns(data, SECURITY_OBSERVATION_COLUMN_MAPPINGS)
         return transactional_upsert!(
@@ -1027,6 +1142,7 @@ module Postgres
             frame,
             [:perma_ticker, :metric_date],
             Symbol.(names(frame)[3:end]),
+            update_guard_column=:fetched_at,
         )
     end
 

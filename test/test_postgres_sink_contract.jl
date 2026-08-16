@@ -45,6 +45,43 @@ using QuansiftMarketData
     @test which(create_tables, schema_signature).module === schema_module
 end
 
+@testset "PostgreSQL upsert guards accept only typed columns" begin
+    postgres_module = QuansiftMarketData.DB.Postgres
+    method = which(
+        postgres_module.transactional_upsert!,
+        Tuple{
+            LibPQ.Connection,
+            String,
+            DataFrame,
+            Vector{Symbol},
+            Vector{Symbol},
+        },
+    )
+    keyword_arguments = Base.kwarg_decl(method)
+
+    @test :update_guard_column in keyword_arguments
+    @test :update_where ∉ keyword_arguments
+end
+
+@testset "PostgreSQL observation upsert validates canonical keys before SQL" begin
+    postgres_source = read(
+        joinpath(@__DIR__, "..", "src", "db", "postgres.jl"),
+        String,
+    )
+
+    @test occursin(r"using \.\.Operations:.*validate_security_observation_keys"s,
+                   postgres_source)
+    observation_method = match(
+        r"function upsert_security_observations\(.*?\n    end"s,
+        postgres_source,
+    )
+    @test !isnothing(observation_method)
+    @test occursin(
+        "validate_security_observation_keys(data; require_columns=true)",
+        isnothing(observation_method) ? "" : observation_method.match,
+    )
+end
+
 @testset "PostgreSQL temporary environment is serialized and restored" begin
     postgres_module = QuansiftMarketData.DB.Postgres
     variable = "TIINGO_TEST_TEMPORARY_ENV_LOCK"
@@ -142,6 +179,8 @@ end
 
 @testset "PostgreSQL upsert column mappings" begin
     postgres_module = QuansiftMarketData.DB.Postgres
+    @test last(postgres_module.STOCK_COLUMN_MAPPINGS) ==
+          (:fetched_at => :fetched_at)
     mapping_contracts = [
         postgres_module.STOCK_COLUMN_MAPPINGS,
         postgres_module.SECURITY_OBSERVATION_COLUMN_MAPPINGS,

@@ -50,8 +50,9 @@ end
     @test names(first_frame) == [
         "date", "close", "high", "low", "open", "volume", "adjClose",
         "adjHigh", "adjLow", "adjOpen", "adjVolume", "divCash",
-        "splitFactor",
+        "splitFactor", "fetched_at",
     ]
+    @test first_frame.fetched_at == fill(DateTime(1970, 1, 1), nrow(first_frame))
     @test issorted(first_frame.date)
     @test allunique(first_frame.date)
 end

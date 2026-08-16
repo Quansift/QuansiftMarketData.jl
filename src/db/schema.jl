@@ -123,7 +123,11 @@ module Schema
             DBInterface.execute(conn, """
                 ALTER TABLE historical_data
                 ADD COLUMN fetched_at TIMESTAMP
-                DEFAULT TIMESTAMP '1970-01-01 00:00:00'
+            """)
+            DBInterface.execute(conn, """
+                UPDATE historical_data
+                SET fetched_at = TIMESTAMP '1970-01-01 00:00:00'
+                WHERE fetched_at IS NULL
             """)
             DBInterface.execute(conn, """
                 ALTER TABLE historical_data

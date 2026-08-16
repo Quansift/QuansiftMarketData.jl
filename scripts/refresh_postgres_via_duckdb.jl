@@ -19,8 +19,7 @@ using Logging
 using Dates
 
 # Reuse the package's PostgreSQL extension and ATTACH mechanisms.
-import QuansiftMarketData.DB.Postgres: connection_options_map, load_postgres_extension!
-import QuansiftMarketData.DB.Postgres: postgres_env_vars, with_temporary_env
+import QuansiftMarketData.DB.Postgres: with_attached_postgres
 import QuansiftMarketData.DB.Core: validate_identifier
 
 const DEFAULT_PG_CONN_STR = "postgresql://postgres@127.0.0.1:5432/tiingo?sslmode=disable"
@@ -67,6 +66,7 @@ function verify_fundamentals_entitlement!(
     end
 
     attempted = 0
+    failures = 0
     for probe in eachrow(first(candidates, min(max_candidates, nrow(candidates))))
         attempted += 1
         try
@@ -86,32 +86,47 @@ function verify_fundamentals_entitlement!(
             has_market_cap || continue
             @info "Fundamentals entitlement probe passed" ticker=String(probe.ticker)
             return nothing
-        catch error
-            @debug "Fundamentals entitlement candidate failed" ticker=String(probe.ticker) exception=(error, catch_backtrace())
+        catch probe_error
+            probe_error isa InterruptException && rethrow()
+            failures += 1
+            # At @debug these were invisible, so an outage or an expired key
+            # reported as "no marketCap data" — an entitlement problem — and
+            # pointed the diagnosis at the Tiingo account rather than the
+            # network. Only the first few are logged in full; the rest would
+            # be the same stacktrace repeated.
+            if failures <= 3
+                @warn "Fundamentals entitlement candidate failed" ticker=String(probe.ticker) exception=(probe_error, catch_backtrace())
+            else
+                @warn "Fundamentals entitlement candidate failed" ticker=String(probe.ticker) error=sprint(showerror, probe_error)
+            end
         end
     end
-    error("Fundamentals entitlement probe returned no marketCap data across $attempted candidates")
+    error(
+        "Fundamentals entitlement probe returned no marketCap data across " *
+        "$attempted candidates ($failures errored, " *
+        "$(attempted - failures) returned no marketCap)",
+    )
 end
 
 """
-    attach_postgres_readonly!(conn, pg_conn_str) -> Nothing
+    with_pg_src(f, conn, pg_conn_str)
 
-Attach PostgreSQL as a read-only source in DuckDB using the same env-var
-mechanism as `setup_postgres_connection` (src/db/postgres.jl:525-556).
+Attach PostgreSQL as the read-only `pg_src` source, run `f()`, and detach.
+
+Delegates to `with_attached_postgres` so the libpq environment stays set for
+the attachment's whole lifetime. An earlier version restored it immediately
+after `ATTACH`, which left the scanner's later pooled connections resolving
+against ambient defaults; hydration then failed part-way through, naming a
+socket path and an OS-username database that appeared in no connection string.
 """
-function attach_postgres_readonly!(
-    conn,
-    pg_conn_str::String;
-    execute::Function=DBInterface.execute,
-)::Nothing
-    options = connection_options_map(pg_conn_str)
-    env_vars = postgres_env_vars(options)
-    with_temporary_env(env_vars) do
-        load_postgres_extension!(conn; execute)
-        execute(conn, "ATTACH '' AS pg_src (TYPE POSTGRES, READ_ONLY);")
-    end
-    @info "Attached PostgreSQL as pg_src (read-only)"
-    return nothing
+function with_pg_src(f::Function, conn, pg_conn_str::String)
+    return with_attached_postgres(
+        f,
+        conn,
+        pg_conn_str;
+        alias="pg_src",
+        read_only=true,
+    )
 end
 
 """
@@ -126,9 +141,8 @@ function hydrate_from_postgres!(
     conn::DBInterface.Connection,
     pg_conn_str::String,
 )::Dict{String,Int}
-    attach_postgres_readonly!(conn, pg_conn_str)
     counts = Dict{String,Int}()
-    try
+    with_pg_src(conn, pg_conn_str) do
         counts["historical_data"] = hydrate_attached_table!(
             conn,
             "historical_data",
@@ -162,8 +176,6 @@ function hydrate_from_postgres!(
                 "pe_ratio", "available_at", "fetched_at", "source_revision",
             ],
         )
-    finally
-        DBInterface.execute(conn, "DETACH pg_src;")
     end
 
     @info "Hydration verified" counts
@@ -370,12 +382,38 @@ function main()
         # with an explicit DuckDB writer and gate its typed result before export.
         # This script also owns hydration and multi-table publication, so that
         # migration is intentionally separate from the staging-smoke gate.
+        failed_tickers = String[]
         updated, missing_t = update_historical(conn, tickers, api_key;
-            use_parallel=true, batch_size=100, max_concurrent=10, add_missing=false)
-        @info "Incremental update done" updated=length(updated) skipped=length(missing_t)
+            use_parallel=true, batch_size=100, max_concurrent=10, add_missing=false,
+            failed_tickers)
+        @info "Incremental update done" updated=length(updated) skipped=length(missing_t) failed=length(failed_tickers)
 
         # 5. Safety gate: never export a subset
         post_counts = verify_hydrated_row_counts!(conn, hydrated_counts)
+
+        # The count gate above only catches a SHRINKING table. A widespread API
+        # failure leaves counts intact and exports yesterday's data as though it
+        # were today's, silently, because every ticker that failed simply added
+        # no rows. The fundamentals path has had a failure-rate gate since the
+        # 2026-08-13 incident; the OHLCV path had none.
+        #
+        # `missing_t` is deliberately not what is measured: with
+        # add_missing=false it also holds every ticker intentionally skipped for
+        # not being in historical_data yet, which is normal operation.
+        max_export_failures = parse(
+            Int, get(ENV, "OHLCV_MAX_EXPORT_FAILURES", "100"),
+        )
+        max_export_failures >= 0 ||
+            error("OHLCV_MAX_EXPORT_FAILURES must be non-negative")
+        if length(failed_tickers) > max_export_failures
+            error(
+                "Refusing export: $(length(failed_tickers)) ticker(s) failed to " *
+                "update, over the OHLCV_MAX_EXPORT_FAILURES limit of " *
+                "$max_export_failures. The existing PostgreSQL snapshot is left " *
+                "untouched. First failures: " *
+                join(first(failed_tickers, 10), ", "),
+            )
+        end
         added_counts = Dict(
             table => post_counts[table] - hydrated_counts[table]
             for table in TABLES_TO_HYDRATE

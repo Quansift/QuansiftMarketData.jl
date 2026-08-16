@@ -15,24 +15,38 @@ include(refresh_script)
     )
 
     calls = String[]
-    @test isnothing(attach_postgres_readonly!(
+    # The attachment is now scoped: the body runs while the libpq environment
+    # is still set, because the scanner opens further pooled connections as
+    # later queries run and each reads the environment when it is opened.
+    @test QuansiftMarketData.DB.Postgres.with_attached_postgres(
         :test_connection,
         "host=example.invalid dbname=app user=reader";
+        alias="pg_src",
+        read_only=true,
         execute=(_, sql) -> push!(calls, sql),
-    ))
+    ) do
+        push!(calls, "BODY")
+        return :ok
+    end == :ok
     @test calls == [
         "LOAD postgres",
-        "ATTACH '' AS pg_src (TYPE POSTGRES, READ_ONLY);",
+        "ATTACH '' AS pg_src (TYPE postgres, READ_ONLY);",
+        "BODY",
+        "DETACH pg_src;",
     ]
     @test all(sql -> !occursin("INSTALL", uppercase(sql)), calls)
 
     secret = "password=refresh-secret"
     attach_error = try
-        attach_postgres_readonly!(
+        QuansiftMarketData.DB.Postgres.with_attached_postgres(
             :test_connection,
             "host=example.invalid dbname=app user=reader";
+            alias="pg_src",
+            read_only=true,
             execute=(_, sql) -> sql == "LOAD postgres" ? error(secret) : nothing,
-        )
+        ) do
+            nothing
+        end
         nothing
     catch error
         error

@@ -1323,52 +1323,46 @@ module Postgres
         @info "Exporting table $safe_name to PostgreSQL using Parquet"
 
         return with_owned_parquet_file(parquet_file) do temporary_parquet
-            attached = false
-            try
-                # Export to a library-owned temporary parquet file.
-                DBInterface.execute(
-                    duckdb_conn,
-                    """COPY $safe_name TO '$temporary_parquet';""",
-                )
-                @info "Exported $safe_name to temporary parquet file"
+            # Export to a library-owned temporary parquet file.
+            DBInterface.execute(
+                duckdb_conn,
+                """COPY $safe_name TO '$temporary_parquet';""",
+            )
+            @info "Exported $safe_name to temporary parquet file"
 
-                # Create and load a staging table before swapping it into place.
-                schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
-                create_table_query = generate_create_table_query(
-                    safe_staging,
-                    schema;
-                    base_table_name=safe_name,
-                )
-                drop_postgres_table_if_exists(pg_conn, safe_staging)
-                close(LibPQ.execute(pg_conn, create_table_query))
+            # Create and load a staging table before swapping it into place.
+            schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
+            create_table_query = generate_create_table_query(
+                safe_staging,
+                schema;
+                base_table_name=safe_name,
+            )
+            drop_postgres_table_if_exists(pg_conn, safe_staging)
+            close(LibPQ.execute(pg_conn, create_table_query))
 
-                # Copy data from parquet to PostgreSQL
-                setup_postgres_connection(
-                    duckdb_conn,
-                    pg_conn;
-                    connection_string=pg_connection_string,
-                    pg_host=pg_host,
-                    pg_user=pg_user,
-                    pg_dbname=pg_dbname,
-                )
-                attached = true
+            # The COPY runs inside the attachment scope: it is served by the
+            # scanner's connection pool, which resolves credentials from the
+            # environment at the moment each connection is opened.
+            attach_source = something(pg_connection_string, pg_conn)
+            options = connection_options_map(attach_source)
+            !isnothing(pg_host) && !isempty(strip(pg_host)) && (options["host"] = pg_host)
+            !isnothing(pg_user) && !isempty(strip(pg_user)) && (options["user"] = pg_user)
+            !isnothing(pg_dbname) && !isempty(strip(pg_dbname)) && (options["dbname"] = pg_dbname)
+
+            with_attached_postgres(
+                duckdb_conn,
+                build_postgres_connection_string(options);
+                alias="postgres_db",
+            ) do
                 DBInterface.execute(
                     duckdb_conn,
                     """COPY $postgres_duckdb_staging FROM '$temporary_parquet';""",
                 )
-                DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-                attached = false
-                row_count = postgres_table_row_count(pg_conn, safe_staging)
-                @info "Copied $row_count rows from Parquet into PostgreSQL staging table $safe_staging"
-                return row_count
-            finally
-                if attached
-                    try
-                        DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-                    catch
-                    end
-                end
             end
+
+            row_count = postgres_table_row_count(pg_conn, safe_staging)
+            @info "Copied $row_count rows from Parquet into PostgreSQL staging table $safe_staging"
+            return row_count
         end
     end
 
@@ -1468,9 +1462,71 @@ module Postgres
     end
 
     """
+        with_attached_postgres(f, duckdb_conn, source; alias, read_only, execute)
+
+    Attach PostgreSQL to DuckDB, run `f()`, and detach.
+
+    The connection details travel through libpq environment variables so the
+    password never reaches SQL text, catalogs, or error messages. The scope of
+    those variables must therefore cover the ATTACHMENT'S LIFETIME, not just the
+    `ATTACH` statement: DuckDB's postgres scanner opens further libpq
+    connections lazily as later queries run, and each reads the environment at
+    the moment it is opened. Restoring the environment right after `ATTACH`
+    leaves those later connections to fall back on ambient libpq defaults —
+    observed 2026-08-15 as
+
+        IO Error: Unable to connect to Postgres at :
+        connection to server on socket "/tmp/.s.PGSQL.5432" failed:
+        FATAL: database "otwn" does not exist
+
+    where "otwn" is the OS user, from a hydration whose connection string named
+    a different host and database entirely. It is pool-dependent, so it strikes
+    intermittently: the first query reuses the attach-time connection and
+    succeeds, while a later one needing a second pooled connection fails.
+
+    Running `f` inside the environment scope makes that impossible to get wrong,
+    so callers never have to know the rule.
+    """
+    function with_attached_postgres(
+        f::Function,
+        duckdb_conn,
+        source::Union{String,PostgreSQLConnection};
+        alias::AbstractString="postgres_db",
+        read_only::Bool=false,
+        execute::Function=DBInterface.execute,
+    )
+        safe_alias = validate_identifier(String(alias))
+        options = connection_options_map(source)
+        env_vars = postgres_env_vars(options)
+        attach_options = read_only ? "TYPE postgres, READ_ONLY" : "TYPE postgres"
+
+        return with_temporary_env(env_vars) do
+            load_postgres_extension!(duckdb_conn; execute)
+            execute(duckdb_conn, "ATTACH '' AS $safe_alias ($attach_options);")
+            try
+                return f()
+            finally
+                # Guarded: an exception raised in `finally` replaces the one
+                # actually being propagated, so a detach failure must never be
+                # allowed to bury the real error.
+                try
+                    execute(duckdb_conn, "DETACH $safe_alias;")
+                catch detach_error
+                    @warn "Failed to detach PostgreSQL scanner" alias=safe_alias exception=detach_error
+                end
+            end
+        end
+    end
+
+    """
         setup_postgres_connection(duckdb_conn::DuckDBConnection, pg_host::String, pg_user::String, pg_dbname::String)
 
     Set up a PostgreSQL connection in DuckDB.
+
+    Prefer [`with_attached_postgres`](@ref): this leaves the attachment live
+    after the libpq environment has been restored, so any query the scanner
+    serves from a new pooled connection resolves against ambient defaults
+    rather than the supplied connection details.
     """
     function setup_postgres_connection(
         duckdb_conn::DuckDBConnection,
@@ -1517,6 +1573,6 @@ module Postgres
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics
     export export_table_to_postgres, export_table_to_postgres_dataframe, export_table_to_postgres_parquet
-    export setup_postgres_connection, load_postgres_extension!
+    export setup_postgres_connection, load_postgres_extension!, with_attached_postgres
     export normalize_postgres_connection_string, connection_options_map, postgres_env_vars
 end

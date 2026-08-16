@@ -386,7 +386,8 @@ end
         max_concurrent::Int = 10,
         add_missing::Bool = true,
         latest_dates_df::Union{DataFrame,Nothing} = nothing,
-        reference_ticker::String = "SPY"
+        reference_ticker::String = "SPY",
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
     )
         # Dispatch to parallel or sequential version
         if use_parallel
@@ -394,13 +395,15 @@ end
                 conn, tickers, api_key;
                 batch_size=batch_size,
                 max_concurrent=max_concurrent,
-                add_missing=add_missing
+                add_missing=add_missing,
+                failed_tickers,
             )
         else
             return update_historical_sequential_impl(
                 conn, tickers, api_key;
                 add_missing=add_missing,
-                latest_dates_df=latest_dates_df
+                latest_dates_df=latest_dates_df,
+                failed_tickers,
             )
         end
     end
@@ -931,7 +934,8 @@ end
         tickers::DataFrame,
         api_key::String;
         add_missing::Bool = true,
-        latest_dates_df::Union{DataFrame,Nothing} = nothing
+        latest_dates_df::Union{DataFrame,Nothing} = nothing,
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
     )
         # Only compute latest dates if not provided (optimization for batch processing)
         if latest_dates_df === nothing
@@ -986,6 +990,10 @@ end
         end
 
         log_update_results(missing_tickers, updated_tickers, error_tickers, add_missing)
+        # `missing_tickers` mixes intentional skips with genuine errors, so a
+        # caller gating an export on its length would fire during entirely
+        # normal operation. `failed_tickers` carries the errors alone.
+        isnothing(failed_tickers) || append!(failed_tickers, error_tickers)
         return (updated_tickers, missing_tickers)
     end
 
@@ -995,7 +1003,8 @@ end
         api_key::String = get_api_key();
         batch_size::Int = 50,
         max_concurrent::Int = 10,
-        add_missing::Bool = true
+        add_missing::Bool = true,
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
     )
         @info "Starting parallel historical data update" total_tickers=nrow(tickers) batch_size max_concurrent
 
@@ -1118,6 +1127,10 @@ end
                 if !success
                     push!(batch_missing, ticker)
                     if !isnothing(error)
+                        # `batch_missing` also collects tickers skipped on
+                        # purpose (add_missing=false), so only an attached
+                        # error marks a genuine failure.
+                        isnothing(failed_tickers) || push!(failed_tickers, ticker)
                         @warn "Failed to update ticker: $ticker" exception=error
                     end
                 end

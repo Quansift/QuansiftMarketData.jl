@@ -155,6 +155,10 @@ end
         @test !occursin("canary-cli-secret", captured)
         @test !occursin("TIINGO_API_KEY", captured)
         @test !occursin("not-an-integer", captured)
+        # A bare status=FAILED made an expired key, an outage and a malformed
+        # env var indistinguishable — in the one job whose purpose is telling
+        # you which. The exception type discriminates without echoing input.
+        @test occursin("reason=ArgumentError", captured)
     end
 end
 

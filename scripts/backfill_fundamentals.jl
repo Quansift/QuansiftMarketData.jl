@@ -46,8 +46,7 @@ function configured_backfill_as_of()::Date
 end
 
 function hydrate_existing_fundamentals!(conn, pg_conn_str::String)::Nothing
-    attach_postgres_readonly!(conn, pg_conn_str)
-    try
+    with_pg_src(conn, pg_conn_str) do
         merge_attached_table!(
             conn,
             "security_observations",
@@ -68,8 +67,6 @@ function hydrate_existing_fundamentals!(conn, pg_conn_str::String)::Nothing
             ],
             ["perma_ticker", "metric_date"],
         )
-    finally
-        DBInterface.execute(conn, "DETACH pg_src")
     end
     return nothing
 end

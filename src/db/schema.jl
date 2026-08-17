@@ -79,7 +79,7 @@ module Schema
                 price_coverage_end DATE,
                 is_leveraged BOOLEAN,
                 join_status VARCHAR NOT NULL,
-                PRIMARY KEY (perma_ticker, observed_at)
+                PRIMARY KEY (perma_ticker, observed_at, ticker, is_active)
             )
             """),
             (Config.DB.Tables.FUNDAMENTAL_DAILY_METRICS, """
@@ -110,6 +110,68 @@ module Schema
 
         if !isempty(failures)
             throw(first(failures))
+        end
+
+        observation_key = DBInterface.execute(conn, """
+            SELECT constraint_column_names
+            FROM duckdb_constraints()
+            WHERE schema_name = 'main'
+              AND table_name = 'security_observations'
+              AND constraint_type = 'PRIMARY KEY'
+        """) |> DataFrame
+        expected_observation_key = [
+            "perma_ticker", "observed_at", "ticker", "is_active",
+        ]
+        nrow(observation_key) == 1 || throw(DatabaseQueryError(
+            "security_observations must have exactly one primary key",
+            "SELECT constraint_column_names FROM duckdb_constraints()",
+        ))
+        current_observation_key = only(observation_key.constraint_column_names)
+        if current_observation_key != expected_observation_key
+            legacy_observation_key = ["perma_ticker", "observed_at"]
+            current_observation_key == legacy_observation_key ||
+                throw(DatabaseQueryError(
+                    "security_observations has an unsupported primary key",
+                    "SELECT constraint_column_names FROM duckdb_constraints()",
+                ))
+            DBInterface.execute(conn, "BEGIN TRANSACTION")
+            try
+                DBInterface.execute(conn, """
+                    CREATE TABLE security_observations_key_migration (
+                        perma_ticker VARCHAR NOT NULL,
+                        observed_at TIMESTAMP NOT NULL,
+                        ticker VARCHAR NOT NULL,
+                        is_active BOOLEAN NOT NULL,
+                        is_adr BOOLEAN,
+                        daily_last_updated TIMESTAMP,
+                        exchange VARCHAR,
+                        asset_type VARCHAR,
+                        price_coverage_start DATE,
+                        price_coverage_end DATE,
+                        is_leveraged BOOLEAN,
+                        join_status VARCHAR NOT NULL,
+                        PRIMARY KEY (
+                            perma_ticker, observed_at, ticker, is_active
+                        )
+                    )
+                """)
+                DBInterface.execute(conn, """
+                    INSERT INTO security_observations_key_migration
+                    SELECT * FROM security_observations
+                """)
+                DBInterface.execute(conn, "DROP TABLE security_observations")
+                DBInterface.execute(conn, """
+                    ALTER TABLE security_observations_key_migration
+                    RENAME TO security_observations
+                """)
+                DBInterface.execute(conn, "COMMIT")
+            catch
+                try
+                    DBInterface.execute(conn, "ROLLBACK")
+                catch
+                end
+                rethrow()
+            end
         end
 
         historical_columns = DBInterface.execute(conn, """
@@ -308,7 +370,9 @@ module Schema
             lowercase(validate_identifier(base_table_name))
         primary_keys = Dict(
             "historical_data" => ("ticker", "date"),
-            "security_observations" => ("perma_ticker", "observed_at"),
+            "security_observations" => (
+                "perma_ticker", "observed_at", "ticker", "is_active",
+            ),
             "fundamental_daily_metrics" => ("perma_ticker", "metric_date"),
         )
         if haskey(primary_keys, base_name)

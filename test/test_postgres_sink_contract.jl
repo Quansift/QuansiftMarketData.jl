@@ -40,6 +40,14 @@ using QuansiftMarketData
         @test which(persistence_function, signature).module === postgres_module
     end
 
+    replacement_method = which(
+        postgres_module.replace_ticker_universe,
+        Tuple{LibPQ.Connection,DataFrame,DataFrame},
+    )
+    @test :statement_timeout_seconds in Base.kwarg_decl(replacement_method)
+    @test :lock_timeout_seconds in Base.kwarg_decl(replacement_method)
+    @test !isdefined(postgres_module, :export_to_postgres)
+
     schema_signature = Tuple{LibPQ.Connection}
     @test hasmethod(create_tables, schema_signature)
     @test which(create_tables, schema_signature).module === schema_module

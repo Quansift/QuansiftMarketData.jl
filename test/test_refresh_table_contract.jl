@@ -92,13 +92,6 @@ end
         "security_observations",
         "fundamental_daily_metrics",
     ]
-    @test TABLES_TO_EXPORT == [
-        "historical_data",
-        "us_tickers_filtered",
-        "security_observations",
-        "fundamental_daily_metrics",
-    ]
-
     conn = connect_duckdb(":memory:")
     try
         DBInterface.execute(
@@ -278,7 +271,7 @@ end
                 "price_coverage_start", "price_coverage_end", "is_leveraged",
                 "join_status",
             ],
-            ["perma_ticker", "observed_at"],
+            ["perma_ticker", "observed_at", "ticker", "is_active"],
         )
         metrics_count = merge_attached_table!(
             conn,
@@ -290,14 +283,14 @@ end
             ["perma_ticker", "metric_date"],
         )
 
-        @test security_count == 2
+        @test security_count == 3
         @test metrics_count == 2
         securities = DBInterface.execute(
             conn,
-            "SELECT ticker, exchange FROM security_observations ORDER BY perma_ticker",
+            "SELECT ticker, exchange FROM security_observations ORDER BY perma_ticker, ticker",
         ) |> DataFrame
-        @test securities.ticker == ["LOCAL", "NEW"]
-        @test securities.exchange == ["LOCAL", "PG"]
+        @test securities.ticker == ["LOCAL", "OLD", "NEW"]
+        @test securities.exchange == ["LOCAL", "PG", "PG"]
         metrics = DBInterface.execute(
             conn,
             "SELECT market_cap FROM fundamental_daily_metrics ORDER BY perma_ticker",

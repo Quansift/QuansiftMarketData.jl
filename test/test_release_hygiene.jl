@@ -592,7 +592,7 @@ supported_asset_types = ["Stock"]
         root = normpath(joinpath(@__DIR__, ".."))
         project = TOML.parsefile(joinpath(root, "Project.toml"))
         @test project["name"] == "QuansiftMarketData"
-        @test project["version"] == "3.0.0"
+        @test project["version"] == "4.0.0"
         @test project["uuid"] == "1316d3df-ea13-4eef-8810-037e2b70086f"
 
         entrypoint = joinpath(root, "src", "QuansiftMarketData.jl")

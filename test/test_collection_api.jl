@@ -25,6 +25,7 @@ Base.:(==)(value::_InterruptingHistoricalEquality, ::String) =
 
 const _legacy_historical_mode = Ref(:delegate)
 const _legacy_historical_cancellation = Ref{Union{Nothing,InterruptException}}(nothing)
+const _legacy_no_data_fetches = Ref(0)
 
 function _eod_fixture(date, close=100.0)
     return DataFrame(
@@ -1411,6 +1412,84 @@ end
     @test permanent_result.failed == ["BADREQ"]
     @test !only(permanent_result.failures).retryable
     @test attempts[] == 1
+end
+
+@testset "A typed no-data response is a recorded absence" begin
+    # `fetch_api_data` throws `NoDataError` for a 200 that carried no rows.
+    # The collector records that as unavailable rather than failed, and never
+    # queues a retry: the request already succeeded.
+    no_data = QuansiftMarketData.API.NoDataError(
+        "No data returned from https://example.test/daily/EMPTY/prices",
+    )
+    attempts = Ref(0)
+    result = collect_historical(
+        DataFrame(
+            ticker = ["EMPTY"],
+            start_date = [Date(2024, 1, 1)],
+            end_date = [Date(2024, 1, 2)],
+        ),
+        "offline-token";
+        fetcher = function (row; kwargs...)
+            attempts[] += 1
+            throw(no_data)
+        end,
+        writer = (_, frame) -> nrow(frame),
+        retry_rounds = 2,
+    )
+
+    @test result.unavailable == ["EMPTY"]
+    @test isempty(result.failed)
+    @test isempty(result.failures)
+    @test attempts[] == 1
+
+    # On the paths that do record it as a failure, it is not worth retrying.
+    @test !QuansiftMarketData._sync_failure("EMPTY", :fetch, no_data).retryable
+end
+
+@testset "Legacy sequential update recognizes a typed no-data response" begin
+    # The deprecated path classified the absence by matching "No data returned"
+    # in an `ErrorException`. It now recognizes the type, so a security with
+    # nothing new is still a skip rather than a recorded error.
+    row_type = typeof(DataFrame(ticker=["TYPE"])[1, :])
+    @eval QuansiftMarketData.API function get_ticker_data(row::$row_type; kwargs...)
+        if row.ticker == "__LEGACY_NO_DATA__"
+            Main._legacy_no_data_fetches[] += 1
+            throw(NoDataError(
+                "No data returned from https://example.test/daily/NODATA/prices",
+            ))
+        end
+        return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
+    end
+    injected_method = which(QuansiftMarketData.API.get_ticker_data, (row_type,))
+    conn = connect_duckdb(":memory:")
+
+    try
+        failed = String[]
+        updated, missing_tickers = update_historical(
+            conn,
+            DataFrame(
+                ticker=["__LEGACY_NO_DATA__"],
+                start_date=[Date(2024, 1, 1)],
+                end_date=[Date(2024, 1, 2)],
+            ),
+            "offline-token";
+            latest_dates_df=DataFrame(
+                ticker=["__LEGACY_NO_DATA__"],
+                latest_date=[Date(2024, 1, 1)],
+            ),
+            failed_tickers=failed,
+        )
+
+        # The absence has to come back from a fetch that actually happened,
+        # or an "up to date" skip would satisfy the assertions below for free.
+        @test _legacy_no_data_fetches[] == 1
+        @test isempty(updated)
+        @test isempty(missing_tickers)
+        @test isempty(failed)
+    finally
+        close_duckdb(conn)
+        Base.delete_method(injected_method)
+    end
 end
 
 @testset "Legacy parallel update separates real failures from skips" begin

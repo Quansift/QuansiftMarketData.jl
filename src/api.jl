@@ -90,6 +90,21 @@ end
 Base.showerror(io::IO, error::ApiStatusError) = print(io, error.message)
 
 """
+    NoDataError(message)
+
+A successful response that carried no rows. The request did not fail and the
+security is not broken, so this is a recorded absence rather than an error to
+retry. It used to be an `ErrorException`, which left callers recovering the
+fact by matching an English substring in the message. `message` is already
+redacted.
+"""
+struct NoDataError <: Exception
+    message::String
+end
+
+Base.showerror(io::IO, error::NoDataError) = print(io, error.message)
+
+"""
     _is_retryable_status(status)
 
 Whether a status is worth another attempt: rate limiting and server-side
@@ -105,6 +120,19 @@ Whether a status means the security has no data to give, as opposed to the
 request having failed. Unavailable is a recorded outcome, not a failure.
 """
 _is_unavailable_status(status::Integer)::Bool = status == 404 || status == 410
+
+"""
+    is_no_data_error(error)::Bool
+
+Whether an error means the security had nothing to give, as opposed to the
+request having failed. True for `NoDataError` and for an `ApiStatusError`
+carrying 404 or 410, false for everything else — including an `ErrorException`
+whose wording happens to mention 404 or no data, because wording is not a fact
+the thrower committed to.
+"""
+is_no_data_error(error)::Bool =
+    error isa NoDataError ||
+    (error isa ApiStatusError && _is_unavailable_status(error.status))
 
 function _http_status_error(status, url, _body)::ApiStatusError
     safe_url = _redact_api_error(url)
@@ -351,7 +379,7 @@ function fetch_api_data(
                 throw(ErrorException("Invalid JSON response from $safe_url"))
             end
             if isempty(data) && !allow_empty
-                throw(ErrorException("No data returned from $safe_url"))
+                throw(NoDataError("No data returned from $safe_url"))
             end
             return data
         end

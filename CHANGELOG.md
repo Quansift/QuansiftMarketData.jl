@@ -11,6 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `NoDataError` and the public predicate `is_no_data_error`, plus an export of
+  the existing `ApiStatusError`. `is_no_data_error` is true only for
+  `NoDataError` and for an `ApiStatusError` carrying 404 or 410, so callers can
+  separate "the security had nothing to give" from "the request failed" without
+  matching English substrings in an error message.
+
+### Changed
+
+- **Breaking:** `fetch_api_data` now throws `NoDataError` instead of
+  `ErrorException` when a 200 response carries no rows and `allow_empty=false`.
+  Message text, redaction, retry policy, and `allow_empty=true` behavior are
+  unchanged. Callers that catch `ErrorException` to detect a no-data response
+  must catch `NoDataError` or use `is_no_data_error`.
+
+### Removed
+
+- **Breaking:** Removed the seven deprecated DuckDB-first full-history entry
+  points: `export_to_postgres`, `update_historical`,
+  `update_historical_parallel`, `update_historical_sequential`,
+  `download_tickers_duckdb`, `add_historical_data`, and
+  `update_split_ticker`. Use the sink-neutral collectors and explicit
+  PostgreSQL, Parquet, or DuckDB persistence primitives instead.
+
 ## [3.0.0] - 2026-08-11
 
 ### Changed

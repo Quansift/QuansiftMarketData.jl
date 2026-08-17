@@ -34,11 +34,4 @@ if [[ "${TIINGO_API_KEY:-}" == "replace_me_with_real_tiingo_api_key" || "${TIING
   exit 1
 fi
 
-# Resolve PG connection: canonical OHLCV_PG_CONNECTION, then legacy TIINGO_PG_CONNECTION.
-_resolved_pg="${OHLCV_PG_CONNECTION:-${TIINGO_PG_CONNECTION:-}}"
-if [[ "${TIINGO_SMOKE_EXPORT_POSTGRES:-false}" == "true" && "$_resolved_pg" == "postgresql://user:password@host:5432/database?sslmode=require" ]]; then
-  echo "Set OHLCV_PG_CONNECTION (or TIINGO_PG_CONNECTION) in $ENV_FILE before enabling PostgreSQL export." >&2
-  exit 1
-fi
-
 exec julia --project="$REPO_DIR" "$REPO_DIR/scripts/staging_smoke_test.jl"

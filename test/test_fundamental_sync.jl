@@ -17,6 +17,116 @@ Base.first(value::_InterruptDuringFundamentalParse, ::Integer) =
 struct _TemporaryTimeoutMetric <: Real end
 Base.Float64(::_TemporaryTimeoutMetric) = error("temporary timeout while normalizing")
 
+function _with_process_timezone(f::Function, timezone::String)
+    previous = get(ENV, "TZ", nothing)
+    try
+        ENV["TZ"] = timezone
+        ccall(:tzset, Cvoid, ())
+        return f()
+    finally
+        if isnothing(previous)
+            delete!(ENV, "TZ")
+        else
+            ENV["TZ"] = previous
+        end
+        ccall(:tzset, Cvoid, ())
+    end
+end
+
+@testset "Generated security observation timestamps are UTC-naive" begin
+    meta_payload = [(
+        permaTicker = "perm-inactive",
+        ticker = "OLD",
+        isActive = false,
+        isADR = false,
+        dailyLastUpdated = nothing,
+    )]
+    universe_payload = NamedTuple[]
+    explicit = DateTime(2026, 8, 17, 12, 34, 56)
+
+    _with_process_timezone("Etc/GMT+12") do
+        utc_before = Dates.now(Dates.UTC)
+
+        normalized = normalize_security_observations(meta_payload, universe_payload)
+        @test utc_before <= only(normalized.observed_at) <= Dates.now(Dates.UTC)
+
+        collected_observations = Ref{DataFrame}()
+        collect_fundamentals(
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of = Date(2026, 8, 17),
+            observation_writer = frame -> begin
+                collected_observations[] = copy(frame)
+                return nrow(frame)
+            end,
+        )
+        @test utc_before <= only(collected_observations[].observed_at) <=
+              Dates.now(Dates.UTC)
+
+        conn = connect_duckdb(":memory:")
+        try
+            sync_fundamentals!(
+                conn,
+                meta_payload,
+                universe_payload;
+                api_key = "offline-token",
+                as_of = Date(2026, 8, 17),
+                retry_rounds = 0,
+                checkpointer = _ -> nothing,
+            )
+            stored = DBInterface.execute(
+                conn,
+                "SELECT observed_at FROM security_observations",
+            ) |> DataFrame
+            @test utc_before <= only(stored.observed_at) <= Dates.now(Dates.UTC)
+        finally
+            close_duckdb(conn)
+        end
+    end
+
+    @test only(normalize_security_observations(
+        meta_payload,
+        universe_payload;
+        observed_at = explicit,
+    ).observed_at) == explicit
+
+    collected_explicit = Ref{DataFrame}()
+    collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of = Date(2026, 8, 17),
+        observed_at = explicit,
+        observation_writer = frame -> begin
+            collected_explicit[] = copy(frame)
+            return nrow(frame)
+        end,
+    )
+    @test only(collected_explicit[].observed_at) == explicit
+
+    conn = connect_duckdb(":memory:")
+    try
+        sync_fundamentals!(
+            conn,
+            meta_payload,
+            universe_payload;
+            api_key = "offline-token",
+            as_of = Date(2026, 8, 17),
+            observed_at = explicit,
+            retry_rounds = 0,
+            checkpointer = _ -> nothing,
+        )
+        stored = DBInterface.execute(
+            conn,
+            "SELECT observed_at FROM security_observations",
+        ) |> DataFrame
+        @test only(stored.observed_at) == explicit
+    finally
+        close_duckdb(conn)
+    end
+end
+
 @testset "Official meta reconciles as observations without invented validity" begin
     observed_at = DateTime(2026, 7, 19, 12)
     meta_payload = [

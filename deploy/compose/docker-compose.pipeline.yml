@@ -8,17 +8,12 @@
 # do not override values loaded from the service env_file.
 #   docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 #     -e TIINGO_SMOKE_TICKER_LIMIT=100 \
-#     -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
 #     pipeline
 #
 # Requires:
 #   - The external Docker network the DB stack exposes (preprod: `db-net`).
 #   - An env file at the repo root (preprod: `.env.staging`) providing
-#     TIINGO_API_KEY and OHLCV_PG_CONNECTION (or legacy TIINGO_PG_CONNECTION). The PG host MUST be the
-#     in-network service alias on port 5432 (e.g. postgres:5432 / postgres_db:5432),
-#     NOT the host-published 127.0.0.1:5433. SSL is typically off in-network:
-#       TIINGO_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
-#       TIINGO_SMOKE_EXPORT_POSTGRES=true
+#     TIINGO_API_KEY.
 #
 # Image tag and env file are overridable:
 #   TIINGO_IMAGE_REPO=ghcr.io/quansift/quansiftmarketdata TIINGO_IMAGE_TAG=latest TIINGO_APP_ENV_FILE=../../.env docker compose -f ... run --rm pipeline

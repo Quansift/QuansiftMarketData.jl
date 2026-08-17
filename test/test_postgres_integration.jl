@@ -85,10 +85,10 @@ function _pg_integration_create_v1_relation(conn, name::String)
 end
 
 function _pg_integration_create_current_preledger(conn)
-    for statement in MigrationSchemaIntegration.POSTGRES_TARGET_DDL
+    for statement in MigrationSchemaIntegration.POSTGRES_V2_TARGET_DDL
         _pg_integration_command(conn, statement)
     end
-    for statement in MigrationSchemaIntegration.POSTGRES_TARGET_INDEX_DDL
+    for statement in MigrationSchemaIntegration.POSTGRES_V2_TARGET_INDEX_DDL
         _pg_integration_command(conn, statement)
     end
     return nothing
@@ -145,9 +145,21 @@ function _pg_integration_create_compatibility_export(conn)
         "security_observations",
         "fundamental_daily_metrics",
     )
+        create_query = MigrationSchemaIntegration.generate_create_table_query(
+            name,
+            schemas[name],
+        )
+        if name == "security_observations"
+            create_query = replace(
+                create_query,
+                "PRIMARY KEY (\"perma_ticker\", \"observed_at\", " *
+                "\"ticker\", \"is_active\")" =>
+                    "PRIMARY KEY (\"perma_ticker\", \"observed_at\")",
+            )
+        end
         _pg_integration_command(
             conn,
-            MigrationSchemaIntegration.generate_create_table_query(name, schemas[name]),
+            create_query,
         )
     end
     _pg_integration_command(conn, """
@@ -301,14 +313,14 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 fresh_result = migrate_postgres!(pg)
                 @test fresh_result.from_version == 0
                 @test fresh_result.to_version == POSTGRES_SCHEMA_VERSION
-                @test fresh_result.applied_versions == [1, 2]
-                @test postgres_schema_version(pg) == 2
+                @test fresh_result.applied_versions == [1, 2, 3]
+                @test postgres_schema_version(pg) == 3
                 @test create_tables(pg) === nothing
                 @test only(_pg_integration_query(
                     pg,
                     "SELECT count(*) AS count FROM " *
                     "public.tiingojulia_schema_migrations",
-                ).count) == 2
+                ).count) == 3
 
                 _pg_integration_cleanup(pg)
                 v1_result = migrate_postgres!(pg; target_version=1)
@@ -322,8 +334,8 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 )
                 v2_result = migrate_postgres!(pg)
                 @test v2_result.from_version == 1
-                @test v2_result.to_version == 2
-                @test v2_result.applied_versions == [2]
+                @test v2_result.to_version == 3
+                @test v2_result.applied_versions == [2, 3]
                 migrated_eod = _pg_integration_query(
                     pg,
                     "SELECT fetched_at FROM public.historical_data " *
@@ -338,6 +350,18 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     "AND column_name = 'fetched_at'",
                 ).is_nullable) == "NO"
                 @test migrate_postgres!(pg).applied_versions == Int[]
+
+                _pg_integration_cleanup(pg)
+                @test migrate_postgres!(pg; target_version=2).applied_versions == [1, 2]
+                _pg_integration_command(
+                    pg,
+                    "ALTER INDEX public.uq_security_observations_key " *
+                    "RENAME TO renamed_security_observations_key",
+                )
+                renamed_result = migrate_postgres!(pg)
+                @test renamed_result.from_version == 2
+                @test renamed_result.applied_versions == [3]
+                @test postgres_schema_version(pg) == 3
 
                 relation_names = [
                     "us_tickers",
@@ -356,9 +380,9 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     @test postgres_schema_version(pg) == 0
                     result = migrate_postgres!(pg)
                     @test result.from_version == 0
-                    @test result.to_version == 2
-                    @test result.applied_versions == [1, 2]
-                    @test postgres_schema_version(pg) == 2
+                    @test result.to_version == 3
+                    @test result.applied_versions == [1, 2, 3]
+                    @test postgres_schema_version(pg) == 3
                     _pg_integration_assert_legacy_rows(pg, selected)
                     if "historical_data" in selected
                         key = _pg_integration_query(
@@ -385,7 +409,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     pg,
                     "SELECT ticker, date, close, volume FROM public.historical_data",
                 )
-                @test migrate_postgres!(pg).applied_versions == [1, 2]
+                @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
                 hybrid_after = _pg_integration_query(
                     pg,
                     "SELECT ticker, date, close, volume FROM public.historical_data",
@@ -400,7 +424,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     "(ticker, date, close) VALUES " *
                     "('CURRENT', DATE '2024-01-02', 88.0)",
                 )
-                @test migrate_postgres!(pg).applied_versions == [1, 2]
+                @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
                 @test only(_pg_integration_query(
                     pg,
                     "SELECT close FROM public.historical_data " *
@@ -442,7 +466,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 @test MigrationSchemaIntegration.classify_preledger_manifest(
                     MigrationSchemaIntegration.inspect_postgres_manifest(pg),
                 ) == :first_party_compatibility_export
-                @test migrate_postgres!(pg).applied_versions == [1, 2]
+                @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
                 after_export = Dict(name => only(_pg_integration_query(
                     pg,
                     "SELECT md5(string_agg(to_jsonb(t)::text, '' " *
@@ -479,8 +503,8 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     end
                     @test_throws PostgresMigrationError migrate_postgres!(pg)
                     _pg_integration_command(pg, "SET ROLE $export_owner")
-                    @test migrate_postgres!(pg).applied_versions == [1, 2]
-                    @test postgres_schema_version(pg) == 2
+                    @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
+                    @test postgres_schema_version(pg) == 3
                 finally
                     _pg_integration_command(pg, "RESET ROLE")
                     _pg_integration_cleanup(pg)
@@ -537,8 +561,8 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     ) == :deployed_first_party_composition
                     deployed_result = migrate_postgres!(pg)
                     @test deployed_result.from_version == 0
-                    @test deployed_result.to_version == 2
-                    @test deployed_result.applied_versions == [1, 2]
+                    @test deployed_result.to_version == 3
+                    @test deployed_result.applied_versions == [1, 2, 3]
                     deployed_after = deployed_fingerprints(deployed_tables)
                     @test deployed_after == deployed_before
                     @test only(_pg_integration_query(
@@ -701,7 +725,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                         "SELECT exchange FROM public.us_tickers_filtered " *
                         "WHERE ticker = 'EXPORTED'",
                     ).exchange) == "NYSE"
-                    @test postgres_schema_version(pg) == 2
+                    @test postgres_schema_version(pg) == 3
                     @test migrate_postgres!(pg).applied_versions == Int[]
                     _pg_integration_command(
                         pg,
@@ -727,7 +751,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                         )
                     end
                     _pg_integration_command(pg, "SET ROLE $deployed_owner")
-                    @test migrate_postgres!(pg).applied_versions == [1, 2]
+                    @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
                     @test ismissing(only(_pg_integration_query(
                         pg,
                         "SELECT to_regclass('public.filtered_stocks') AS relation",
@@ -1196,7 +1220,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     hostile_path = "$hostile_schema, pg_catalog, public"
                     _pg_integration_command(pg, "SET search_path TO $hostile_path")
                     @test postgres_schema_version(pg) == 0
-                    @test migrate_postgres!(pg).applied_versions == [1, 2]
+                    @test migrate_postgres!(pg).applied_versions == [1, 2, 3]
                     @test only(_pg_integration_query(
                         pg,
                         "SELECT count(*) FROM $hostile_schema.calls",
@@ -1234,8 +1258,8 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                           LibPQ.libpq_c.PQTRANS_IDLE
                     @test postgres_schema_version(second) == 0
                     _pg_integration_command(pg, "COMMIT")
-                    @test migrate_postgres!(second).applied_versions == [1, 2]
-                    @test postgres_schema_version(second) == 2
+                    @test migrate_postgres!(second).applied_versions == [1, 2, 3]
+                    @test postgres_schema_version(second) == 3
                 finally
                     if LibPQ.transaction_status(pg) != LibPQ.libpq_c.PQTRANS_IDLE
                         _pg_integration_command(pg, "ROLLBACK")
@@ -1518,6 +1542,93 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 end
             end
 
+            @test_throws ArgumentError replace_ticker_universe(
+                pg,
+                all_universe,
+                filtered_universe;
+                statement_timeout_seconds=0,
+            )
+            @test_throws ArgumentError replace_ticker_universe(
+                pg,
+                all_universe,
+                filtered_universe;
+                lock_timeout_seconds=-1,
+            )
+            @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
+            _pg_integration_command(pg, """
+                CREATE FUNCTION public.slow_universe_insert()
+                RETURNS trigger LANGUAGE plpgsql AS \$\$
+                BEGIN
+                    PERFORM pg_catalog.pg_sleep(2);
+                    RETURN NEW;
+                END
+                \$\$
+            """)
+            _pg_integration_command(pg, """
+                CREATE TRIGGER slow_universe_insert
+                BEFORE INSERT ON public.us_tickers
+                FOR EACH ROW EXECUTE FUNCTION public.slow_universe_insert()
+            """)
+            universe_before_timeout = Dict(
+                table => _pg_integration_query(
+                    pg,
+                    "SELECT * FROM public.$table ORDER BY ticker, exchange",
+                )
+                for table in ("us_tickers", "us_tickers_filtered")
+            )
+            try
+                elapsed_seconds = @elapsed timeout_error = try
+                    replace_ticker_universe(
+                        pg,
+                        all_universe,
+                        filtered_universe;
+                        lock_timeout_seconds=10,
+                        statement_timeout_seconds=1,
+                    )
+                    nothing
+                catch error
+                    error
+                end
+                @test timeout_error !== nothing
+                @test occursin(
+                    "statement timeout",
+                    lowercase(sprint(showerror, timeout_error)),
+                ) || occursin(
+                    "canceling statement",
+                    lowercase(sprint(showerror, timeout_error)),
+                )
+                @test elapsed_seconds < 10
+                @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT current_setting('lock_timeout') AS value",
+                ).value) == "0"
+                @test only(_pg_integration_query(
+                    pg,
+                    "SELECT current_setting('statement_timeout') AS value",
+                ).value) == "0"
+                for table in keys(universe_before_timeout)
+                    @test isequal(
+                        _pg_integration_query(
+                            pg,
+                            "SELECT * FROM public.$table ORDER BY ticker, exchange",
+                        ),
+                        universe_before_timeout[table],
+                    )
+                end
+            finally
+                _pg_integration_command(
+                    pg,
+                    "DROP TRIGGER IF EXISTS slow_universe_insert " *
+                    "ON public.us_tickers",
+                )
+                _pg_integration_command(
+                    pg,
+                    "DROP FUNCTION IF EXISTS public.slow_universe_insert()",
+                )
+            end
+
             prices = DataFrame(
                 date = [Date(2024, 1, 2), Date(2024, 1, 3)],
                 close = Union{Missing,Float64}[missing, 101.0],
@@ -1618,8 +1729,12 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
             )
             @test upsert_security_observations(pg, observations) == 1
 
+            state_observations = vcat(observations, observations)
+            state_observations.is_active = [true, false]
+            state_observations.join_status = ["matched", "inactive"]
+            @test upsert_security_observations(pg, state_observations) == 2
+
             duplicate_observations = vcat(observations, observations)
-            duplicate_observations.ticker = ["AAPL", "AAPL.NEW"]
             observation_error = try
                 upsert_security_observations(pg, duplicate_observations)
                 nothing
@@ -1635,8 +1750,9 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
             @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
             @test _pg_integration_query(
                 pg,
-                "SELECT ticker FROM public.security_observations",
-            ).ticker == ["AAPL"]
+                "SELECT is_active FROM public.security_observations " *
+                "ORDER BY is_active DESC",
+            ).is_active == [true, false]
 
             metrics = DataFrame(
                 perma_ticker = ["perm-aapl"],
@@ -1781,7 +1897,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
             @test only(_pg_integration_query(
                 pg,
                 "SELECT count(*) AS row_count FROM security_observations WHERE ticker = 'AAPL'",
-            ).row_count) == 1
+            ).row_count) == 2
 
             _pg_integration_command(
                 pg,
@@ -1822,99 +1938,7 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
             @test only(_pg_integration_query(
                 pg,
                 "SELECT count(*) AS row_count FROM security_observations WHERE ticker = 'AAPL'",
-            ).row_count) == 1
-
-            _pg_integration_command(
-                pg,
-                "CREATE TABLE legacy_atomic_first (id BIGINT, generation TEXT)",
-            )
-            _pg_integration_command(
-                pg,
-                "INSERT INTO legacy_atomic_first VALUES (1, 'old-first')",
-            )
-            _pg_integration_command(
-                pg,
-                "CREATE TABLE legacy_atomic_second (id BIGINT UNIQUE, generation TEXT)",
-            )
-            _pg_integration_command(
-                pg,
-                "INSERT INTO legacy_atomic_second VALUES (1, 'old-second')",
-            )
-            _pg_integration_command(
-                pg,
-                "CREATE TABLE legacy_atomic_child (source_id BIGINT REFERENCES legacy_atomic_second(id))",
-            )
-            _pg_integration_command(
-                pg,
-                "INSERT INTO legacy_atomic_child VALUES (1)",
-            )
-            stages_before = _pg_integration_query(
-                pg,
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_name LIKE '_tiingo_stage_%'
-                ORDER BY table_name
-                """,
-            ).table_name
-
-            legacy_source = DBInterface.connect(DuckDB.DB)
-            try
-                DBInterface.execute(
-                    legacy_source,
-                    "CREATE TABLE legacy_atomic_first (id BIGINT, generation VARCHAR)",
-                )
-                DBInterface.execute(
-                    legacy_source,
-                    "INSERT INTO legacy_atomic_first VALUES (1, 'new-first')",
-                )
-                DBInterface.execute(
-                    legacy_source,
-                    "CREATE TABLE legacy_atomic_second (id BIGINT, generation VARCHAR)",
-                )
-                DBInterface.execute(
-                    legacy_source,
-                    "INSERT INTO legacy_atomic_second VALUES (1, 'new-second')",
-                )
-
-                legacy_error = try
-                    export_to_postgres(
-                        legacy_source,
-                        pg,
-                        ["legacy_atomic_first", "legacy_atomic_second"];
-                        use_dataframe=true,
-                        max_retries=1,
-                        retry_delay=0,
-                    )
-                    nothing
-                catch error
-                    error
-                end
-                @test legacy_error isa ErrorException
-                @test occursin(
-                    "legacy_atomic_second is referenced by foreign keys " *
-                    "but has no primary key",
-                    isnothing(legacy_error) ? "" :
-                    sprint(showerror, legacy_error),
-                )
-            finally
-                DBInterface.close!(legacy_source)
-            end
-
-            @test only(_pg_integration_query(
-                pg,
-                "SELECT generation FROM legacy_atomic_first",
-            ).generation) == "old-first"
-            @test only(_pg_integration_query(
-                pg,
-                "SELECT generation FROM legacy_atomic_second",
-            ).generation) == "old-second"
-            @test _pg_integration_query(
-                pg,
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE '_tiingo_stage_%' ORDER BY table_name",
-            ).table_name == stages_before
-            @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+            ).row_count) == 2
 
             mktempdir() do directory
                 destination = joinpath(directory, "historical_data.parquet")
@@ -2054,16 +2078,6 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 )
                 _pg_integration_command(
                     pg,
-                    "CREATE TABLE $hostile_schema.hostile_publish_probe " *
-                    "(id BIGINT, generation TEXT)",
-                )
-                _pg_integration_command(
-                    pg,
-                    "INSERT INTO $hostile_schema.hostile_publish_probe " *
-                    "VALUES (1, 'hostile-sentinel')",
-                )
-                _pg_integration_command(
-                    pg,
                     "SET search_path TO $hostile_schema, public",
                 )
 
@@ -2075,30 +2089,6 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 ) == (all_rows=2, filtered_rows=1)
                 @test upsert_stock_data_bulk(pg, updated_prices, "AAPL") == 2
 
-                hostile_source = DBInterface.connect(DuckDB.DB)
-                try
-                    DBInterface.execute(
-                        hostile_source,
-                        "CREATE TABLE hostile_publish_probe " *
-                        "(id BIGINT, generation VARCHAR)",
-                    )
-                    DBInterface.execute(
-                        hostile_source,
-                        "INSERT INTO hostile_publish_probe " *
-                        "VALUES (1, 'public-generation')",
-                    )
-                    export_to_postgres(
-                        hostile_source,
-                        pg,
-                        ["hostile_publish_probe"];
-                        use_dataframe=true,
-                        max_retries=1,
-                        retry_delay=0,
-                    )
-                finally
-                    DBInterface.close!(hostile_source)
-                end
-
                 @test _pg_integration_query(
                     pg,
                     "SELECT ticker FROM public.us_tickers ORDER BY ticker",
@@ -2107,21 +2097,8 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                     pg,
                     "SELECT ticker FROM $hostile_schema.us_tickers",
                 ).ticker == ["HOSTILE"]
-                @test only(_pg_integration_query(
-                    pg,
-                    "SELECT generation FROM public.hostile_publish_probe",
-                ).generation) == "public-generation"
-                @test only(_pg_integration_query(
-                    pg,
-                    "SELECT generation FROM " *
-                    "$hostile_schema.hostile_publish_probe",
-                ).generation) == "hostile-sentinel"
             finally
                 _pg_integration_command(pg, "SET search_path TO public")
-                _pg_integration_command(
-                    pg,
-                    "DROP TABLE IF EXISTS public.hostile_publish_probe CASCADE",
-                )
                 _pg_integration_command(
                     pg,
                     "DROP SCHEMA IF EXISTS $hostile_schema CASCADE",

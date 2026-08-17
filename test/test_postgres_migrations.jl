@@ -5,7 +5,7 @@ using QuansiftMarketData
 const MigrationSchema = QuansiftMarketData.DB.Schema
 
 @testset "PostgreSQL migration public contract" begin
-    @test POSTGRES_SCHEMA_VERSION == 2
+    @test POSTGRES_SCHEMA_VERSION == 3
     @test hasmethod(postgres_schema_version, Tuple{LibPQ.Connection})
     @test hasmethod(migrate_postgres!, Tuple{LibPQ.Connection})
     @test fieldnames(PostgresMigrationResult) ==
@@ -13,7 +13,7 @@ const MigrationSchema = QuansiftMarketData.DB.Schema
     @test PostgresMigrationError <: Exception
 
     @test_throws ArgumentError MigrationSchema.validate_migration_options(0, 30)
-    @test_throws ArgumentError MigrationSchema.validate_migration_options(3, 30)
+    @test_throws ArgumentError MigrationSchema.validate_migration_options(4, 30)
     @test_throws ArgumentError MigrationSchema.validate_migration_options(1, -1)
     @test_throws ArgumentError MigrationSchema.validate_migration_options(1, 30, -1)
     @test MigrationSchema.validate_migration_options(1, 0) === nothing
@@ -41,6 +41,8 @@ end
         ), migrations)
     @test migrations[1].checksum ==
           "52d1a3e4d45fc923e748b8e80901a3d66bf98750d9f20c63feb286218da71750"
+    @test migrations[2].checksum ==
+          "eb33fe71523642c9ff9aab728c760daef29e8b79b404449e2ed4dc9ae273cb13"
     @test occursin("ADD COLUMN fetched_at TIMESTAMP", migrations[2].definition)
     @test occursin("ALTER COLUMN fetched_at SET NOT NULL", migrations[2].definition)
     @test occursin(
@@ -51,6 +53,14 @@ end
         "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'",
         MigrationSchema.POSTGRES_TARGET_DDL[3],
     )
+    @test occursin(
+        "PRIMARY KEY (perma_ticker, observed_at, ticker, is_active)",
+        MigrationSchema.POSTGRES_TARGET_DDL[4],
+    )
+    @test occursin(
+        "(perma_ticker, observed_at, ticker, is_active)",
+        MigrationSchema.POSTGRES_TARGET_INDEX_DDL[7],
+    )
     @test :fetched_at ∉ Symbol.(getproperty.(
         MigrationSchema.POSTGRES_V1_TARGET_MANIFEST.relations["historical_data"].columns,
         :name,
@@ -59,6 +69,16 @@ end
         MigrationSchema.POSTGRES_TARGET_MANIFEST.relations["historical_data"].columns,
     ) == MigrationSchema.PostgresColumnManifest(
         "fetched_at", :timestamp, false, :none, :none, true,
+    )
+    observation_indexes = MigrationSchema.POSTGRES_TARGET_MANIFEST.relations[
+        "security_observations"
+    ].indexes
+    @test any(index -> index.primary && index.columns ==
+        ("perma_ticker", "observed_at", "ticker", "is_active"),
+        observation_indexes)
+    @test occursin(
+        "PRIMARY KEY (perma_ticker, observed_at, ticker, is_active)",
+        migrations[3].definition,
     )
 end
 
@@ -108,6 +128,7 @@ end
         :released_1_0_plus_preledger_bootstrap,
         :current_1_1_preledger,
         :current_1_2_preledger,
+        :current_4_0_preledger,
     ])
 
     @test MigrationSchema.classify_preledger_manifest(
@@ -123,6 +144,9 @@ end
 
     @test MigrationSchema.classify_preledger_manifest(
         MigrationSchema.POSTGRES_TARGET_MANIFEST,
+    ) == :current_4_0_preledger
+    @test MigrationSchema.classify_preledger_manifest(
+        MigrationSchema.POSTGRES_V2_TARGET_MANIFEST,
     ) == :current_1_2_preledger
     @test MigrationSchema.classify_preledger_manifest(
         MigrationSchema.POSTGRES_V1_TARGET_MANIFEST,

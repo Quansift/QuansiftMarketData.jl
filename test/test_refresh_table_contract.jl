@@ -86,19 +86,52 @@ end
     @test calls == ["perm-empty", "perm-ok"]
 end
 
+@testset "Refresh Fundamentals uses the collected universe" begin
+    refresh_source = read(refresh_script, String)
+    @test occursin(
+        r"universe_payload\s*=\s*universe\.filtered",
+        refresh_source,
+    )
+    @test !occursin(
+        r"universe_payload\s*=\s*get_tickers_all\(conn\)",
+        refresh_source,
+    )
+
+    universe = collect_ticker_universe(DataFrame(
+        ticker = ["AAPL"],
+        exchange = ["NYSE"],
+        assetType = ["Stock"],
+        priceCurrency = ["USD"],
+        startDate = [Date(1980, 12, 12)],
+        endDate = [Date(2026, 8, 17)],
+    ))
+    calls = String[]
+    result = collect_fundamentals(
+        DataFrame(
+            permaTicker = ["perm-aapl"],
+            ticker = ["AAPL"],
+            isActive = [true],
+        ),
+        universe.filtered;
+        api_key = "offline-token",
+        as_of = Date(2026, 8, 17),
+        daily_fetcher = function (ticker; kwargs...)
+            push!(calls, ticker)
+            return [(date = "2026-08-17", marketCap = 1.0)]
+        end,
+    )
+
+    @test result.attempted == ["perm-aapl"]
+    @test isempty(result.failed)
+    @test calls == ["perm-aapl"]
+end
+
 @testset "Refresh table contract" begin
     @test TABLES_TO_HYDRATE == [
         "historical_data",
         "security_observations",
         "fundamental_daily_metrics",
     ]
-    @test TABLES_TO_EXPORT == [
-        "historical_data",
-        "us_tickers_filtered",
-        "security_observations",
-        "fundamental_daily_metrics",
-    ]
-
     conn = connect_duckdb(":memory:")
     try
         DBInterface.execute(
@@ -278,7 +311,7 @@ end
                 "price_coverage_start", "price_coverage_end", "is_leveraged",
                 "join_status",
             ],
-            ["perma_ticker", "observed_at"],
+            ["perma_ticker", "observed_at", "ticker", "is_active"],
         )
         metrics_count = merge_attached_table!(
             conn,
@@ -290,14 +323,14 @@ end
             ["perma_ticker", "metric_date"],
         )
 
-        @test security_count == 2
+        @test security_count == 3
         @test metrics_count == 2
         securities = DBInterface.execute(
             conn,
-            "SELECT ticker, exchange FROM security_observations ORDER BY perma_ticker",
+            "SELECT ticker, exchange FROM security_observations ORDER BY perma_ticker, ticker",
         ) |> DataFrame
-        @test securities.ticker == ["LOCAL", "NEW"]
-        @test securities.exchange == ["LOCAL", "PG"]
+        @test securities.ticker == ["LOCAL", "OLD", "NEW"]
+        @test securities.exchange == ["LOCAL", "PG", "PG"]
         metrics = DBInterface.execute(
             conn,
             "SELECT market_cap FROM fundamental_daily_metrics ORDER BY perma_ticker",

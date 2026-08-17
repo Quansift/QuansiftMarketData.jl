@@ -68,13 +68,11 @@ the applicable account terms or a separate written agreement permit them:
 - **DuckDB** — `connect_duckdb` plus the schema, upsert, and query primitives, for
   optional local analysis.
 
-The DuckDB-first *full-history* path — `export_to_postgres`, `update_historical`
-and its parallel/sequential variants, `download_tickers_duckdb`,
-`add_historical_data`, and `update_split_ticker` — is deprecated and targeted for
-removal in a future major release, because system PostgreSQL and Parquet already
-hold full history.
-DuckDB itself is not deprecated. See `README.md` for the replacement for each entry
-point.
+The seven deprecated DuckDB-first *full-history* entry points were removed in
+version 4. Use `collect_historical` with a caller-supplied writer,
+`collect_ticker_universe` with `replace_ticker_universe`, the PostgreSQL
+`upsert_*` overloads, and `write_parquet`. DuckDB itself remains supported for
+optional local analysis.
 
 See the repository `README.md` for runnable examples of each sink, and
 [Reference](95-reference.md) for the full API.

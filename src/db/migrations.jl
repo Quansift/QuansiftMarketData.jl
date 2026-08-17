@@ -1,4 +1,4 @@
-const POSTGRES_SCHEMA_VERSION = 2
+const POSTGRES_SCHEMA_VERSION = 3
 const POSTGRES_ADVISORY_LOCK_NAMESPACE = (Int32(1414089038), Int32(1))
 const POSTGRES_MIGRATION_TABLE = "tiingojulia_schema_migrations"
 
@@ -181,7 +181,10 @@ function _v1_manifest()
     ))
 end
 
-function _target_manifest(; eod_fetched_at::Bool=false)
+function _target_manifest(;
+    eod_fetched_at::Bool=false,
+    observation_state_key::Bool=false,
+)
     historical_columns = vcat(
         [
             PostgresColumnManifest("ticker", :varchar, false),
@@ -214,6 +217,9 @@ function _target_manifest(; eod_fetched_at::Bool=false)
         PostgresColumnManifest("is_leveraged", :boolean, true),
         PostgresColumnManifest("join_status", :varchar, false),
     ]
+    observation_key = observation_state_key ?
+        ("perma_ticker", "observed_at", "ticker", "is_active") :
+        ("perma_ticker", "observed_at")
     metric_columns = [
         PostgresColumnManifest("perma_ticker", :varchar, false),
         PostgresColumnManifest("metric_date", :date, false),
@@ -249,8 +255,15 @@ function _target_manifest(; eod_fetched_at::Bool=false)
             "security_observations",
             observation_columns,
             [
-                _index("perma_ticker", "observed_at"; unique=true, primary=true),
-                _index("perma_ticker", "observed_at"; unique=true),
+                _index(
+                    observation_key...;
+                    unique=true,
+                    primary=true,
+                ),
+                _index(
+                    observation_key...;
+                    unique=true,
+                ),
                 _index("ticker"),
             ],
         ),
@@ -268,7 +281,11 @@ end
 
 const POSTGRES_V1_0_MANIFEST = _v1_manifest()
 const POSTGRES_V1_TARGET_MANIFEST = _target_manifest()
-const POSTGRES_TARGET_MANIFEST = _target_manifest(eod_fetched_at=true)
+const POSTGRES_V2_TARGET_MANIFEST = _target_manifest(eod_fetched_at=true)
+const POSTGRES_TARGET_MANIFEST = _target_manifest(
+    eod_fetched_at=true,
+    observation_state_key=true,
+)
 
 function _compatibility_export_manifest()
     historical_columns = vcat(
@@ -371,6 +388,7 @@ const POSTGRES_LEGACY_CATALOG = Dict(
     :released_1_0_plus_preledger_bootstrap => "released 1.0/current hybrid",
     :current_1_1_preledger => "current pre-ledger schema",
     :current_1_2_preledger => "current schema with EOD provenance",
+    :current_4_0_preledger => "current schema with state-discriminated observations",
 )
 
 const POSTGRES_V1_TARGET_DDL = [
@@ -420,7 +438,7 @@ const POSTGRES_V1_TARGET_DDL = [
     """,
 ]
 
-const POSTGRES_TARGET_DDL = let
+const POSTGRES_V2_TARGET_DDL = let
     statements = copy(POSTGRES_V1_TARGET_DDL)
     statements[3] = replace(
         statements[3],
@@ -432,7 +450,17 @@ const POSTGRES_TARGET_DDL = let
     statements
 end
 
-const POSTGRES_TARGET_INDEX_DDL = [
+const POSTGRES_TARGET_DDL = let
+    statements = copy(POSTGRES_V2_TARGET_DDL)
+    statements[4] = replace(
+        statements[4],
+        "PRIMARY KEY (perma_ticker, observed_at)" =>
+            "PRIMARY KEY (perma_ticker, observed_at, ticker, is_active)",
+    )
+    statements
+end
+
+const POSTGRES_V1_TARGET_INDEX_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON \"public\".\"us_tickers\" (ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON \"public\".\"us_tickers_filtered\" (ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_assettype ON \"public\".\"us_tickers_filtered\" (assettype)",
@@ -444,12 +472,22 @@ const POSTGRES_TARGET_INDEX_DDL = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_fundamental_daily_metrics_key ON \"public\".\"fundamental_daily_metrics\" (perma_ticker, metric_date)",
     "CREATE INDEX IF NOT EXISTS idx_fundamental_daily_metrics_date ON \"public\".\"fundamental_daily_metrics\" (metric_date)",
 ]
+const POSTGRES_V2_TARGET_INDEX_DDL = POSTGRES_V1_TARGET_INDEX_DDL
+const POSTGRES_TARGET_INDEX_DDL = let
+    statements = copy(POSTGRES_V2_TARGET_INDEX_DDL)
+    statements[7] = replace(
+        statements[7],
+        "(perma_ticker, observed_at)" =>
+            "(perma_ticker, observed_at, ticker, is_active)",
+    )
+    statements
+end
 
 const POSTGRES_MIGRATION_1_DEFINITION = join(
     vcat(
         ["schema-version=1", "catalog=fresh,v1.0-export,v1.0-hybrid,current-preledger"],
         strip.(POSTGRES_V1_TARGET_DDL),
-        POSTGRES_TARGET_INDEX_DDL,
+        POSTGRES_V1_TARGET_INDEX_DDL,
         ["legacy-historical=set-not-null(ticker,date);add-primary-key(ticker,date)"],
     ),
     "\n-- statement --\n",
@@ -472,11 +510,37 @@ ALTER COLUMN fetched_at
 SET DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC');
 """
 
+const POSTGRES_MIGRATION_3_DEFINITION = """
+DO \$migration\$
+DECLARE primary_key_name text;
+BEGIN
+    SELECT constraint_entry.conname INTO STRICT primary_key_name
+    FROM pg_catalog.pg_constraint AS constraint_entry
+    WHERE constraint_entry.conrelid =
+          'public.security_observations'::pg_catalog.regclass
+      AND constraint_entry.contype = 'p';
+    EXECUTE pg_catalog.format(
+        'ALTER TABLE "public"."security_observations" DROP CONSTRAINT %I',
+        primary_key_name
+    );
+END
+\$migration\$;
+DROP INDEX "public"."uq_security_observations_key";
+ALTER TABLE "public"."security_observations"
+ADD CONSTRAINT tiingojulia_security_observations_pkey
+PRIMARY KEY (perma_ticker, observed_at, ticker, is_active);
+CREATE UNIQUE INDEX uq_security_observations_key
+ON "public"."security_observations"
+(perma_ticker, observed_at, ticker, is_active);
+"""
+
 const POSTGRES_MIGRATIONS = let
     v1_name = "canonical_v1_baseline"
     v1_definition = POSTGRES_MIGRATION_1_DEFINITION
     v2_name = "eod_fetched_at_provenance"
     v2_definition = POSTGRES_MIGRATION_2_DEFINITION
+    v3_name = "security_observation_state_key"
+    v3_definition = POSTGRES_MIGRATION_3_DEFINITION
     (
         PostgresMigration(
             1,
@@ -489,6 +553,12 @@ const POSTGRES_MIGRATIONS = let
             v2_name,
             v2_definition,
             migration_checksum(2, v2_name, v2_definition),
+        ),
+        PostgresMigration(
+            3,
+            v3_name,
+            v3_definition,
+            migration_checksum(3, v3_name, v3_definition),
         ),
     )
 end
@@ -661,6 +731,8 @@ end
 function classify_preledger_manifest(manifest::PostgresDatabaseManifest)::Symbol
     isempty(manifest.relations) && return :fresh
     _manifest_matches(manifest, POSTGRES_TARGET_MANIFEST) &&
+        return :current_4_0_preledger
+    _manifest_matches(manifest, POSTGRES_V2_TARGET_MANIFEST) &&
         return :current_1_2_preledger
     _manifest_matches(manifest, POSTGRES_V1_TARGET_MANIFEST) &&
         return :current_1_1_preledger
@@ -1382,7 +1454,7 @@ function _apply_bootstrap_transition!(conn, catalog_entry::Symbol, manifest)
             PRIMARY KEY (ticker, date)
         """)
     end
-    for statement in POSTGRES_TARGET_INDEX_DDL
+    for statement in POSTGRES_V1_TARGET_INDEX_DDL
         _pg_command(conn, statement)
     end
     return nothing
@@ -1410,11 +1482,87 @@ function _apply_eod_fetched_at_migration!(conn)
     return nothing
 end
 
+function _apply_security_observation_state_key_migration!(conn)
+    primary_key = _pg_dataframe(conn, """
+        SELECT constraint_entry.conname AS constraint_name
+        FROM pg_catalog.pg_constraint AS constraint_entry
+        WHERE constraint_entry.conrelid =
+              'public.security_observations'::pg_catalog.regclass
+          AND constraint_entry.contype = 'p'
+    """)
+    nrow(primary_key) == 1 || throw(PostgresMigrationError(
+        3,
+        "security_observation_state_key",
+        "security_observations must have exactly one primary key before migration",
+    ))
+    primary_key_name = quote_postgres_identifier(
+        String(only(primary_key.constraint_name)),
+    )
+    unique_indexes = _pg_dataframe(conn, """
+        SELECT index_relation.relname AS index_name
+        FROM pg_catalog.pg_index AS index_entry
+        JOIN pg_catalog.pg_class AS table_relation
+          ON table_relation.oid = index_entry.indrelid
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = table_relation.relnamespace
+        JOIN pg_catalog.pg_class AS index_relation
+          ON index_relation.oid = index_entry.indexrelid
+        JOIN pg_catalog.pg_attribute AS perma_column
+          ON perma_column.attrelid = table_relation.oid
+         AND perma_column.attname = 'perma_ticker'
+        JOIN pg_catalog.pg_attribute AS observed_column
+          ON observed_column.attrelid = table_relation.oid
+         AND observed_column.attname = 'observed_at'
+        WHERE namespace.nspname = 'public'
+          AND table_relation.relname = 'security_observations'
+          AND index_entry.indisunique
+          AND NOT index_entry.indisprimary
+          AND index_entry.indpred IS NULL
+          AND index_entry.indexprs IS NULL
+          AND index_entry.indnkeyatts = 2
+          AND index_entry.indnatts = 2
+          AND (index_entry.indkey::smallint[])[0] = perma_column.attnum
+          AND (index_entry.indkey::smallint[])[1] = observed_column.attnum
+        ORDER BY index_relation.relname
+    """)
+    nrow(unique_indexes) >= 1 || throw(PostgresMigrationError(
+        3,
+        "security_observation_state_key",
+        "security_observations must have a unique state-key index before migration",
+    ))
+    _pg_command(
+        conn,
+        "ALTER TABLE \"public\".\"security_observations\" " *
+        "DROP CONSTRAINT $primary_key_name",
+    )
+    for index_name in unique_indexes.index_name
+        quoted_index_name = quote_postgres_identifier(String(index_name))
+        _pg_command(conn, "DROP INDEX \"public\".$quoted_index_name")
+    end
+    _pg_command(conn, """
+        ALTER TABLE "public"."security_observations"
+        ADD CONSTRAINT tiingojulia_security_observations_pkey
+        PRIMARY KEY (perma_ticker, observed_at, ticker, is_active)
+    """)
+    _pg_command(conn, """
+        CREATE UNIQUE INDEX uq_security_observations_key
+        ON "public"."security_observations"
+        (perma_ticker, observed_at, ticker, is_active)
+    """)
+    return nothing
+end
+
 function _validate_target_manifest(
     manifest::PostgresDatabaseManifest,
     version::Integer=POSTGRES_SCHEMA_VERSION,
 )
-    expected = version == 1 ? POSTGRES_V1_TARGET_MANIFEST : POSTGRES_TARGET_MANIFEST
+    expected = if version == 1
+        POSTGRES_V1_TARGET_MANIFEST
+    elseif version == 2
+        POSTGRES_V2_TARGET_MANIFEST
+    else
+        POSTGRES_TARGET_MANIFEST
+    end
     migration_name = POSTGRES_MIGRATIONS[Int(version)].name
     _manifest_matches(manifest, expected) || throw(PostgresMigrationError(
         Int(version),
@@ -1512,7 +1660,20 @@ function migrate_postgres!(
         if from_version == 0
             legacy_manifest = inspect_postgres_manifest(conn)
             catalog_entry = classify_preledger_manifest(legacy_manifest)
-            if catalog_entry == :current_1_2_preledger
+            if catalog_entry == :current_4_0_preledger
+                target_version >= 3 || throw(PostgresMigrationError(
+                    3,
+                    POSTGRES_MIGRATIONS[3].name,
+                    "pre-ledger schema is newer than requested target version $target_version",
+                ))
+                _validate_target_manifest(legacy_manifest, 3)
+                for version in 1:3
+                    current_migration = POSTGRES_MIGRATIONS[version]
+                    _insert_migration!(conn, current_migration)
+                    push!(applied, version)
+                end
+                working_version = 3
+            elseif catalog_entry == :current_1_2_preledger
                 target_version >= 2 || throw(PostgresMigrationError(
                     2,
                     POSTGRES_MIGRATIONS[2].name,
@@ -1541,6 +1702,8 @@ function migrate_postgres!(
             for version in (working_version + 1):target_version
                 current_migration = POSTGRES_MIGRATIONS[version]
                 version == 2 && _apply_eod_fetched_at_migration!(conn)
+                version == 3 &&
+                    _apply_security_observation_state_key_migration!(conn)
                 _validate_target_manifest(inspect_postgres_manifest(conn), version)
                 _insert_migration!(conn, current_migration)
                 push!(applied, version)

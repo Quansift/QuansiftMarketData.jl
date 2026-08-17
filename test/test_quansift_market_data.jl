@@ -32,4 +32,19 @@ VALUES ('AAPL', 'NASDAQ', 'Stock', 'USD', '1980-12-12', '2023-08-25')
     rm(test_db_path)
 end
 
+@testset "QuansiftMarketData 4 removes DuckDB-first compatibility APIs" begin
+    for name in (
+        :update_historical,
+        :update_historical_parallel,
+        :update_historical_sequential,
+        :download_tickers_duckdb,
+        :add_historical_data,
+        :update_split_ticker,
+        :export_to_postgres,
+    )
+        @test !isdefined(QuansiftMarketData, name)
+        @test !(name in names(QuansiftMarketData; all=false, imported=false))
+    end
+end
+
 println("All tests completed successfully!")

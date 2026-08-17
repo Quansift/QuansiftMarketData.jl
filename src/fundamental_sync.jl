@@ -153,7 +153,7 @@ function _count_tickers(values)::Dict{String,Int}
 end
 
 """
-    normalize_security_observations(meta_payload, universe_payload; observed_at=Dates.now())
+    normalize_security_observations(meta_payload, universe_payload; observed_at=Dates.now(Dates.UTC))
 
 Reconcile Tiingo's current Fundamentals metadata snapshot with the local ticker
 universe. Price coverage dates are retained only as coverage facts and are never
@@ -163,7 +163,7 @@ invented as ticker-validity dates. Every meta row is retained with a determinist
 function normalize_security_observations(
     meta_payload,
     universe_payload;
-    observed_at::DateTime = Dates.now(),
+    observed_at::DateTime = Dates.now(Dates.UTC),
 )::DataFrame
     source = _payload_dataframe(meta_payload)
     nrow(source) == 0 && return _canonical_security_observation_frame()
@@ -391,7 +391,7 @@ function collect_fundamentals(
     as_of::Date = Date(Dates.now()),
     initial_start_date::Union{Date,Nothing} = nothing,
     columns::Union{Nothing,AbstractVector{<:AbstractString}} = nothing,
-    observed_at::DateTime = Dates.now(),
+    observed_at::DateTime = Dates.now(Dates.UTC),
     fetched_at::DateTime = Dates.now(Dates.UTC),
     daily_fetcher = get_daily_fundamental,
     observation_writer = nothing,
@@ -442,7 +442,7 @@ function collect_fundamentals(
     if !isnothing(observation_writer)
         try
             rows = observation_writer(observations)
-            rows isa Integer ||
+            (rows isa Integer && !(rows isa Bool)) ||
                 throw(ArgumentError("observation_writer must return an integer row count"))
             rows >= 0 ||
                 throw(ArgumentError("observation_writer row count must be non-negative"))
@@ -542,7 +542,7 @@ function collect_fundamentals(
         if !isnothing(metric_writer)
             try
                 rows = metric_writer(perma_ticker, metrics)
-                rows isa Integer ||
+                (rows isa Integer && !(rows isa Bool)) ||
                     throw(ArgumentError("metric_writer must return an integer row count"))
                 rows >= 0 ||
                     throw(ArgumentError("metric_writer row count must be non-negative"))
@@ -644,7 +644,7 @@ function sync_fundamentals!(
     api_key::String = get_api_key(),
     as_of::Date = Date(Dates.now()),
     history_years::Int = 3,
-    observed_at::DateTime = Dates.now(),
+    observed_at::DateTime = Dates.now(Dates.UTC),
     fetched_at::DateTime = Dates.now(Dates.UTC),
     daily_fetcher::Function = get_daily_fundamental,
     continue_on_error::Bool = true,

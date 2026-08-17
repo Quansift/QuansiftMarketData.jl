@@ -42,7 +42,7 @@ using QuansiftMarketData
 
     failure = only(result.failures)
     @test failure.stage == :write
-    @test failure.retryable
+    @test !failure.retryable
     @test occursin("postgresql://[REDACTED]@db.example/app", failure.message)
     @test occursin("password=[REDACTED]", failure.message)
     @test occursin("PGPASSWORD='[REDACTED]'", failure.message)

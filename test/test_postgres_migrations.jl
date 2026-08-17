@@ -5,7 +5,7 @@ using QuansiftMarketData
 const MigrationSchema = QuansiftMarketData.DB.Schema
 
 @testset "PostgreSQL migration public contract" begin
-    @test POSTGRES_SCHEMA_VERSION == 1
+    @test POSTGRES_SCHEMA_VERSION == 2
     @test hasmethod(postgres_schema_version, Tuple{LibPQ.Connection})
     @test hasmethod(migrate_postgres!, Tuple{LibPQ.Connection})
     @test fieldnames(PostgresMigrationResult) ==
@@ -13,12 +13,18 @@ const MigrationSchema = QuansiftMarketData.DB.Schema
     @test PostgresMigrationError <: Exception
 
     @test_throws ArgumentError MigrationSchema.validate_migration_options(0, 30)
-    @test_throws ArgumentError MigrationSchema.validate_migration_options(2, 30)
+    @test_throws ArgumentError MigrationSchema.validate_migration_options(3, 30)
     @test_throws ArgumentError MigrationSchema.validate_migration_options(1, -1)
+    @test_throws ArgumentError MigrationSchema.validate_migration_options(1, 30, -1)
     @test MigrationSchema.validate_migration_options(1, 0) === nothing
+    @test MigrationSchema.validate_migration_options(2, 0, 0) === nothing
 
     method = which(migrate_postgres!, Tuple{LibPQ.Connection})
-    @test Base.kwarg_decl(method) == [:target_version, :lock_timeout_seconds]
+    @test Base.kwarg_decl(method) == [
+        :target_version,
+        :lock_timeout_seconds,
+        :statement_timeout_seconds,
+    ]
 end
 
 @testset "PostgreSQL migration registry is immutable and contiguous" begin
@@ -35,6 +41,25 @@ end
         ), migrations)
     @test migrations[1].checksum ==
           "52d1a3e4d45fc923e748b8e80901a3d66bf98750d9f20c63feb286218da71750"
+    @test occursin("ADD COLUMN fetched_at TIMESTAMP", migrations[2].definition)
+    @test occursin("ALTER COLUMN fetched_at SET NOT NULL", migrations[2].definition)
+    @test occursin(
+        "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'",
+        migrations[2].definition,
+    )
+    @test occursin(
+        "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'",
+        MigrationSchema.POSTGRES_TARGET_DDL[3],
+    )
+    @test :fetched_at ∉ Symbol.(getproperty.(
+        MigrationSchema.POSTGRES_V1_TARGET_MANIFEST.relations["historical_data"].columns,
+        :name,
+    ))
+    @test last(
+        MigrationSchema.POSTGRES_TARGET_MANIFEST.relations["historical_data"].columns,
+    ) == MigrationSchema.PostgresColumnManifest(
+        "fetched_at", :timestamp, false, :none, :none, true,
+    )
 end
 
 @testset "PostgreSQL catalog type and index normalization" begin
@@ -82,6 +107,7 @@ end
         :deployed_first_party_composition,
         :released_1_0_plus_preledger_bootstrap,
         :current_1_1_preledger,
+        :current_1_2_preledger,
     ])
 
     @test MigrationSchema.classify_preledger_manifest(
@@ -97,6 +123,9 @@ end
 
     @test MigrationSchema.classify_preledger_manifest(
         MigrationSchema.POSTGRES_TARGET_MANIFEST,
+    ) == :current_1_2_preledger
+    @test MigrationSchema.classify_preledger_manifest(
+        MigrationSchema.POSTGRES_V1_TARGET_MANIFEST,
     ) == :current_1_1_preledger
 
     compatibility_export = deepcopy(
@@ -269,6 +298,7 @@ end
         :begin,
         :set_search_path,
         :set_lock_timeout,
+        :set_statement_timeout,
         :advisory_lock,
         :create_ledger,
         :read_ledger,

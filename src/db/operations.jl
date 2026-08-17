@@ -2,7 +2,6 @@ module Operations
     using DBInterface
     using DuckDB
     using DataFrames
-    using Dates
     using Logging
 
     using ..Core: DuckDBConnection, validate_identifier
@@ -12,6 +11,39 @@ module Operations
     # immediately after, so it never collides across calls on one connection.
     const UPSERT_SOURCE_VIEW = "_tiingo_upsert_source"
     const FUNDAMENTAL_DAILY_METRICS_KEY = [:perma_ticker, :metric_date]
+    const SECURITY_OBSERVATIONS_KEY = [:perma_ticker, :observed_at]
+
+    function _validate_eod_fetched_at(data::DataFrame)::Nothing
+        :fetched_at in propertynames(data) || throw(ArgumentError(
+            "historical_data input is missing required column: fetched_at",
+        ))
+        return nothing
+    end
+
+    function _validate_persistence_keys(
+        data::DataFrame,
+        table_name::String,
+        key_columns::Vector{Symbol};
+        require_columns::Bool,
+    )::Nothing
+        available_columns = propertynames(data)
+        missing_columns = filter(column -> column ∉ available_columns, key_columns)
+        if !isempty(missing_columns)
+            require_columns && throw(ArgumentError(
+                "$table_name is missing persistence key columns: " *
+                join(String.(missing_columns), ", "),
+            ))
+            return nothing
+        end
+
+        duplicate_rows = findall(nonunique(data, key_columns))
+        isempty(duplicate_rows) || throw(ArgumentError(
+            "$table_name contains duplicate persistence key " *
+            "($(join(String.(key_columns), ", "))) at rows: " *
+            join(duplicate_rows, ", "),
+        ))
+        return nothing
+    end
 
     """
         validate_fundamental_daily_metrics_keys(data; require_columns=true)
@@ -24,25 +56,30 @@ module Operations
         data::DataFrame;
         require_columns::Bool=true,
     )::Nothing
-        available_columns = propertynames(data)
-        missing_columns = filter(
-            column -> column ∉ available_columns,
+        return _validate_persistence_keys(
+            data,
+            "fundamental_daily_metrics",
             FUNDAMENTAL_DAILY_METRICS_KEY,
+            require_columns=require_columns,
         )
-        if !isempty(missing_columns)
-            require_columns && throw(ArgumentError(
-                "fundamental_daily_metrics is missing persistence key columns: " *
-                join(String.(missing_columns), ", "),
-            ))
-            return nothing
-        end
+    end
 
-        duplicate_rows = findall(nonunique(data, FUNDAMENTAL_DAILY_METRICS_KEY))
-        isempty(duplicate_rows) || throw(ArgumentError(
-            "fundamental_daily_metrics contains duplicate persistence key " *
-            "(perma_ticker, metric_date) at rows: " * join(duplicate_rows, ", "),
-        ))
-        return nothing
+    """
+        validate_security_observation_keys(data; require_columns=true)
+
+    Reject duplicate canonical security-observation persistence keys before a
+    sink starts writing.
+    """
+    function validate_security_observation_keys(
+        data::DataFrame;
+        require_columns::Bool=true,
+    )::Nothing
+        return _validate_persistence_keys(
+            data,
+            "security_observations",
+            SECURITY_OBSERVATIONS_KEY,
+            require_columns=require_columns,
+        )
     end
 
     """
@@ -57,7 +94,8 @@ module Operations
 
     Assumes one ticker's data with unique `date` values per call (true for a
     Tiingo daily response); duplicate keys within a batch would violate the
-    `ON CONFLICT` target.
+    `ON CONFLICT` target. Rows older than the stored `fetched_at` are skipped,
+    and the return value is the number of inserted or updated rows.
     """
     function execute_upsert_set_based(
         conn::DuckDBConnection,
@@ -71,7 +109,7 @@ module Operations
         DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
         try
             upsert_stmt = """
-            INSERT INTO historical_data (ticker, date, close, high, low, open, volume, adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor)
+            INSERT INTO historical_data (ticker, date, close, high, low, open, volume, adjClose, adjHigh, adjLow, adjOpen, adjVolume, divCash, splitFactor, fetched_at)
             SELECT
                 CAST(? AS VARCHAR),
                 date,
@@ -86,7 +124,8 @@ module Operations
                 COALESCE(adjOpen, 'nan'::FLOAT),
                 COALESCE(adjVolume, 0),
                 COALESCE(divCash, 0.0),
-                COALESCE(splitFactor, 1.0)
+                COALESCE(splitFactor, 1.0),
+                fetched_at
             FROM $UPSERT_SOURCE_VIEW
             ON CONFLICT (ticker, date) DO UPDATE SET
                 close = EXCLUDED.close,
@@ -100,10 +139,13 @@ module Operations
                 adjOpen = EXCLUDED.adjOpen,
                 adjVolume = EXCLUDED.adjVolume,
                 divCash = EXCLUDED.divCash,
-                splitFactor = EXCLUDED.splitFactor
+                splitFactor = EXCLUDED.splitFactor,
+                fetched_at = EXCLUDED.fetched_at
+            WHERE EXCLUDED.fetched_at >= historical_data.fetched_at
+            RETURNING 1
             """
-            DBInterface.execute(conn, upsert_stmt, (ticker,))
-            return nrow(data)
+            persisted = DBInterface.execute(conn, upsert_stmt, (ticker,)) |> DataFrame
+            return nrow(persisted)
         finally
             DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
         end
@@ -112,13 +154,15 @@ module Operations
     """
         upsert_stock_data(conn::DuckDBConnection, data::DataFrame, ticker::String)
 
-    Upsert stock data into the historical_data table.
+    Upsert stock data into the historical_data table. `data` must include the
+    call-scoped `fetched_at` provenance supplied by the collector.
     """
     function upsert_stock_data(
         conn::DuckDBConnection,
         data::DataFrame,
         ticker::String
     )
+        _validate_eod_fetched_at(data)
         try
             return execute_upsert_set_based(conn, data, ticker)
         catch e
@@ -130,14 +174,17 @@ module Operations
     """
         upsert_stock_data_bulk(conn::DuckDBConnection, data::DataFrame, ticker::String)
 
-    Bulk upsert stock data into the historical_data table. Filters to `ticker`
-    when a `ticker` column is present, then delegates to the set-based upsert.
+    Bulk upsert stock data into the historical_data table. `data` must include
+    the call-scoped `fetched_at` provenance supplied by the collector. Filters
+    to `ticker` when a `ticker` column is present, then delegates to the
+    set-based upsert.
     """
     function upsert_stock_data_bulk(
         conn::DuckDBConnection,
         data::DataFrame,
         ticker::String
     )
+        _validate_eod_fetched_at(data)
         if nrow(data) == 0
             return 0
         end
@@ -165,11 +212,12 @@ module Operations
     `(perma_ticker, observed_at)` as the deterministic key.
     """
     function upsert_security_observations(conn::DuckDBConnection, data::DataFrame)::Int
+        validate_security_observation_keys(data)
         nrow(data) == 0 && return 0
 
         DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
         try
-            DBInterface.execute(conn, """
+            persisted = DBInterface.execute(conn, """
                 INSERT INTO security_observations (
                     perma_ticker, observed_at, ticker, is_active, is_adr,
                     daily_last_updated, exchange, asset_type,
@@ -193,8 +241,9 @@ module Operations
                     price_coverage_end = EXCLUDED.price_coverage_end,
                     is_leveraged = EXCLUDED.is_leveraged,
                     join_status = EXCLUDED.join_status
-            """)
-            return nrow(data)
+                RETURNING 1
+            """) |> DataFrame
+            return nrow(persisted)
         finally
             DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
         end
@@ -215,7 +264,7 @@ module Operations
 
         DuckDB.register_data_frame(conn, data, UPSERT_SOURCE_VIEW)
         try
-            DBInterface.execute(conn, """
+            persisted = DBInterface.execute(conn, """
                 INSERT INTO fundamental_daily_metrics (
                     perma_ticker, metric_date, market_cap, enterprise_value,
                     pe_ratio, available_at, fetched_at, source_revision
@@ -231,8 +280,10 @@ module Operations
                     available_at = EXCLUDED.available_at,
                     fetched_at = EXCLUDED.fetched_at,
                     source_revision = EXCLUDED.source_revision
-            """)
-            return nrow(data)
+                WHERE EXCLUDED.fetched_at >= fundamental_daily_metrics.fetched_at
+                RETURNING 1
+            """) |> DataFrame
+            return nrow(persisted)
         finally
             DuckDB.unregister_data_frame(conn, UPSERT_SOURCE_VIEW)
         end
@@ -317,7 +368,7 @@ module Operations
     end
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics
-    export validate_fundamental_daily_metrics_keys
+    export validate_fundamental_daily_metrics_keys, validate_security_observation_keys
     export get_tickers_all, get_tickers_etf, get_tickers_stock
     export get_table_count, get_latest_dates, get_latest_date
 end

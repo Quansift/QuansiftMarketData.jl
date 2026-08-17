@@ -2,6 +2,7 @@ using Test
 using CSV
 using DataFrames
 using Dates
+using DBInterface
 using Logging
 using QuansiftMarketData
 
@@ -136,7 +137,8 @@ end
     @test result.written_rows == 2
     @test sort!(collect(keys(written))) == ["AAPL", "SPY"]
     @test eltype(written["AAPL"].date) == Date
-    @test names(written["AAPL"]) == names(_eod_fixture("2024-01-03"))
+    @test names(written["AAPL"]) ==
+          vcat(names(_eod_fixture("2024-01-03")), "fetched_at")
     @test fetch_calls == [
         (
             ticker = "AAPL",
@@ -154,6 +156,28 @@ end
             end_date = Date(2024, 1, 3),
         ),
     ]
+end
+
+@testset "Historical writer cannot report more rows than its frame" begin
+    tickers = DataFrame(
+        ticker = ["OVER", "AFTER"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher = (row; kwargs...) -> _eod_fixture("2024-01-02T00:00:00Z"),
+        writer = (ticker, frame) -> ticker == "OVER" ? nrow(frame) + 1 : nrow(frame),
+    )
+
+    @test result.updated == ["AFTER"]
+    @test result.failed == ["OVER"]
+    @test result.written_rows == 1
+    failure = only(result.failures)
+    @test failure.stage == :write
+    @test !failure.retryable
+    @test occursin("must not exceed frame row count", failure.message)
 end
 
 @testset "Historical collection isolates row normalization failures" begin
@@ -579,6 +603,9 @@ end
                 return frame
             end
         end
+        if row.ticker isa String && startswith(row.ticker, "__LEGACY_PROVENANCE_")
+            return Main._eod_fixture(Date(2024, 1, 2), 40.0)
+        end
         return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
     end
     injected_method = which(QuansiftMarketData.API.get_ticker_data, (row_type,))
@@ -639,6 +666,29 @@ end
             error
         end
         @test caught === cancellation
+
+        provenance_tickers = DataFrame(
+            ticker=["__LEGACY_PROVENANCE_A__", "__LEGACY_PROVENANCE_B__"],
+            start_date=fill(Date(2024, 1, 1), 2),
+            end_date=fill(Date(2024, 1, 2), 2),
+        )
+        run_fetched_at = DateTime(2026, 8, 16, 12, 34, 56)
+        updated, missing = update_historical_parallel(
+            conn,
+            provenance_tickers,
+            "offline-token";
+            batch_size=2,
+            max_concurrent=2,
+            fetched_at=run_fetched_at,
+        )
+        @test sort(updated) == sort(provenance_tickers.ticker)
+        @test isempty(missing)
+        stored_provenance = DBInterface.execute(
+            conn,
+            "SELECT DISTINCT fetched_at FROM historical_data " *
+            "WHERE ticker LIKE '__LEGACY_PROVENANCE_%'",
+        ) |> DataFrame
+        @test stored_provenance.fetched_at == [run_fetched_at]
     finally
         _legacy_historical_mode[] = :delegate
         _legacy_historical_cancellation[] = nothing
@@ -942,7 +992,9 @@ end
         end_date = fill(Date(2024, 1, 2), 2),
     )
     fetched = String[]
+    writer_frames = DataFrame[]
     attempts = Dict{String,Int}()
+    run_fetched_at = DateTime(2026, 8, 16, 14, 30)
     fetcher = function (row; kwargs...)
         ticker = String(row.ticker)
         push!(fetched, ticker)
@@ -956,8 +1008,9 @@ end
         tickers,
         "offline-token";
         fetcher,
-        writer = (_, frame) -> nrow(frame),
+        writer = (_, frame) -> (push!(writer_frames, copy(frame)); nrow(frame)),
         retry_rounds = 1,
+        fetched_at = run_fetched_at,
     )
 
     @test isempty(result.failed)
@@ -965,8 +1018,117 @@ end
     @test result.updated == ["SOLID", "FLAKY"]
     @test result.attempted == ["FLAKY", "SOLID"]
     @test result.written_rows == 2
+    @test length(writer_frames) == 2
+    @test all(
+        frame -> :fetched_at in propertynames(frame) &&
+                 all(==(run_fetched_at), frame.fetched_at),
+        writer_frames,
+    )
     # The sweep trails the pass rather than retrying inline.
     @test fetched == ["FLAKY", "SOLID", "FLAKY"]
+end
+
+@testset "Historical sweep reports the final normalization failure" begin
+    tickers = DataFrame(
+        ticker = ["FLAKY"],
+        start_date = [Date(2024, 1, 1)],
+        end_date = [Date(2024, 1, 2)],
+    )
+    attempts = Ref(0)
+    fetcher = function (row; kwargs...)
+        attempts[] += 1
+        attempts[] == 1 && error("HTTP 503 upstream timeout")
+        return select(_eod_fixture("2024-01-02T00:00:00Z", 30.0), Not(:high))
+    end
+
+    caught = try
+        collect_historical(
+            tickers,
+            "offline-token";
+            fetcher,
+            writer = (_, frame) -> nrow(frame),
+            retry_rounds = 1,
+            strict = true,
+        )
+        nothing
+    catch error
+        error
+    end
+
+    @test caught isa SyncIncompleteError
+    result = caught.result
+    failure = only(result.failures)
+    @test attempts[] == 2
+    @test result.failed == ["FLAKY"]
+    @test failure.stage == :normalize
+    @test !failure.retryable
+    @test occursin("missing required column: high", failure.message)
+    @test !occursin("503", failure.message)
+end
+
+@testset "Historical sweep preserves duplicate ticker failure slots" begin
+    tickers = DataFrame(
+        ticker = fill("DUP", 2),
+        outcome = [:normalize, :write],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    attempts = Dict{Symbol,Int}()
+    fetcher = function (row; kwargs...)
+        attempts[row.outcome] = get(attempts, row.outcome, 0) + 1
+        attempts[row.outcome] <= 2 && error(
+            "HTTP 503 $(row.outcome) attempt $(attempts[row.outcome])",
+        )
+        payload = _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+        return row.outcome == :normalize ? select(payload, Not(:high)) : payload
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, _) -> error("writer rejected duplicate row"),
+        retry_rounds = 2,
+    )
+
+    @test attempts == Dict(:normalize => 3, :write => 3)
+    @test result.failed == ["DUP", "DUP"]
+    @test getfield.(result.failures, :stage) == [:normalize, :write]
+    @test !any(failure -> failure.retryable, result.failures)
+    @test occursin("missing required column: high", result.failures[1].message)
+    @test occursin("writer rejected duplicate row", result.failures[2].message)
+end
+
+@testset "Historical sweep removes only the recovered duplicate slot" begin
+    tickers = DataFrame(
+        ticker = fill("DUP", 2),
+        outcome = [:recover, :normalize],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+    attempts = Dict{Symbol,Int}()
+    fetcher = function (row; kwargs...)
+        attempts[row.outcome] = get(attempts, row.outcome, 0) + 1
+        attempts[row.outcome] == 1 && error("HTTP 503 $(row.outcome)")
+        payload = _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+        return row.outcome == :normalize ? select(payload, Not(:high)) : payload
+    end
+
+    result = collect_historical(
+        tickers,
+        "offline-token";
+        fetcher,
+        writer = (_, frame) -> nrow(frame),
+        retry_rounds = 1,
+    )
+
+    @test attempts == Dict(:recover => 2, :normalize => 2)
+    @test result.updated == ["DUP"]
+    @test result.failed == ["DUP"]
+    failure = only(result.failures)
+    @test failure.stage == :normalize
+    @test !failure.retryable
+    @test occursin("missing required column: high", failure.message)
 end
 
 @testset "Historical collection defaults to no sweep" begin
@@ -1024,6 +1186,11 @@ end
     stages = Dict(failure.entity => failure.stage for failure in result.failures)
     @test stages["BADREQ"] == :fetch
     @test stages["UNWRITABLE"] == :write
+    retryability = Dict(
+        failure.entity => failure.retryable
+        for failure in result.failures
+    )
+    @test !retryability["UNWRITABLE"]
 end
 
 @testset "Fundamentals collection sweeps retryable failures when asked" begin
@@ -1061,6 +1228,127 @@ end
     @test result.updated == ["perm-solid", "perm-flaky"]
     @test result.metric_rows == 2
     @test fetched == ["perm-flaky", "perm-solid", "perm-flaky"]
+end
+
+@testset "Fundamentals sweep reports the final writer failure" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [
+        (permaTicker="perm-flaky", ticker="FLAKY", isActive=true, isADR=false, dailyLastUpdated=string(as_of)),
+    ]
+    universe_payload = [
+        (ticker="FLAKY", exchange="NYSE", assetType="Stock", startDate="2020-01-01", endDate=string(as_of)),
+    ]
+    attempts = Ref(0)
+    daily_fetcher = function (perma_ticker; kwargs...)
+        attempts[] += 1
+        attempts[] == 1 && error("HTTP 503 upstream timeout")
+        return [(date=string(as_of), marketCap=200.0)]
+    end
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        daily_fetcher,
+        metric_writer = (_, _) -> error("connection reset while writing"),
+        retry_rounds = 1,
+    )
+
+    failure = only(result.failures)
+    @test attempts[] == 2
+    @test result.failed == ["perm-flaky"]
+    @test isempty(result.updated)
+    @test failure.stage == :write
+    @test !failure.retryable
+    @test occursin("connection reset while writing", failure.message)
+    @test !occursin("503", failure.message)
+end
+
+@testset "Fundamentals writer cannot over-report persisted rows" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [(
+        permaTicker = "perm-overcount",
+        ticker = "OVERCOUNT",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(as_of),
+    )]
+    universe_payload = [(
+        ticker = "OVERCOUNT",
+        exchange = "NYSE",
+        assetType = "Stock",
+        startDate = "2020-01-01",
+        endDate = string(as_of),
+    )]
+    attempts = Ref(0)
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        daily_fetcher = function (ticker; kwargs...)
+            attempts[] += 1
+            return [(date = string(as_of), marketCap = 200.0)]
+        end,
+        metric_writer = (_, frame) -> nrow(frame) + 1,
+        retry_rounds = 2,
+    )
+
+    failure = only(result.failures)
+    @test attempts[] == 1
+    @test result.failed == ["perm-overcount"]
+    @test isempty(result.updated)
+    @test result.metric_rows == 0
+    @test failure.stage == :write
+    @test !failure.retryable
+    @test occursin("must not exceed frame row count", failure.message)
+end
+
+@testset "Fundamentals observation write failures are never retryable" begin
+    as_of = Date(2024, 1, 3)
+    meta_payload = [(
+        permaTicker = "perm-observation",
+        ticker = "OBS",
+        isActive = false,
+        isADR = false,
+        dailyLastUpdated = string(as_of),
+    )]
+    universe_payload = [(
+        ticker = "OBS",
+        exchange = "NYSE",
+        assetType = "Stock",
+        startDate = "2020-01-01",
+        endDate = string(as_of),
+    )]
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        observation_writer = _ -> error("temporary connection reset while writing"),
+    )
+
+    failure = only(result.failures)
+    @test failure.stage == :write
+    @test !failure.retryable
+
+    overcounted = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        observation_writer = frame -> nrow(frame) + 1,
+    )
+
+    overcount_failure = only(overcounted.failures)
+    @test overcounted.failed == ["security_observations"]
+    @test overcounted.observation_rows == 0
+    @test overcount_failure.stage == :write
+    @test !overcount_failure.retryable
+    @test occursin("must not exceed frame row count", overcount_failure.message)
 end
 
 @testset "Collection classification follows the HTTP status, not the wording" begin

@@ -6,6 +6,8 @@ PostgreSQL, Parquet, and DuckDB persistence primitives.
 
 In Quansift production:
 
+- the library checkout remains `/opt/tiingojulia`, exposed to consumers as
+  `TIINGO_PROJECT_ROOT=/opt/tiingojulia`;
 - system PostgreSQL is the authoritative relational store;
 - Parquet is the full-history interchange/archive format;
 - DuckDB is optional local analysis or compatibility state, not a required

@@ -442,7 +442,7 @@ function collect_fundamentals(
     if !isnothing(observation_writer)
         try
             rows = observation_writer(observations)
-            rows isa Integer ||
+            (rows isa Integer && !(rows isa Bool)) ||
                 throw(ArgumentError("observation_writer must return an integer row count"))
             rows >= 0 ||
                 throw(ArgumentError("observation_writer row count must be non-negative"))
@@ -542,7 +542,7 @@ function collect_fundamentals(
         if !isnothing(metric_writer)
             try
                 rows = metric_writer(perma_ticker, metrics)
-                rows isa Integer ||
+                (rows isa Integer && !(rows isa Bool)) ||
                     throw(ArgumentError("metric_writer must return an integer row count"))
                 rows >= 0 ||
                     throw(ArgumentError("metric_writer row count must be non-negative"))

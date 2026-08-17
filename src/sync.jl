@@ -875,7 +875,7 @@ end
             if !isnothing(writer)
                 try
                     rows = writer(symbol, frame)
-                    rows isa Integer ||
+                    (rows isa Integer && !(rows isa Bool)) ||
                         throw(ArgumentError("writer must return an integer row count"))
                     rows >= 0 ||
                         throw(ArgumentError("writer row count must be non-negative"))

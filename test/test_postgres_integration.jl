@@ -351,6 +351,18 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 ).is_nullable) == "NO"
                 @test migrate_postgres!(pg).applied_versions == Int[]
 
+                _pg_integration_cleanup(pg)
+                @test migrate_postgres!(pg; target_version=2).applied_versions == [1, 2]
+                _pg_integration_command(
+                    pg,
+                    "ALTER INDEX public.uq_security_observations_key " *
+                    "RENAME TO renamed_security_observations_key",
+                )
+                renamed_result = migrate_postgres!(pg)
+                @test renamed_result.from_version == 2
+                @test renamed_result.applied_versions == [3]
+                @test postgres_schema_version(pg) == 3
+
                 relation_names = [
                     "us_tickers",
                     "us_tickers_filtered",

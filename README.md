@@ -1,447 +1,116 @@
 # QuansiftMarketData.jl
 
-QuansiftMarketData is a Julia library for collecting Tiingo end-of-day stock and ETF
-prices and Fundamentals data, normalizing responses into `DataFrame`s, and
-persisting those frames through independent PostgreSQL, Parquet, or DuckDB
-primitives.
-
 [![Tests](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/CI.yml?branch=main&label=Tests)](https://github.com/Quansift/QuansiftMarketData.jl/actions)
 [![Documentation](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/Docs.yml?branch=main&label=Docs)](https://quansift.github.io/QuansiftMarketData.jl/dev)
 [![Lint](https://img.shields.io/github/actions/workflow/status/Quansift/QuansiftMarketData.jl/Lint.yml?branch=main&label=Lint)](https://github.com/Quansift/QuansiftMarketData.jl/actions)
 
-## Responsibility boundary
+QuansiftMarketData is a Julia client for collecting Tiingo end-of-day stock
+and ETF prices and Fundamentals data. It normalizes API responses into
+`DataFrame`s and provides optional PostgreSQL, Parquet, and DuckDB persistence
+primitives.
 
-QuansiftMarketData owns:
+> [!IMPORTANT]
+> QuansiftMarketData is an unofficial, community-maintained project. It is not
+> affiliated with, endorsed by, or sponsored by Tiingo, Inc. This project does
+> not use the Tiingo logo. Each user must obtain their own Tiingo API key and
+> use Tiingo services and data in accordance with the
+> [Tiingo Terms of Use](https://api.tiingo.com/tos/). The software license does
+> not grant rights to Tiingo data. It does not bundle or redistribute Tiingo
+> data. Tiingo is a provider trademark. This is not legal advice.
 
-- Tiingo HTTP access and response validation;
-- ticker, EOD price, and Fundamentals normalization;
-- idempotent EOD and Fundamentals upserts for PostgreSQL and DuckDB; and
-- verified atomic local Parquet writes with explicit overwrite behavior.
+- [Tiingo official website](https://www.tiingo.com/)
+- [Tiingo API documentation](https://www.tiingo.com/documentation/general/overview)
 
-QuansiftMarketData does not own cron or systemd scheduling, cross-stage retries,
-object-store publication, Managed PostgreSQL deployment, notifications, or
-QuantScreener/TATSU sequencing.
+## What it does
 
-The Quansift production workflow assigns each persisted representation a
-distinct role:
+- Fetches the Tiingo ticker universe, EOD stock and ETF prices, and
+  Fundamentals data.
+- Validates and normalizes responses into canonical Julia `DataFrame`s.
+- Supports sink-independent historical and Fundamentals collection.
+- Provides optional PostgreSQL upserts, atomic Parquet writes, and local
+  DuckDB storage.
 
-- system PostgreSQL is the authoritative production query store and recovery
-  baseline;
-- persistent DuckDB is an analysis replica and high-performance OLAP cache; and
-- off-host Parquet is the full-history archive and interchange format.
+## Getting started
 
-`quansift_scheduler` owns the ordered workflow and publishes Parquet to
-DigitalOcean Spaces and a rolling three-year dataset to DigitalOcean Managed
-PostgreSQL. DuckDB is not an additional source of record.
+### 1. Get a Tiingo API key
 
-The rolling three-year rule applies only to DigitalOcean Managed PostgreSQL
-publication. Where the applicable Tiingo account terms or a separate written
-agreement permit that retention, system PostgreSQL and Parquet retain full
-history, and this package imposes no additional DuckDB retention period —
-consumers bound local DuckDB state to their own analysis needs. A separate
-three-year default exists for the `sync_fundamentals!` initial backfill window;
-it is unrelated to the Managed PostgreSQL publication rule.
+Create an account at [Tiingo](https://www.tiingo.com/) and obtain an API key.
+Review the [Tiingo Terms of Use](https://api.tiingo.com/tos/) before requesting,
+processing, or storing data.
 
-## Production release channel
+### 2. Install the package
 
-Development changes go through a feature branch, optional `staging` integration,
-and a pull request to `main`. Do not open pull requests to, or commit directly on,
-`production`: it is the protected deployment pointer, not a development branch.
-Merging to `main` does not deploy automatically.
-
-For a QuansiftMarketData release, first merge and verify QuansiftMarketData on
-`main`. Then update the exact QuansiftMarketData revision in all
-`quansift_scheduler` pin locations, merge that
-scheduler pull request, and require both repositories' CI to pass. Promote the
-validated pair by fast-forwarding QuansiftMarketData `production` first and scheduler
-`production` second; never force-push either branch.
-For a scheduler-only release, keep the QuansiftMarketData pin unchanged and promote only
-scheduler `production`.
-
-The promotion commands derive the revisions from the remote branches, so the
-operator does not need to remember a commit SHA:
-
-```bash
-(
-set -euo pipefail
-
-git -C /path/to/QuansiftMarketData.jl fetch --prune origin
-git -C /path/to/quansift_scheduler fetch --prune origin
-
-TIINGO_RELEASE="$(git -C /path/to/QuansiftMarketData.jl rev-parse origin/main)"
-SCHEDULER_RELEASE="$(git -C /path/to/quansift_scheduler rev-parse origin/main)"
-SCHEDULER_PIN="$(
-  git -C /path/to/quansift_scheduler show origin/main:Project.toml |
-    awk -F'"' '/^QuansiftMarketData = \{rev = / {print $2}'
-)"
-
-test "$TIINGO_RELEASE" = "$SCHEDULER_PIN"
-git -C /path/to/QuansiftMarketData.jl \
-  merge-base --is-ancestor origin/production "$TIINGO_RELEASE"
-git -C /path/to/quansift_scheduler \
-  merge-base --is-ancestor origin/production "$SCHEDULER_RELEASE"
-
-git -C /path/to/QuansiftMarketData.jl \
-  push origin "$TIINGO_RELEASE:refs/heads/production"
-git -C /path/to/quansift_scheduler \
-  push origin "$SCHEDULER_RELEASE:refs/heads/production"
-)
-```
-
-Do not pull either data-plane checkout unless both promotion pushes succeed.
-
-On data-plane, pause the scheduler cron entries and prove that no pipeline,
-lock, or PostgreSQL writer is active before updating. Pull QuansiftMarketData first, apply
-and verify any database migration, then pull scheduler and recheck that its
-QuansiftMarketData pin equals `/opt/tiingojulia` `HEAD` before restoring cron:
-
-The first production cutover preserves the downstream contract
-`TIINGO_PROJECT_ROOT=/opt/tiingojulia`; the package rename does not move that
-checkout or rename the environment variable.
-
-```bash
-git -C /opt/tiingojulia pull --ff-only
-git -C /home/shin/10kpw/quansift_scheduler pull --ff-only
-```
-
-Both production checkouts track `origin/production` with `pull.ff=only`.
-Therefore changes on `main` remain undeployed until an explicit promotion.
-
-## Installation
-
-Until QuansiftMarketData is registered in Julia's General registry, install it directly
-from this repository:
+Until the package is registered in Julia's General registry, install it from
+GitHub together with `DataFrames`, which the example below uses:
 
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl")
+Pkg.add("DataFrames")
 ```
 
-After General registration, name-based installation will be available:
+### 3. Set the API key
 
-```julia
-using Pkg
-Pkg.add("QuansiftMarketData")
-```
-
-For repository development:
+Set `TIINGO_API_KEY` in your shell before starting Julia. This prompts without
+displaying the key or placing it in the command itself:
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+read -s TIINGO_API_KEY
+export TIINGO_API_KEY
 ```
 
-## Data terms and project identity
+Do not commit API keys. For automated environments, use the platform's secret
+manager rather than storing the key in source code.
 
-Each user must use their own Tiingo account and API token. This package does
-not bundle or redistribute Tiingo market or Fundamentals data. The MIT license
-applies only to this software and grants no rights to Tiingo data. The storage
-APIs and examples in this repository describe technical capabilities, not
-permission to retain Tiingo Data.
-
-Under the current [Tiingo Terms of Use](https://api.tiingo.com/tos/), Starter
-and Trial Plan users may process Tiingo Data only transiently in volatile
-memory or a temporary, non-persistent cache. They may not write, save, archive,
-back up, or otherwise retain it in persistent or durable storage and must
-permanently remove it immediately after the calculation or operation completes
-and, in all events, before the process, job, or user session ends. This includes
-PostgreSQL, persistent DuckDB, Parquet and other files, logs, queues, object
-stores, archives, backups, and disaster-recovery systems.
-
-Eligible paid-plan users may persist Tiingo Data only to the extent permitted
-by their current plan and the Terms. On expiration, cancellation, termination,
-or downgrade to Starter or Trial, the Terms require prompt permanent deletion
-from every system, including backups and disaster recovery, unless Tiingo
-expressly agrees to different retention in a separate written agreement. The
-user's current plan, applicable Supplemental Terms, and any separate written
-agreement govern permitted use; this package's examples and Quansift's
-documented storage roles do not. Users are responsible for verifying and
-operating within those terms.
-
-This is an operational summary, not legal advice. Confirm unclear storage,
-retention, deletion, or naming rights with Tiingo or qualified counsel. The
-Tiingo Terms identify `Tiingo` as a provider trademark. QuansiftMarketData is an
-independent project and is not affiliated with or endorsed by Tiingo, Inc.
-
-## Configuration
-
-Create a local env file and set the Tiingo API key:
-
-```bash
-cp .env.example .env
-```
-
-```dotenv
-TIINGO_API_KEY=your_api_key_here
-```
-
-`.env` is ignored by git. Do not commit secrets. Set overrides before running
-`using QuansiftMarketData`.
-
-Common optional settings include:
-
-- `TIINGO_CONFIG_PATH`: alternate `config.toml` path;
-- `TIINGO_API_BASE_URL`: Tiingo daily API base URL;
-- `TIINGO_API_MAX_RETRIES`: retries within a Tiingo HTTP request;
-- `TIINGO_API_RETRY_DELAY`: request retry base delay in seconds;
-- `TIINGO_SUPPORTED_EXCHANGES`: comma-separated exchange filter;
-- `TIINGO_SUPPORTED_ASSET_TYPES`: comma-separated asset-type filter;
-- `TIINGO_LOGGER`: `console`, `tee`, `file`, `tee-file`, or `null`; and
-- `OHLCV_DUCKDB_PATH`: optional local DuckDB path.
-
-`OHLCV_PG_CONNECTION` is used by bundled compatibility helpers and integration
-smokes. Library consumers may instead pass an already-open PostgreSQL
-connection. Legacy aliases remain documented in [`.env.example`](.env.example).
-
-Spaces and Managed PostgreSQL credentials intentionally do not belong in this
-repository's env templates.
-
-## Collect Tiingo data
-
-`collect_ticker_universe` builds the canonical stock/ETF universe without
-choosing a sink. It accepts an existing `DataFrame`; its keyword/file form
-loads the supported-tickers file for applications that keep universe
-acquisition separate from persistence.
-
-`get_ticker_data` fetches EOD data without selecting a storage destination.
-Use `normalize_eod_prices` as the canonical schema and date-range validation
-boundary before passing externally supplied payloads to a persistence writer:
+### 4. Fetch and normalize AAPL EOD prices
 
 ```julia
-using QuansiftMarketData
-using DataFrames
 using Dates
+using DataFrames
+using QuansiftMarketData
 
+start_date = Date("2024-01-01")
+end_date = Date("2024-01-31")
 ticker = DataFrame(
     ticker=["AAPL"],
-    start_date=[Date("2024-01-01")],
-    end_date=[Date("2024-12-31")],
+    start_date=[start_date],
+    end_date=[end_date],
 )[1, :]
-raw_prices = get_ticker_data(
-    ticker;
-    start_date=Date("2024-01-01"),
-    end_date=Date("2024-12-31"),
-)
-prices = normalize_eod_prices(
-    raw_prices;
-    start_date=Date("2024-01-01"),
-    end_date=Date("2024-12-31"),
-)
+
+raw_prices = get_ticker_data(ticker; start_date, end_date)
+prices = normalize_eod_prices(raw_prices; start_date, end_date)
+
+first(prices, 5)
 ```
 
-Fundamentals consumers can use `get_fundamental_meta`,
-`get_daily_fundamental`, `normalize_security_observations`, and
-`normalize_fundamental_daily_metrics` before selecting a sink.
+`get_ticker_data` reads `TIINGO_API_KEY` by default. Passing date bounds to
+`normalize_eod_prices` also validates that returned observations are within the
+requested range.
 
-For non-interactive batch collection, `collect_historical` returns a
-`HistoricalCollectionResult` and `collect_fundamentals` returns a
-`FundamentalCollectionResult`. Both retain machine-readable `SyncFailure`
-details. Strict mode raises `SyncIncompleteError` when required work is
-incomplete; optional writer callbacks return their persisted row counts.
-Existing collection functions keep their legacy return values.
+### 5. Optionally persist normalized data
 
-The new `collect_fundamentals` collector is unbounded by default
-(`initial_start_date=nothing`) and accepts `columns=nothing` to request the
-complete Daily Metrics payload. Set either keyword to bound a consumer's
-request. The legacy `sync_fundamentals!` compatibility workflow retains its
-three-year initial backfill default.
-
-## Choose a persistence primitive
-
-The sinks are independent. Applications can select PostgreSQL, Parquet,
-DuckDB, or more than one without adopting a scheduler, but only where
-the applicable account terms or a separate written agreement permit the
-selected persistence.
-
-### PostgreSQL
-
-The PostgreSQL overloads use the same upsert names as the existing DuckDB API:
+Only persist Tiingo data when your current plan and the Terms permit it. For
+example, write the normalized frame to Parquet:
 
 ```julia
-using QuansiftMarketData
-
-pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
-try
-    create_tables(pg)
-    universe = collect_ticker_universe(source_tickers)
-    replace_ticker_universe(pg, universe.all, universe.filtered)
-    upsert_stock_data_bulk(pg, prices, "AAPL")
-finally
-    close_postgres(pg)
-end
+result = write_parquet(prices, "aapl.parquet")
 ```
 
-Available PostgreSQL persistence functions are:
+PostgreSQL, DuckDB, ticker-universe, batch collection, and Fundamentals examples
+are in the [full documentation](https://quansift.github.io/QuansiftMarketData.jl/dev).
 
-- `create_tables(pg_conn)`;
-- `replace_ticker_universe(pg_conn, all_tickers, filtered_tickers)`;
-- `upsert_stock_data(pg_conn, data, ticker)`;
-- `upsert_stock_data_bulk(pg_conn, data, ticker)`;
-- `upsert_security_observations(pg_conn, data)`; and
-- `upsert_fundamental_daily_metrics(pg_conn, data)`.
+## Main API
 
-Upserts are keyed by each table's natural conflict key, so repeating the same
-input updates rather than duplicates rows.
+- EOD: `get_ticker_data`, `normalize_eod_prices`, `collect_historical`
+- Tickers: `collect_ticker_universe`
+- Fundamentals: `get_fundamental_meta`, `get_daily_fundamental`,
+  `collect_fundamentals`
+- Persistence: `upsert_*`, `replace_ticker_universe`, `write_parquet`
 
-### Parquet
+## Documentation and contributing
 
-Write a normalized frame directly:
-
-```julia
-result = write_parquet(
-    prices,
-    "exports/aapl.parquet";
-    overwrite=false,
-    compression=:zstd,
-)
-```
-
-Or export a PostgreSQL table without making DuckDB a persistent store:
-
-```julia
-pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
-try
-    result = write_parquet(
-        pg,
-        "historical_data",
-        "exports/historical_data.parquet";
-        overwrite=false,
-        compression=:zstd,
-    )
-finally
-    close_postgres(pg)
-end
-```
-
-`write_parquet` returns `ParquetWriteResult` with `path`, `rows`, `columns`, and
-`bytes`. The default is no-overwrite; pass `overwrite=true` only when replacing
-the target is intentional. QuansiftMarketData verifies the temporary file before an
-atomic local publication; the calling application owns remote upload,
-manifests, retention, and publication ordering.
-
-PostgreSQL table snapshots use DuckDB's `postgres` extension. QuansiftMarketData only
-runs `LOAD postgres` and never downloads extensions at runtime. Preinstall the
-matching extension while building the deployment image or environment:
-
-```bash
-julia --project=. -e 'using DBInterface, DuckDB; conn = DBInterface.connect(DuckDB.DB); try DBInterface.execute(conn, "INSTALL postgres") finally DBInterface.close!(conn) end'
-```
-
-The bundled [`docker/Dockerfile`](docker/Dockerfile) performs this installation
-during the image build.
-
-### DuckDB local analysis and compatibility
-
-The existing DuckDB workflow remains supported:
-
-```julia
-using QuansiftMarketData
-
-conn = connect_duckdb("analysis.duckdb")
-try
-    optimize_database(conn)
-    download_tickers_duckdb(conn)
-
-    stocks = get_tickers_stock(conn)
-    etfs = get_tickers_etf(conn)
-
-    update_historical(
-        conn,
-        vcat(stocks[1:50, :], etfs[1:25, :]);
-        use_parallel=true,
-        batch_size=25,
-        max_concurrent=5,
-    )
-
-    create_indexes(conn)
-finally
-    close_duckdb(conn)
-end
-```
-
-PostgreSQL setup is not technically required to evaluate or analyze Tiingo
-data. Accounts whose terms permit durable storage can use an API key and a
-local DuckDB file for the workflow above. Starter and Trial Plan users should
-instead use sink-free in-memory collection or the
-[zero-persistence live canary](PRODUCTION.md#advisory-zero-persistence-live-canary)
-and permanently remove Tiingo Data immediately after the calculation or
-operation completes and, in all events, before the process, job, or user
-session ends.
-
-For production applications, bound any local DuckDB data to the consumer's
-analysis needs and the applicable account terms. Do not treat it as an
-additional required full-history archive.
-
-#### Deprecated: the DuckDB-first full-history path
-
-System PostgreSQL is the source of record and Parquet is the full-history
-archive, so routing full history through DuckDB duplicates both. These entry
-points are deprecated and targeted for removal in a future major release:
-
-| Deprecated | Replacement |
-| --- | --- |
-| `update_historical`, `update_historical_parallel`, `update_historical_sequential` | `collect_historical` with a caller-supplied writer |
-| `download_tickers_duckdb` | `collect_ticker_universe` + `replace_ticker_universe` |
-| `export_to_postgres` | `upsert_*` overloads for ingest, `write_parquet` for archive |
-| `add_historical_data`, `update_split_ticker` | `collect_historical` with a caller-supplied writer |
-
-DuckDB itself is not deprecated. `connect_duckdb`, `close_duckdb`,
-`create_tables`, `create_indexes`, `optimize_database`, the DuckDB `upsert_*`
-overloads, and `get_tickers_*` remain supported for optional local analysis.
-
-## Bounded integration smoke
-
-The repository includes a live, bounded smoke for validating a Tiingo key and
-the existing DuckDB/PostgreSQL compatibility path:
-
-```bash
-cp .env.staging.example .env.staging
-TIINGO_SMOKE_TICKER_LIMIT=5 \
-TIINGO_SMOKE_EXPORT_POSTGRES=false \
-scripts/run_staging_smoke.sh
-```
-
-This is an integration example, not the canonical production scheduler.
-It persists Tiingo Data to a local DuckDB file and optionally PostgreSQL, so
-use it only when the applicable account terms or a separate written agreement
-permit persistence. Starter and Trial Plan users should use the zero-persistence
-live canary instead.
-[`PRODUCTION.md`](PRODUCTION.md) and
-[`deploy/README.md`](deploy/README.md) describe its limited scope.
-
-The executable PostgreSQL release gate is opt-in locally and destructive only
-to its isolated test database:
-
-```bash
-TIINGO_TEST_PG_CONNECTION='postgresql://user:password@localhost:5432/tiingojulia_test?sslmode=disable' \
-  julia --project=. test/test_postgres_integration.jl
-```
-
-## Public API overview
-
-- Collection: `get_api_key`, `collect_ticker_universe`, `get_ticker_data`,
-  `normalize_eod_prices`, `get_fundamental_meta`, `get_daily_fundamental`,
-  `collect_historical`, `collect_fundamentals`
-- Collection results: `HistoricalCollectionResult`,
-  `FundamentalCollectionResult`, `SyncFailure`, `SyncIncompleteError`
-- Normalization: `normalize_security_observations`,
-  `normalize_fundamental_daily_metrics`
-- PostgreSQL: `connect_postgres`, `close_postgres`, `create_tables`,
-  `replace_ticker_universe`, and the `upsert_*` overloads
-- Parquet: `write_parquet`, `ParquetWriteResult`
-- DuckDB compatibility: `connect_duckdb`, `close_duckdb`,
-  `download_tickers_duckdb`, `update_historical`, `optimize_database`,
-  `create_indexes`
-
-See the generated [documentation](https://quansift.github.io/QuansiftMarketData.jl/dev)
-for complete signatures.
-
-## Performance
-
-Collection concurrency and optional DuckDB tuning are covered in the
-[performance guide](docs/src/PERFORMANCE.md). Treat published numbers as
-workload-specific measurements, not guarantees.
-
-## Contributing, citation, and changes
-
-See the [contributing guide](docs/src/90-contributing.md),
-[`CITATION.cff`](CITATION.cff), and [`CHANGELOG.md`](CHANGELOG.md).
+- [Documentation](https://quansift.github.io/QuansiftMarketData.jl/dev)
+- [Contributing guide](docs/src/90-contributing.md)
+- [Production operations](PRODUCTION.md)
+- [Changelog](CHANGELOG.md)
+- [Citation](CITATION.cff)

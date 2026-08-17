@@ -62,6 +62,10 @@ function _redact_api_error(error)::String
     message = error isa AbstractString ? String(error) : sprint(showerror, error)
     message = replace(
         message,
+        r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@" => s"\1[REDACTED]@",
+    )
+    message = replace(
+        message,
         r"(?i)((?:[\"']|%22)?authorization(?:[\"']|%22)?(?:\s|%20)*(?::|=>|=|%3d|%3a)(?:\s|%20)*(?:[\"']|%22)?(?:token|bearer)(?:\s+|%20))[^\s,;}\"'<>#]+" => s"\1[REDACTED]",
     )
     return replace(
@@ -133,12 +137,55 @@ function _jittered_delay_seconds(
     return min(float(delay) + jitter, float(_MAX_RETRY_DELAY_SECONDS))
 end
 
-# Ceiling on a response body before it is handed to the JSON parser. The body
-# is one allocation; parsing it into JSON3 and then a DataFrame multiplies it
-# many times over, so the useful place to stop is between the two. This does
-# NOT bound the socket read — HTTP.get returns with the body already in
-# memory — it bounds the blow-up that follows.
+# Ceiling enforced by the response stream while bytes arrive from the socket.
+# The post-response check remains as a fallback for injected HTTP layers that
+# return a synthetic body instead of writing to the supplied stream.
 const _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+struct _ResponseTooLargeError <: Exception
+    received_bytes::Int
+    max_bytes::Int
+end
+
+mutable struct _BoundedResponseBuffer <: IO
+    buffer::IOBuffer
+    max_bytes::Int
+    received_bytes::Int
+end
+
+_BoundedResponseBuffer(max_bytes::Int) =
+    _BoundedResponseBuffer(IOBuffer(), max_bytes, 0)
+
+function Base.unsafe_write(
+    destination::_BoundedResponseBuffer,
+    pointer::Ptr{UInt8},
+    byte_count::UInt,
+)::Int
+    received_bytes = Base.Checked.checked_add(
+        destination.received_bytes,
+        Int(byte_count),
+    )
+    if destination.max_bytes > 0 && received_bytes > destination.max_bytes
+        throw(_ResponseTooLargeError(received_bytes, destination.max_bytes))
+    end
+    written = unsafe_write(destination.buffer, pointer, byte_count)
+    destination.received_bytes += written
+    return written
+end
+
+function _response_too_large_error(error)
+    error isa _ResponseTooLargeError && return error
+    error isa HTTP.RequestError && return _response_too_large_error(error.error)
+    error isa TaskFailedException &&
+        return _response_too_large_error(error.task.result)
+    if error isa CompositeException
+        for nested in error.exceptions
+            found = _response_too_large_error(nested)
+            !isnothing(found) && return found
+        end
+    end
+    return nothing
+end
 
 function _retry_delay_seconds(
     base_delay::Int,
@@ -242,6 +289,7 @@ function fetch_api_data(
     for attempt in 1:max_retries
         @info "API request attempt $attempt for URL: $safe_url"
         response = nothing
+        response_buffer = _BoundedResponseBuffer(max_response_bytes)
         try
             response = HTTP.get(
                 url,
@@ -252,9 +300,17 @@ function fetch_api_data(
                 status_exception=false,
                 retry=false,
                 redirect=false,
+                response_stream=response_buffer,
             )
         catch e
             e isa InterruptException && rethrow()
+            oversized = _response_too_large_error(e)
+            if !isnothing(oversized)
+                throw(ErrorException(
+                    "Response from $safe_url is $(oversized.received_bytes) bytes, " *
+                    "over the $(oversized.max_bytes) byte limit; refusing to read",
+                ))
+            end
             safe_error = ErrorException(_redact_api_error(e))
             last_error = safe_error
             @warn "API request attempt $attempt failed" error=safe_error.msg
@@ -275,7 +331,10 @@ function fetch_api_data(
 
         status = response.status
         if status == 200
-            body_bytes = length(response.body)
+            body = response.body === response_buffer ?
+                take!(response_buffer.buffer) :
+                response.body
+            body_bytes = length(body)
             if max_response_bytes > 0 && body_bytes > max_response_bytes
                 # Permanent for this request, so it is thrown rather than
                 # retried: re-downloading an oversized response is the one
@@ -286,7 +345,7 @@ function fetch_api_data(
                 ))
             end
             data = try
-                JSON3.read(String(response.body))
+                JSON3.read(String(body))
             catch error
                 error isa InterruptException && rethrow()
                 throw(ErrorException("Invalid JSON response from $safe_url"))

@@ -108,7 +108,7 @@ function _sync_failure(
         String(entity),
         stage,
         message,
-        something(retryable, inferred_retryable),
+        stage == :write ? false : something(retryable, inferred_retryable),
     )
 end
 

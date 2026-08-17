@@ -686,6 +686,7 @@ supported_asset_types = ["Stock"]
             read.(
                 [
                     joinpath(root, "README.md"),
+                    joinpath(root, "PRODUCTION.md"),
                     joinpath(root, "AGENTS.md"),
                     joinpath(root, ".env.example"),
                     joinpath(root, ".github", "workflows", "CI.yml"),

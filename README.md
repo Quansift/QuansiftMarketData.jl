@@ -15,7 +15,8 @@ primitives.
 > not use the Tiingo logo. Each user must obtain their own Tiingo API key and
 > use Tiingo services and data in accordance with the
 > [Tiingo Terms of Use](https://api.tiingo.com/tos/). The software license does
-> not grant rights to Tiingo data.
+> not grant rights to Tiingo data. It does not bundle or redistribute Tiingo
+> data. Tiingo is a provider trademark. This is not legal advice.
 
 - [Tiingo official website](https://www.tiingo.com/)
 - [Tiingo API documentation](https://www.tiingo.com/documentation/general/overview)

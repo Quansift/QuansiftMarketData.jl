@@ -931,7 +931,13 @@ module Postgres
     end
 
     """
-        replace_ticker_universe(pg_conn, all_data, filtered_data)
+        replace_ticker_universe(
+            pg_conn,
+            all_data,
+            filtered_data;
+            lock_timeout_seconds=30,
+            statement_timeout_seconds=300,
+        )
 
     Atomically replace both PostgreSQL ticker-universe snapshots while retaining
     the existing table identities. Input frames use canonical snake-case
@@ -942,7 +948,16 @@ module Postgres
         pg_conn::PostgreSQLConnection,
         all_data::DataFrame,
         filtered_data::DataFrame,
+        ;
+        lock_timeout_seconds::Integer=30,
+        statement_timeout_seconds::Integer=300,
     )::NamedTuple{(:all_rows,:filtered_rows),Tuple{Int,Int}}
+        lock_timeout_seconds >= 0 || throw(ArgumentError(
+            "lock_timeout_seconds must be non-negative",
+        ))
+        statement_timeout_seconds > 0 || throw(ArgumentError(
+            "statement_timeout_seconds must be positive",
+        ))
         all_frame = select_upsert_columns(all_data, TICKER_UNIVERSE_COLUMN_MAPPINGS)
         filtered_frame = select_upsert_columns(
             filtered_data,
@@ -974,7 +989,12 @@ module Postgres
             close(LibPQ.execute(
                 pg_conn,
                 "SELECT pg_catalog.set_config('lock_timeout', \$1, true)",
-                Any["30000ms"],
+                Any["$(Int(lock_timeout_seconds) * 1000)ms"],
+            ))
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('statement_timeout', \$1, true)",
+                Any["$(Int(statement_timeout_seconds) * 1000)ms"],
             ))
             close(LibPQ.execute(pg_conn, POSTGRES_LOCK_TICKER_UNIVERSE_SQL))
             foreign_key_state = ticker_universe_foreign_key_state(pg_conn)
@@ -1119,8 +1139,8 @@ module Postgres
             pg_conn,
             "security_observations",
             frame,
-            [:perma_ticker, :observed_at],
-            Symbol.(names(frame)[3:end]),
+            [:perma_ticker, :observed_at, :ticker, :is_active],
+            Symbol.(names(frame)[5:end]),
         )
     end
 
@@ -1220,61 +1240,6 @@ module Postgres
         end
 
         cleanup(pg_conn, staging_tables)
-        return nothing
-    end
-
-    """
-        export_to_postgres(duckdb_conn::DuckDBConnection, pg_conn::PostgreSQLConnection, tables::Vector{String}; pg_host::String="127.0.0.1", pg_user::String="postgres", pg_dbname::String="tiingo")
-
-    Export tables from DuckDB to PostgreSQL.
-    """
-    function export_to_postgres(
-        duckdb_conn::DuckDBConnection,
-        pg_conn::PostgreSQLConnection,
-        tables::Vector{String};
-        parquet_file::String="historical_data.parquet",
-        pg_host::Union{Nothing,String}=nothing,
-        pg_user::Union{Nothing,String}=nothing,
-        pg_dbname::Union{Nothing,String}=nothing,
-        pg_connection_string::Union{Nothing,String}=nothing,
-        max_retries::Int=3,
-        retry_delay::Int=5,
-        use_dataframe::Union{Bool, Nothing}=nothing,
-        max_rows_for_dataframe::Int = 1_000_000
-    )
-        plans = build_postgres_export_plans(tables)
-        require_idle_transaction(pg_conn, "deprecated PostgreSQL export")
-        stage = function (source_conn, destination_conn, plan)
-            stage_table_to_postgres!(
-                source_conn,
-                destination_conn,
-                plan.target,
-                plan.staging,
-                parquet_file;
-                pg_host,
-                pg_user,
-                pg_dbname,
-                pg_connection_string,
-                use_dataframe,
-                max_rows_for_dataframe,
-            )
-        end
-        publish = (destination_conn, staged_plans) ->
-            publish_postgres_tables!(destination_conn, staged_plans)
-
-        execute_postgres_export_plans!(
-            duckdb_conn,
-            pg_conn,
-            plans;
-            max_retries,
-            retry_delay,
-            stage,
-            publish,
-            cleanup=cleanup_postgres_stages!,
-        )
-        for plan in plans
-            @info "Successfully exported $(plan.target) from DuckDB to PostgreSQL"
-        end
         return nothing
     end
 
@@ -1684,7 +1649,7 @@ module Postgres
     end
 
     export PostgreSQLConnection
-    export connect_postgres, close_postgres, export_to_postgres
+    export connect_postgres, close_postgres
     export replace_ticker_universe
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics

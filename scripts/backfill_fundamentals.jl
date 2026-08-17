@@ -10,11 +10,10 @@ Optional:
   OHLCV_PG_CONNECTION=postgresql://...
   FUNDAMENTALS_HISTORY_YEARS=3
   FUNDAMENTALS_AS_OF=YYYY-MM-DD
-  FUNDAMENTALS_EXPORT=true   # default false
+  FUNDAMENTALS_EXPORT=false  # publication moved to quansift_scheduler in v4
 
-The local DuckDB is intentionally retained after partial failures. PostgreSQL
-export is limited to security_observations and fundamental_daily_metrics and is
-allowed only after every eligible request succeeds.
+The local DuckDB is intentionally retained after partial failures. This script
+does not publish; quansift_scheduler owns PostgreSQL publication in version 4.
 """
 
 ENV["TIINGO_LOGGER"] = get(ENV, "TIINGO_LOGGER", "console")
@@ -56,7 +55,7 @@ function hydrate_existing_fundamentals!(conn, pg_conn_str::String)::Nothing
                 "price_coverage_start", "price_coverage_end", "is_leveraged",
                 "join_status",
             ],
-            ["perma_ticker", "observed_at"],
+            ["perma_ticker", "observed_at", "ticker", "is_active"],
         )
         merge_attached_table!(
             conn,
@@ -104,6 +103,9 @@ function main()
     history_years = parse(Int, get(ENV, "FUNDAMENTALS_HISTORY_YEARS", "3"))
     history_years > 0 || error("FUNDAMENTALS_HISTORY_YEARS must be positive")
     do_export = lowercase(get(ENV, "FUNDAMENTALS_EXPORT", "false")) == "true"
+    do_export && error(
+        "FUNDAMENTALS_EXPORT is unsupported in QuansiftMarketData v4; publish through quansift_scheduler",
+    )
     as_of = configured_backfill_as_of()
     observed_at = now(UTC)
 
@@ -120,8 +122,7 @@ function main()
         optimize_database(conn)
         create_tables(conn)
         hydrate_existing_fundamentals!(conn, pg_conn_str)
-        download_tickers_duckdb(conn)
-        universe_payload = get_tickers_all(conn)
+        universe_payload = collect_ticker_universe().filtered
         meta_payload = get_fundamental_meta(api_key=api_key)
         observations = normalize_security_observations(
             meta_payload,
@@ -142,39 +143,16 @@ function main()
         )
         failed_count = length(result.failed)
 
-        # Tolerate a small number of per-security failures. The export REPLACES the
-        # PostgreSQL tables (staging + atomic swap), so a widespread failure — an API
-        # outage — must NOT export: it would clobber good market caps with a nearly
-        # empty snapshot. But a handful of persistently-bad securities (delisted, no
-        # data, one-off API quirks) must not block caps for the other thousands, which
-        # is exactly what the old all-or-nothing gate did (one failure in ~5,300 left
-        # security_observations uncreated and every cap-dependent screener empty).
-        # Above the threshold we skip the export and keep yesterday's snapshot intact.
+        # Preserve the existing exit-code distinction between a small partial
+        # backfill and a widespread provider failure. Publication is external.
         max_export_failures = parse(Int, get(ENV, "FUNDAMENTALS_MAX_EXPORT_FAILURES", "100"))
         within_tolerance = failed_count <= max_export_failures
 
         counts = validate_backfill!(conn, as_of)
         exported = false
-        if do_export && within_tolerance
-            pg_conn = connect_postgres(pg_conn_str)
-            try
-                export_to_postgres(
-                    conn,
-                    pg_conn,
-                    ["security_observations", "fundamental_daily_metrics"];
-                    pg_connection_string=pg_conn_str,
-                )
-                exported = true
-            finally
-                close_postgres(pg_conn)
-            end
-        end
-
         if failed_count > 0
-            # exit 2 = partial but the good rows WERE exported (alert, not data loss);
-            # exit 3 = failures exceeded tolerance so the export was withheld to protect
-            # the existing snapshot (more urgent). Both keep the DuckDB for watermark
-            # resume on the next run.
+            # exit 2 = partial within tolerance; exit 3 = widespread failure.
+            # Both keep the DuckDB for watermark resume on the next run.
             println("FUNDAMENTALS_BACKFILL_PARTIAL failed=$(failed_count) completed=$(length(result.requested)) unchanged=$(length(result.unchanged)) unavailable=$(length(result.unavailable)) exported=$(exported) resume_path=$duckdb_path")
             exit(within_tolerance ? 2 : 3)
         end

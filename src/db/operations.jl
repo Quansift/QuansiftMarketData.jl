@@ -11,7 +11,9 @@ module Operations
     # immediately after, so it never collides across calls on one connection.
     const UPSERT_SOURCE_VIEW = "_tiingo_upsert_source"
     const FUNDAMENTAL_DAILY_METRICS_KEY = [:perma_ticker, :metric_date]
-    const SECURITY_OBSERVATIONS_KEY = [:perma_ticker, :observed_at]
+    const SECURITY_OBSERVATIONS_KEY = [
+        :perma_ticker, :observed_at, :ticker, :is_active,
+    ]
 
     function _validate_eod_fetched_at(data::DataFrame)::Nothing
         :fetched_at in propertynames(data) || throw(ArgumentError(
@@ -209,7 +211,7 @@ module Operations
         upsert_security_observations(conn::DuckDBConnection, data::DataFrame)::Int
 
     Idempotently upsert observed security identity snapshots using
-    `(perma_ticker, observed_at)` as the deterministic key.
+    `(perma_ticker, observed_at, ticker, is_active)` as the deterministic key.
     """
     function upsert_security_observations(conn::DuckDBConnection, data::DataFrame)::Int
         validate_security_observation_keys(data)
@@ -230,9 +232,8 @@ module Operations
                     price_coverage_start, price_coverage_end, is_leveraged,
                     join_status
                 FROM $UPSERT_SOURCE_VIEW
-                ON CONFLICT (perma_ticker, observed_at) DO UPDATE SET
-                    ticker = EXCLUDED.ticker,
-                    is_active = EXCLUDED.is_active,
+                ON CONFLICT (perma_ticker, observed_at, ticker, is_active)
+                DO UPDATE SET
                     is_adr = EXCLUDED.is_adr,
                     daily_last_updated = EXCLUDED.daily_last_updated,
                     exchange = EXCLUDED.exchange,

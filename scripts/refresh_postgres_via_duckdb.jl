@@ -1,13 +1,13 @@
 #!/usr/bin/env julia
 #
-# Refresh local PostgreSQL historical_data table via DuckDB incremental update.
-# Flow: Hydrate DuckDB from PG -> incremental API fetch -> safety gate -> export.
+# Validate a PostgreSQL-backed historical snapshot through a local DuckDB refresh.
+# Production publication belongs to quansift_scheduler.
 #
 # Environment variables:
 #   OHLCV_DUCKDB_PATH      DuckDB file path       (default: data/tiingo_local.duckdb)
 #   OHLCV_PG_CONNECTION     PostgreSQL conn string  (default: see below)
 #   TIINGO_API_KEY          Tiingo API key          (or via .env)
-#   DO_EXPORT               "true" to export back   (default: "false")
+#   DO_EXPORT               unsupported in v4; must remain "false"
 
 ENV["TIINGO_LOGGER"] = get(ENV, "TIINGO_LOGGER", "console")
 
@@ -29,13 +29,6 @@ const TABLES_TO_HYDRATE = [
     "security_observations",
     "fundamental_daily_metrics",
 ]
-const TABLES_TO_EXPORT = [
-    "historical_data",
-    "us_tickers_filtered",
-    "security_observations",
-    "fundamental_daily_metrics",
-]
-
 const DOW30_TICKERS = Set([
     "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
     "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK", "MSFT",
@@ -132,10 +125,9 @@ end
 """
     hydrate_from_postgres!(conn, pg_conn_str) -> Dict{String,Int}
 
-Copy persisted source tables from PostgreSQL into an empty DuckDB. The ticker
-filter is deliberately rebuilt from Tiingo so its `endDate` stays current.
-Historical data is required; fundamentals tables are optional during their
-first deployment and are exported after the refresh creates them.
+Copy persisted source tables from PostgreSQL into an empty DuckDB. Historical
+data is required; fundamentals tables are optional during their first
+deployment. Publication after validation belongs to quansift_scheduler.
 """
 function hydrate_from_postgres!(
     conn::DBInterface.Connection,
@@ -314,6 +306,9 @@ function main()
     duckdb_path = get(ENV, "OHLCV_DUCKDB_PATH", DEFAULT_DUCKDB_PATH)
     pg_conn_str = get(ENV, "OHLCV_PG_CONNECTION", DEFAULT_PG_CONN_STR)
     do_export = lowercase(get(ENV, "DO_EXPORT", "false")) == "true"
+    do_export && error(
+        "DO_EXPORT is unsupported in QuansiftMarketData v4; publish through quansift_scheduler",
+    )
     @info "Config" duckdb_path do_export
 
     # The DuckDB is a throwaway working file: Postgres is the source of record
@@ -337,11 +332,9 @@ function main()
         # Create indexes after bulk insert for better performance
         create_indexes(conn)
 
-        # 3b. Refresh ticker metadata from Tiingo so endDate reflects the current
-        #     trading day (rebuilds us_tickers_filtered via CREATE OR REPLACE).
-        #     Without this, hydrated stale endDates make every ticker look up to date.
+        # 3b. Collect current ticker metadata without coupling collection to a sink.
         @info "Refreshing ticker metadata from Tiingo..."
-        download_tickers_duckdb(conn)
+        universe = collect_ticker_universe()
 
         do_fundamentals_sync = lowercase(get(ENV, "DO_FUNDAMENTALS_SYNC", "false")) == "true"
         if do_fundamentals_sync
@@ -364,13 +357,13 @@ function main()
                 fetched_at=observed_at,
             )
             isempty(sync_result.failed) || error(
-                "Fundamentals sync incomplete for $(length(sync_result.failed)) securities; refusing export",
+                "Fundamentals sync incomplete for $(length(sync_result.failed)) securities",
             )
             @info "Fundamentals sync complete" observations=sync_result.observation_rows metrics=sync_result.metric_rows requested=length(sync_result.requested) skipped=length(sync_result.skipped) unchanged=length(sync_result.unchanged) unavailable=length(sync_result.unavailable) statuses=sync_result.status_counts
         end
 
         # 4. Incremental update from Tiingo API
-        tickers = get_tickers_all(conn)
+        tickers = universe.filtered
         # Optional cap for a cheap end-to-end validation run (0 = no limit)
         ticker_limit = parse(Int, get(ENV, "REFRESH_TICKER_LIMIT", "0"))
         if ticker_limit > 0 && nrow(tickers) > ticker_limit
@@ -378,24 +371,29 @@ function main()
             @info "Ticker list capped for validation" limit=ticker_limit
         end
         @info "Loaded tickers" count=nrow(tickers)
-        # TODO(2.0): migrate this compatibility refresh to `collect_historical`
-        # with an explicit DuckDB writer and gate its typed result before export.
-        # This script also owns hydration and multi-table publication, so that
-        # migration is intentionally separate from the staging-smoke gate.
-        failed_tickers = String[]
-        updated, missing_t = update_historical(conn, tickers, api_key;
-            use_parallel=true, batch_size=100, max_concurrent=10, add_missing=false,
-            failed_tickers)
-        @info "Incremental update done" updated=length(updated) skipped=length(missing_t) failed=length(failed_tickers)
+        latest_dates = DBInterface.execute(conn, """
+            SELECT ticker, MAX(date) AS latest_date
+            FROM historical_data
+            GROUP BY ticker
+        """) |> DataFrame
+        collection = collect_historical(
+            tickers,
+            api_key;
+            latest_dates,
+            add_missing=false,
+            writer=(ticker, frame) -> upsert_stock_data_bulk(conn, frame, ticker),
+            continue_on_error=true,
+            strict=false,
+        )
+        failed_tickers = collection.failed
+        @info "Incremental update done" updated=length(collection.updated) skipped=length(collection.unchanged) unavailable=length(collection.unavailable) failed=length(failed_tickers)
 
-        # 5. Safety gate: never export a subset
+        # 5. Safety gate: never report a shrinking snapshot as ready
         post_counts = verify_hydrated_row_counts!(conn, hydrated_counts)
 
         # The count gate above only catches a SHRINKING table. A widespread API
-        # failure leaves counts intact and exports yesterday's data as though it
-        # were today's, silently, because every ticker that failed simply added
-        # no rows. The fundamentals path has had a failure-rate gate since the
-        # 2026-08-13 incident; the OHLCV path had none.
+        # failure leaves counts intact and could make stale data look ready,
+        # because every ticker that failed simply added no rows.
         #
         # `missing_t` is deliberately not what is measured: with
         # add_missing=false it also holds every ticker intentionally skipped for
@@ -407,7 +405,7 @@ function main()
             error("OHLCV_MAX_EXPORT_FAILURES must be non-negative")
         if length(failed_tickers) > max_export_failures
             error(
-                "Refusing export: $(length(failed_tickers)) ticker(s) failed to " *
+                "Validation failed: $(length(failed_tickers)) ticker(s) failed to " *
                 "update, over the OHLCV_MAX_EXPORT_FAILURES limit of " *
                 "$max_export_failures. The existing PostgreSQL snapshot is left " *
                 "untouched. First failures: " *
@@ -420,20 +418,7 @@ function main()
         )
         @info "READY TO EXPORT" counts=post_counts added=added_counts
 
-        if !do_export
-            @info "Export skipped (DO_EXPORT != \"true\"). Re-run with DO_EXPORT=true to push to PostgreSQL."
-            return
-        end
-
-        # 6. Export to PostgreSQL (drop+rename for tables without FK dependents)
-        @info "Exporting to PostgreSQL..."
-        pg_conn = connect_postgres(pg_conn_str)
-        try
-            export_to_postgres(conn, pg_conn, TABLES_TO_EXPORT; pg_connection_string=pg_conn_str)
-            @info "Export complete"
-        finally
-            close_postgres(pg_conn)
-        end
+        @info "Validation complete; publication is intentionally not performed"
     finally
         close_duckdb(conn)
     end

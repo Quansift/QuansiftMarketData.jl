@@ -2,7 +2,6 @@ using Test
 using CSV
 using DataFrames
 using Dates
-using DBInterface
 using Logging
 using QuansiftMarketData
 
@@ -15,17 +14,6 @@ struct _InterruptingHistoricalString
 end
 
 Base.String(value::_InterruptingHistoricalString) = throw(value.cancellation)
-
-struct _InterruptingHistoricalEquality
-    cancellation::InterruptException
-end
-
-Base.:(==)(value::_InterruptingHistoricalEquality, ::String) =
-    throw(value.cancellation)
-
-const _legacy_historical_mode = Ref(:delegate)
-const _legacy_historical_cancellation = Ref{Union{Nothing,InterruptException}}(nothing)
-const _legacy_no_data_fetches = Ref(0)
 
 function _eod_fixture(date, close=100.0)
     return DataFrame(
@@ -592,112 +580,6 @@ end
     end
 end
 
-@testset "Legacy historical exports rethrow cancellation" begin
-    row_type = typeof(DataFrame(ticker=["TYPE"])[1, :])
-    @eval QuansiftMarketData.API function get_ticker_data(row::$row_type; kwargs...)
-        if row.ticker == "__LEGACY_CANCEL__"
-            cancellation = Main._legacy_historical_cancellation[]
-            Main._legacy_historical_mode[] == :fetch && throw(cancellation)
-            if Main._legacy_historical_mode[] == :write
-                frame = Main._eod_fixture(Date(2024, 1, 2), 30.0)
-                frame.ticker = [Main._InterruptingHistoricalEquality(cancellation)]
-                return frame
-            end
-        end
-        if row.ticker isa String && startswith(row.ticker, "__LEGACY_PROVENANCE_")
-            return Main._eod_fixture(Date(2024, 1, 2), 40.0)
-        end
-        return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
-    end
-    injected_method = which(QuansiftMarketData.API.get_ticker_data, (row_type,))
-    conn = connect_duckdb(":memory:")
-
-    try
-        create_tables(conn)
-        tickers = DataFrame(
-            ticker=["__LEGACY_CANCEL__"],
-            start_date=[Date(2024, 1, 1)],
-            end_date=[Date(2024, 1, 2)],
-        )
-
-        _legacy_historical_mode[] = :fetch
-        for operation in (
-            () -> update_historical(
-                conn,
-                tickers,
-                "offline-token";
-                latest_dates_df=DataFrame(
-                    ticker=["__LEGACY_CANCEL__"],
-                    latest_date=[Date(2024, 1, 1)],
-                ),
-            ),
-            () -> update_historical_sequential(conn, tickers, "offline-token"),
-            () -> update_historical_parallel(
-                conn,
-                tickers,
-                "offline-token";
-                batch_size=1,
-                max_concurrent=1,
-            ),
-        )
-            cancellation = InterruptException()
-            _legacy_historical_cancellation[] = cancellation
-            caught = try
-                operation()
-                nothing
-            catch error
-                error
-            end
-            @test caught === cancellation
-        end
-
-        cancellation = InterruptException()
-        _legacy_historical_cancellation[] = cancellation
-        _legacy_historical_mode[] = :write
-        caught = try
-            update_historical_parallel(
-                conn,
-                tickers,
-                "offline-token";
-                batch_size=1,
-                max_concurrent=1,
-            )
-            nothing
-        catch error
-            error
-        end
-        @test caught === cancellation
-
-        provenance_tickers = DataFrame(
-            ticker=["__LEGACY_PROVENANCE_A__", "__LEGACY_PROVENANCE_B__"],
-            start_date=fill(Date(2024, 1, 1), 2),
-            end_date=fill(Date(2024, 1, 2), 2),
-        )
-        run_fetched_at = DateTime(2026, 8, 16, 12, 34, 56)
-        updated, missing = update_historical_parallel(
-            conn,
-            provenance_tickers,
-            "offline-token";
-            batch_size=2,
-            max_concurrent=2,
-            fetched_at=run_fetched_at,
-        )
-        @test sort(updated) == sort(provenance_tickers.ticker)
-        @test isempty(missing)
-        stored_provenance = DBInterface.execute(
-            conn,
-            "SELECT DISTINCT fetched_at FROM historical_data " *
-            "WHERE ticker LIKE '__LEGACY_PROVENANCE_%'",
-        ) |> DataFrame
-        @test stored_provenance.fetched_at == [run_fetched_at]
-    finally
-        _legacy_historical_mode[] = :delegate
-        _legacy_historical_cancellation[] = nothing
-        close_duckdb(conn)
-        Base.delete_method(injected_method)
-    end
-end
-
 @testset "Ticker and split normalization preserve cancellation" begin
     cancellation = InterruptException()
     caught = try
@@ -1067,9 +949,9 @@ end
     @test !occursin("503", failure.message)
 end
 
-@testset "Historical sweep preserves duplicate ticker failure slots" begin
+@testset "Historical sweep preserves distinct ticker failure slots" begin
     tickers = DataFrame(
-        ticker = fill("DUP", 2),
+        ticker = ["DUP-NORMALIZE", "DUP-WRITE"],
         outcome = [:normalize, :write],
         start_date = fill(Date(2024, 1, 1), 2),
         end_date = fill(Date(2024, 1, 2), 2),
@@ -1093,16 +975,16 @@ end
     )
 
     @test attempts == Dict(:normalize => 3, :write => 3)
-    @test result.failed == ["DUP", "DUP"]
+    @test result.failed == ["DUP-NORMALIZE", "DUP-WRITE"]
     @test getfield.(result.failures, :stage) == [:normalize, :write]
     @test !any(failure -> failure.retryable, result.failures)
     @test occursin("missing required column: high", result.failures[1].message)
     @test occursin("writer rejected duplicate row", result.failures[2].message)
 end
 
-@testset "Historical sweep removes only the recovered duplicate slot" begin
+@testset "Historical sweep removes only the recovered distinct slot" begin
     tickers = DataFrame(
-        ticker = fill("DUP", 2),
+        ticker = ["RECOVER", "NORMALIZE"],
         outcome = [:recover, :normalize],
         start_date = fill(Date(2024, 1, 1), 2),
         end_date = fill(Date(2024, 1, 2), 2),
@@ -1124,12 +1006,45 @@ end
     )
 
     @test attempts == Dict(:recover => 2, :normalize => 2)
-    @test result.updated == ["DUP"]
-    @test result.failed == ["DUP"]
+    @test result.updated == ["RECOVER"]
+    @test result.failed == ["NORMALIZE"]
     failure = only(result.failures)
     @test failure.stage == :normalize
     @test !failure.retryable
     @test occursin("missing required column: high", failure.message)
+end
+
+@testset "Historical collection rejects duplicate canonical tickers before I/O" begin
+    fetches = Ref(0)
+    writes = Ref(0)
+    tickers = DataFrame(
+        ticker = ["AAPL", "AAPL"],
+        start_date = fill(Date(2024, 1, 1), 2),
+        end_date = fill(Date(2024, 1, 2), 2),
+    )
+
+    error = try
+        collect_historical(
+            tickers,
+            "offline-token";
+            fetcher = function (row; kwargs...)
+                fetches[] += 1
+                return _eod_fixture("2024-01-02T00:00:00Z", 30.0)
+            end,
+            writer = function (_, frame)
+                writes[] += 1
+                return nrow(frame)
+            end,
+        )
+        nothing
+    catch caught
+        caught
+    end
+
+    @test error isa ArgumentError
+    @test occursin("duplicate canonical ticker", sprint(showerror, error))
+    @test fetches[] == 0
+    @test writes[] == 0
 end
 
 @testset "Historical collection defaults to no sweep" begin
@@ -1419,7 +1334,7 @@ end
     # The collector records that as unavailable rather than failed, and never
     # queues a retry: the request already succeeded.
     no_data = QuansiftMarketData.API.NoDataError(
-        "No data returned from https://example.test/daily/EMPTY/prices",
+        "provider returned an empty successful payload",
     )
     attempts = Ref(0)
     result = collect_historical(
@@ -1443,103 +1358,12 @@ end
     @test attempts[] == 1
 
     # On the paths that do record it as a failure, it is not worth retrying.
-    @test !QuansiftMarketData._sync_failure("EMPTY", :fetch, no_data).retryable
-end
-
-@testset "Legacy sequential update recognizes a typed no-data response" begin
-    # The deprecated path classified the absence by matching "No data returned"
-    # in an `ErrorException`. It now recognizes the type, so a security with
-    # nothing new is still a skip rather than a recorded error.
-    row_type = typeof(DataFrame(ticker=["TYPE"])[1, :])
-    @eval QuansiftMarketData.API function get_ticker_data(row::$row_type; kwargs...)
-        if row.ticker == "__LEGACY_NO_DATA__"
-            Main._legacy_no_data_fetches[] += 1
-            throw(NoDataError(
-                "No data returned from https://example.test/daily/NODATA/prices",
-            ))
-        end
-        return invoke(get_ticker_data, Tuple{DataFrameRow}, row; kwargs...)
-    end
-    injected_method = which(QuansiftMarketData.API.get_ticker_data, (row_type,))
-    conn = connect_duckdb(":memory:")
-
-    try
-        failed = String[]
-        updated, missing_tickers = update_historical(
-            conn,
-            DataFrame(
-                ticker=["__LEGACY_NO_DATA__"],
-                start_date=[Date(2024, 1, 1)],
-                end_date=[Date(2024, 1, 2)],
-            ),
-            "offline-token";
-            latest_dates_df=DataFrame(
-                ticker=["__LEGACY_NO_DATA__"],
-                latest_date=[Date(2024, 1, 1)],
-            ),
-            failed_tickers=failed,
-        )
-
-        # The absence has to come back from a fetch that actually happened,
-        # or an "up to date" skip would satisfy the assertions below for free.
-        @test _legacy_no_data_fetches[] == 1
-        @test isempty(updated)
-        @test isempty(missing_tickers)
-        @test isempty(failed)
-    finally
-        close_duckdb(conn)
-        Base.delete_method(injected_method)
-    end
-end
-
-@testset "Legacy parallel update separates real failures from skips" begin
-    # The OHLCV export gate needs a genuine failure count. `missing` cannot
-    # serve: with add_missing=false it also collects every ticker intentionally
-    # skipped for not being in historical_data yet, so a gate on its length
-    # would fire during entirely normal operation. `failed_tickers` carries
-    # only the tickers that actually errored.
-    conn = connect_duckdb(":memory:")
-    try
-        tickers = DataFrame(
-            ticker = ["SKIPPED", "BROKEN"],
-            exchange = fill("NYSE", 2),
-            asset_type = fill("Stock", 2),
-            start_date = fill(Date(2024, 1, 1), 2),
-            end_date = fill(Date(2024, 1, 2), 2),
-        )
-
-        # Neither ticker is in historical_data, so with add_missing=false both
-        # land in `missing`. Only one of them is a failure.
-        failed = String[]
-        updated, missing_tickers = update_historical(
-            conn,
-            tickers,
-            "offline-token";
-            use_parallel = true,
-            batch_size = 2,
-            max_concurrent = 1,
-            add_missing = false,
-            failed_tickers = failed,
-        )
-
-        @test isempty(updated)
-        @test sort(missing_tickers) == ["BROKEN", "SKIPPED"]
-        # Intentional skips carry no error, so nothing is recorded as failed.
-        @test isempty(failed)
-
-        # Omitting the keyword must stay valid: every existing caller
-        # destructures the same two-tuple.
-        result = update_historical(
-            conn,
-            tickers,
-            "offline-token";
-            use_parallel = true,
-            batch_size = 2,
-            max_concurrent = 1,
-            add_missing = false,
-        )
-        @test length(result) == 2
-    finally
-        close_duckdb(conn)
-    end
+    misleading_no_data = QuansiftMarketData.API.NoDataError(
+        "HTTP 503 timeout rate limit wording is not authoritative",
+    )
+    @test !QuansiftMarketData._sync_failure(
+        "EMPTY",
+        :fetch,
+        misleading_no_data,
+    ).retryable
 end

@@ -9,8 +9,8 @@ Quansift production scheduler.
 DigitalOcean Spaces publication, DigitalOcean Managed PostgreSQL loading,
 notifications, and QuantScreener/TATSU sequencing.
 
-The smoke writes live Tiingo Data to persistent DuckDB and optionally
-PostgreSQL. Use it only when the current account terms or a separate written
+The smoke writes live Tiingo Data to persistent DuckDB and does not publish it
+to PostgreSQL. Use it only when the current account terms or a separate written
 agreement permit persistence. Starter and Trial Plan users should use the
 sink-free `scripts/live_canary.jl` path and follow the canonical
 [data terms and project identity](../README.md#data-terms-and-project-identity)
@@ -25,7 +25,7 @@ The bounded smoke can:
   the sink-neutral `collect_ticker_universe`);
 - fetch a configured number of EOD stock/ETF histories;
 - persist disposable validation state in DuckDB; and
-- optionally exercise the existing PostgreSQL compatibility export.
+- validate the typed collection result before reporting success.
 
 It does not run a full production ingest, publish Parquet to an object store,
 load Managed PostgreSQL, or run downstream analysis.
@@ -42,12 +42,8 @@ Set `TIINGO_API_KEY`, then run a small sample without PostgreSQL:
 
 ```bash
 TIINGO_SMOKE_TICKER_LIMIT=5 \
-TIINGO_SMOKE_EXPORT_POSTGRES=false \
 scripts/run_staging_smoke.sh
 ```
-
-To test PostgreSQL integration, point `OHLCV_PG_CONNECTION` only at an isolated
-integration database and set `TIINGO_SMOKE_EXPORT_POSTGRES=true`.
 
 The separate executable persistence gate uses
 `TIINGO_TEST_PG_CONNECTION` and creates, replaces, and drops its tables:
@@ -80,7 +76,6 @@ Set `OHLCV_DUCKDB_PATH=/data/staging_smoke.duckdb` in `.env.staging`, then run:
 docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
 docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
   -e TIINGO_SMOKE_TICKER_LIMIT=5 \
-  -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
   pipeline
 ```
 
@@ -88,14 +83,6 @@ Pass smoke overrides with `docker compose run -e`. Prefixing the
 `docker compose` command with `TIINGO_SMOKE_*` only affects Compose
 interpolation; it does not override variables loaded from
 `TIINGO_APP_ENV_FILE`.
-
-If PostgreSQL export is enabled, use the database container's in-network host
-and port in `OHLCV_PG_CONNECTION`, for example:
-
-```dotenv
-OHLCV_PG_CONNECTION=postgresql://USER:PASS@postgres:5432/DB?sslmode=disable
-TIINGO_SMOKE_EXPORT_POSTGRES=true
-```
 
 ## Low-resource integration hosts
 

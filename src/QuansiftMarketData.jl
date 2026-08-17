@@ -72,7 +72,7 @@ module DB
     export create_tables, create_indexes, list_tables
     export upsert_stock_data, upsert_stock_data_bulk
     export get_tickers_all, get_tickers_etf, get_tickers_stock
-    export connect_postgres, close_postgres, export_to_postgres
+    export connect_postgres, close_postgres
     export create_or_replace_table
     export write_parquet, ParquetWriteResult
 
@@ -199,12 +199,11 @@ module Sync
 
     include("sync.jl")
 
-    export download_tickers_duckdb, download_latest_tickers
+    export download_latest_tickers
     export process_tickers_csv, generate_filtered_tickers
     export collect_ticker_universe, collect_historical, normalize_eod_prices
     export find_split_refresh_targets
-    export update_historical, update_historical_parallel, update_historical_sequential
-    export update_split_ticker, add_historical_data, update_us_tickers
+    export update_us_tickers
 end
 
 using .Sync
@@ -216,16 +215,15 @@ include("fundamental_sync.jl")
 # Export all public functions to maintain backward compatibility
 export get_api_key
 export get_ticker_data
-export download_tickers_duckdb, download_latest_tickers, process_tickers_csv, generate_filtered_tickers
+export download_latest_tickers, process_tickers_csv, generate_filtered_tickers
 export collect_ticker_universe, collect_historical, normalize_eod_prices, collect_fundamentals
 export find_split_refresh_targets
 export connect_duckdb, close_duckdb, update_us_tickers
 export upsert_stock_data, upsert_stock_data_bulk
 export upsert_security_observations, upsert_fundamental_daily_metrics
 export replace_ticker_universe
-export add_historical_data, update_historical, update_historical_parallel, update_historical_sequential, update_split_ticker
 export get_tickers_all, get_tickers_etf, get_tickers_stock
-export connect_postgres, close_postgres, export_to_postgres
+export connect_postgres, close_postgres
 export write_parquet, ParquetWriteResult
 export list_tables
 export get_daily_fundamental, get_fundamental_meta

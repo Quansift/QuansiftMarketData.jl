@@ -94,7 +94,10 @@ function _sync_failure(
     # for errors that never had one — an injected fetcher, a driver error, a
     # normalization failure — and is fragile by nature: an upstream wording
     # change would otherwise silently reclassify every failure of that kind.
-    inferred_retryable = if error isa API.ApiStatusError
+    inferred_retryable = if error isa API.NoDataError
+        # The request succeeded; there is nothing to ask again for.
+        false
+    elseif error isa API.ApiStatusError
         API._is_retryable_status(error.status)
     else
         occursin("timeout", normalized) ||

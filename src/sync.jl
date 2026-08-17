@@ -661,12 +661,13 @@ end
     end
 
     function _is_unavailable_historical_error(error)::Bool
-        # The status is authoritative when the error carries one: a 503 whose
-        # body happens to say "no data returned" is a failure to retry, not a
-        # security with nothing to give. Substring matching remains the
-        # fallback for errors that never had a status.
-        error isa API.ApiStatusError &&
-            return API._is_unavailable_status(error.status)
+        # A typed error is authoritative: `NoDataError` and a 404/410 status
+        # are the security having nothing to give, and any other carried status
+        # is a failure — a 503 whose body happens to say "no data returned" is
+        # worth retrying, not a recorded absence. Substring matching remains
+        # the fallback for errors that carried neither.
+        API.is_no_data_error(error) && return true
+        error isa API.ApiStatusError && return false
         message = lowercase(sprint(showerror, error))
         return occursin("no data returned", message) ||
             occursin("no data retrieved", message) ||
@@ -1077,7 +1078,8 @@ end
                         end
                     catch e
                         e isa InterruptException && rethrow()
-                        if (isa(e, ErrorException) && occursin("No data returned", e.msg)) ||
+                        if isa(e, API.NoDataError) ||
+                           (isa(e, ErrorException) && occursin("No data returned", e.msg)) ||
                            (isa(e, AssertionError) && occursin("No data returned", e.msg))
                             @info "$i : $symbol has no new data"
                         else

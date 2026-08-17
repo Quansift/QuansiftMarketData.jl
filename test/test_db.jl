@@ -54,6 +54,29 @@ function mock_fetch_single_ticker_data(row, latest_dates_dict, latest_market_dat
     return (ticker, mock_data, status)
 end
 
+function _eod_freshness_fixture(dates; fetched_at=nothing, close=100.0)
+    row_count = length(dates)
+    frame = DataFrame(
+        date = collect(dates),
+        close = fill(close, row_count),
+        high = fill(101.0, row_count),
+        low = fill(99.0, row_count),
+        open = fill(100.0, row_count),
+        volume = fill(1_000, row_count),
+        adjClose = fill(close, row_count),
+        adjHigh = fill(101.0, row_count),
+        adjLow = fill(99.0, row_count),
+        adjOpen = fill(100.0, row_count),
+        adjVolume = fill(1_000, row_count),
+        divCash = fill(0.0, row_count),
+        splitFactor = fill(1.0, row_count),
+    )
+    if !isnothing(fetched_at)
+        insertcols!(frame, :fetched_at => fill(fetched_at, row_count))
+    end
+    return frame
+end
+
 @testset "Database Operations" begin
     # Use a temporary database file so tests don't rely on any existing DuckDB
     test_db_path = tempname() * ".duckdb"
@@ -77,6 +100,66 @@ end
 
         # Clean up
         close_duckdb(conn)
+    end
+
+    @testset "Historical data fetched_at migration survives reopen" begin
+        legacy_path = tempname() * ".duckdb"
+        legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)
+        DBInterface.execute(legacy_conn, """
+            CREATE TABLE historical_data (
+                ticker VARCHAR,
+                date DATE
+            )
+        """)
+        DBInterface.execute(
+            legacy_conn,
+            "INSERT INTO historical_data VALUES ('OLD', DATE '2024-01-02')",
+        )
+        DBInterface.close!(legacy_conn)
+
+        migrated_conn = connect_duckdb(legacy_path)
+        migrated = DBInterface.execute(
+            migrated_conn,
+            "SELECT fetched_at FROM historical_data WHERE ticker = 'OLD'",
+        ) |> DataFrame
+        @test only(migrated.fetched_at) == DateTime(1970, 1, 1)
+
+        DBInterface.execute(
+            migrated_conn,
+            "INSERT INTO historical_data (ticker, date) " *
+            "VALUES ('NEW', DATE '2024-01-03')",
+        )
+        defaulted = DBInterface.execute(
+            migrated_conn,
+            "SELECT fetched_at FROM historical_data WHERE ticker = 'NEW'",
+        ) |> DataFrame
+        @test only(defaulted.fetched_at) > DateTime(1970, 1, 1)
+        utc_now = Dates.now(Dates.UTC)
+        @test abs(Dates.value(only(defaulted.fetched_at) - utc_now)) < 10_000
+        fetched_at_default = only((DBInterface.execute(
+            migrated_conn,
+            "SELECT column_default FROM information_schema.columns " *
+            "WHERE table_schema = 'main' " *
+            "AND table_name = 'historical_data' " *
+            "AND column_name = 'fetched_at'",
+        ) |> DataFrame).column_default)
+        @test occursin(
+            "make_timestamp_ms(epoch_ms(current_timestamp))",
+            lowercase(replace(fetched_at_default, " " => "")),
+        )
+        close_duckdb(migrated_conn)
+
+        is_valid, error_msg = verify_duckdb_integrity(legacy_path)
+        @test is_valid
+        @test error_msg === nothing
+
+        reopened_conn = connect_duckdb(legacy_path)
+        reopened = DBInterface.execute(
+            reopened_conn,
+            "SELECT count(*) AS row_count FROM historical_data",
+        ) |> DataFrame
+        @test only(reopened.row_count) == 2
+        close_duckdb(reopened_conn)
     end
 
     @testset "Table Operations" begin
@@ -157,6 +240,7 @@ WHERE exchange IN ('NYSE', 'NASDAQ', 'NYSE ARCA', 'AMEX', 'ASX')
             adjVolume = [1000000, 1100000],
             divCash = [0.0, 0.0],
             splitFactor = [1.0, 1.0],
+            fetched_at = fill(DateTime(2026, 8, 16, 12), 2),
         )
 
         # Test upserting stock data
@@ -281,6 +365,7 @@ end
         adjVolume = rand(1000000:5000000, 20),
         divCash = zeros(20),
         splitFactor = ones(20),
+        fetched_at = fill(DateTime(2026, 8, 16, 12), 20),
     )
 
     # Create the test database
@@ -353,4 +438,99 @@ end
     # Clean up test database
     close_duckdb(conn)
     rm(test_db_path_parallel; force=true)
+end
+
+@testset "PostgreSQL connect retries back off exponentially" begin
+    # A fixed delay retries three times inside 15 seconds, which is short
+    # enough that all three land inside the same failover or restart the
+    # connection was waiting out. Doubling spreads the attempts across it,
+    # and the cap keeps a large configured delay from stalling the run.
+    backoff = QuansiftMarketData.DB.Postgres._connect_retry_delay_seconds
+
+    @test backoff(5, 1) == 5
+    @test backoff(5, 2) == 10
+    @test backoff(5, 3) == 20
+    @test backoff(5, 4) == 40
+
+    # Monotonic, and capped rather than unbounded.
+    delays = [backoff(5, attempt) for attempt in 1:12]
+    @test issorted(delays)
+    @test all(delay -> delay <= 60, delays)
+    @test delays[end] == 60
+
+    # A zero delay stays zero: opting out of waiting must not resurrect it.
+    @test all(attempt -> backoff(0, attempt) == 0, 1:5)
+    # A huge configured delay is clamped, not multiplied.
+    @test backoff(1_000, 1) == 60
+end
+
+@testset "DuckDB EOD upsert preserves the freshest observation" begin
+    conn = connect_duckdb(":memory:")
+    try
+        first_date = Date(2024, 1, 2)
+        second_date = Date(2024, 1, 3)
+        initial_fetched_at = DateTime(2026, 8, 16, 12)
+        initial = _eod_freshness_fixture(
+            [first_date];
+            fetched_at = initial_fetched_at,
+            close = 100.0,
+        )
+        @test upsert_stock_data_bulk(conn, initial, "AAPL") == 1
+
+        mixed = _eod_freshness_fixture(
+            [first_date, second_date];
+            fetched_at = DateTime(2026, 8, 16, 11),
+            close = 90.0,
+        )
+        @test upsert_stock_data_bulk(conn, mixed, "AAPL") == 1
+
+        equal = _eod_freshness_fixture(
+            [first_date];
+            fetched_at = initial_fetched_at,
+            close = 105.0,
+        )
+        @test upsert_stock_data_bulk(conn, equal, "AAPL") == 1
+
+        stored = DBInterface.execute(
+            conn,
+            "SELECT date, close, fetched_at FROM historical_data " *
+            "WHERE ticker = 'AAPL' ORDER BY date",
+        ) |> DataFrame
+        @test stored.date == [first_date, second_date]
+        @test stored.close == [105.0, 90.0]
+        @test stored.fetched_at == [
+            initial_fetched_at,
+            DateTime(2026, 8, 16, 11),
+        ]
+
+        missing_provenance = _eod_freshness_fixture(
+            [Date(2024, 1, 4)];
+            close = 110.0,
+        )
+        for writer in (upsert_stock_data, upsert_stock_data_bulk)
+            caught = try
+                writer(conn, missing_provenance, "AAPL")
+                nothing
+            catch error
+                error
+            end
+            @test caught isa ArgumentError
+            @test sprint(showerror, caught) ==
+                  "ArgumentError: historical_data input is missing required " *
+                  "column: fetched_at"
+        end
+        preserved = DBInterface.execute(
+            conn,
+            "SELECT date, close, fetched_at FROM historical_data " *
+            "WHERE ticker = 'AAPL' ORDER BY date",
+        ) |> DataFrame
+        @test preserved.date == [first_date, second_date]
+        @test preserved.close == [105.0, 90.0]
+        @test preserved.fetched_at == [
+            initial_fetched_at,
+            DateTime(2026, 8, 16, 11),
+        ]
+    finally
+        close_duckdb(conn)
+    end
 end

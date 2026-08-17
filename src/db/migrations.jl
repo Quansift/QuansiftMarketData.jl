@@ -1,4 +1,4 @@
-const POSTGRES_SCHEMA_VERSION = 1
+const POSTGRES_SCHEMA_VERSION = 2
 const POSTGRES_ADVISORY_LOCK_NAMESPACE = (Int32(1414089038), Int32(1))
 const POSTGRES_MIGRATION_TABLE = "tiingojulia_schema_migrations"
 
@@ -181,13 +181,24 @@ function _v1_manifest()
     ))
 end
 
-function _target_manifest()
+function _target_manifest(; eod_fetched_at::Bool=false)
     historical_columns = vcat(
         [
             PostgresColumnManifest("ticker", :varchar, false),
             PostgresColumnManifest("date", :date, false),
         ],
         _HISTORICAL_VALUE_COLUMNS,
+    )
+    eod_fetched_at && push!(
+        historical_columns,
+        PostgresColumnManifest(
+            "fetched_at",
+            :timestamp,
+            false,
+            :none,
+            :none,
+            true,
+        ),
     )
     observation_columns = [
         PostgresColumnManifest("perma_ticker", :varchar, false),
@@ -256,7 +267,8 @@ function _target_manifest()
 end
 
 const POSTGRES_V1_0_MANIFEST = _v1_manifest()
-const POSTGRES_TARGET_MANIFEST = _target_manifest()
+const POSTGRES_V1_TARGET_MANIFEST = _target_manifest()
+const POSTGRES_TARGET_MANIFEST = _target_manifest(eod_fetched_at=true)
 
 function _compatibility_export_manifest()
     historical_columns = vcat(
@@ -325,7 +337,7 @@ function _deployed_export_manifest()
     return PostgresDatabaseManifest(Dict(
         "historical_data" => _relation(
             "historical_data",
-            POSTGRES_TARGET_MANIFEST.relations["historical_data"].columns,
+            POSTGRES_V1_TARGET_MANIFEST.relations["historical_data"].columns,
             [_index("ticker", "date"; unique=true, primary=true)],
         ),
         "us_tickers_filtered" => _relation(
@@ -358,9 +370,10 @@ const POSTGRES_LEGACY_CATALOG = Dict(
     :deployed_first_party_composition => "deployed exporter/scheduler composition",
     :released_1_0_plus_preledger_bootstrap => "released 1.0/current hybrid",
     :current_1_1_preledger => "current pre-ledger schema",
+    :current_1_2_preledger => "current schema with EOD provenance",
 )
 
-const POSTGRES_TARGET_DDL = [
+const POSTGRES_V1_TARGET_DDL = [
     """
     CREATE TABLE IF NOT EXISTS "public"."us_tickers" (
         ticker VARCHAR, exchange VARCHAR, assettype VARCHAR,
@@ -407,6 +420,18 @@ const POSTGRES_TARGET_DDL = [
     """,
 ]
 
+const POSTGRES_TARGET_DDL = let
+    statements = copy(POSTGRES_V1_TARGET_DDL)
+    statements[3] = replace(
+        statements[3],
+        "splitfactor DOUBLE PRECISION," =>
+            "splitfactor DOUBLE PRECISION, " *
+            "fetched_at TIMESTAMP NOT NULL " *
+            "DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),",
+    )
+    statements
+end
+
 const POSTGRES_TARGET_INDEX_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_us_tickers_ticker ON \"public\".\"us_tickers\" (ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_tickers_filtered_ticker ON \"public\".\"us_tickers_filtered\" (ticker)",
@@ -423,7 +448,7 @@ const POSTGRES_TARGET_INDEX_DDL = [
 const POSTGRES_MIGRATION_1_DEFINITION = join(
     vcat(
         ["schema-version=1", "catalog=fresh,v1.0-export,v1.0-hybrid,current-preledger"],
-        strip.(POSTGRES_TARGET_DDL),
+        strip.(POSTGRES_V1_TARGET_DDL),
         POSTGRES_TARGET_INDEX_DDL,
         ["legacy-historical=set-not-null(ticker,date);add-primary-key(ticker,date)"],
     ),
@@ -435,10 +460,37 @@ function migration_checksum(version::Integer, name::AbstractString, definition::
     return bytes2hex(SHA.sha256(codeunits(payload)))
 end
 
+const POSTGRES_MIGRATION_2_DEFINITION = """
+ALTER TABLE "public"."historical_data" ADD COLUMN fetched_at TIMESTAMP;
+UPDATE "public"."historical_data"
+SET fetched_at = TIMESTAMP '1970-01-01 00:00:00'
+WHERE fetched_at IS NULL;
+ALTER TABLE "public"."historical_data"
+ALTER COLUMN fetched_at SET NOT NULL;
+ALTER TABLE "public"."historical_data"
+ALTER COLUMN fetched_at
+SET DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC');
+"""
+
 const POSTGRES_MIGRATIONS = let
-    name = "canonical_v1_baseline"
-    definition = POSTGRES_MIGRATION_1_DEFINITION
-    (PostgresMigration(1, name, definition, migration_checksum(1, name, definition)),)
+    v1_name = "canonical_v1_baseline"
+    v1_definition = POSTGRES_MIGRATION_1_DEFINITION
+    v2_name = "eod_fetched_at_provenance"
+    v2_definition = POSTGRES_MIGRATION_2_DEFINITION
+    (
+        PostgresMigration(
+            1,
+            v1_name,
+            v1_definition,
+            migration_checksum(1, v1_name, v1_definition),
+        ),
+        PostgresMigration(
+            2,
+            v2_name,
+            v2_definition,
+            migration_checksum(2, v2_name, v2_definition),
+        ),
+    )
 end
 
 function normalize_postgres_type(raw::AbstractString)::Symbol
@@ -562,17 +614,17 @@ function _is_released_v1_subset(manifest::PostgresDatabaseManifest)
 end
 
 function _is_preledger_hybrid(manifest::PostgresDatabaseManifest)
-    keys(manifest.relations) == keys(POSTGRES_TARGET_MANIFEST.relations) || return false
+    keys(manifest.relations) == keys(POSTGRES_V1_TARGET_MANIFEST.relations) || return false
     historical = manifest.relations["historical_data"]
     _relation_matches(
         historical,
         POSTGRES_V1_0_MANIFEST.relations["historical_data"],
     ) || return false
-    for name in keys(POSTGRES_TARGET_MANIFEST.relations)
+    for name in keys(POSTGRES_V1_TARGET_MANIFEST.relations)
         name == "historical_data" && continue
         _relation_matches(
             manifest.relations[name],
-            POSTGRES_TARGET_MANIFEST.relations[name],
+            POSTGRES_V1_TARGET_MANIFEST.relations[name],
         ) || return false
     end
     return true
@@ -609,6 +661,8 @@ end
 function classify_preledger_manifest(manifest::PostgresDatabaseManifest)::Symbol
     isempty(manifest.relations) && return :fresh
     _manifest_matches(manifest, POSTGRES_TARGET_MANIFEST) &&
+        return :current_1_2_preledger
+    _manifest_matches(manifest, POSTGRES_V1_TARGET_MANIFEST) &&
         return :current_1_1_preledger
     _manifest_matches(
         manifest,
@@ -630,6 +684,7 @@ bootstrap_phase_order() = [
     :begin,
     :set_search_path,
     :set_lock_timeout,
+    :set_statement_timeout,
     :advisory_lock,
     :create_ledger,
     :read_ledger,
@@ -640,12 +695,19 @@ bootstrap_phase_order() = [
     :commit,
 ]
 
-function validate_migration_options(target_version::Integer, lock_timeout_seconds::Integer)
+function validate_migration_options(
+    target_version::Integer,
+    lock_timeout_seconds::Integer,
+    statement_timeout_seconds::Integer=300,
+)
     1 <= target_version <= POSTGRES_SCHEMA_VERSION || throw(ArgumentError(
         "target_version must be between 1 and $POSTGRES_SCHEMA_VERSION",
     ))
     lock_timeout_seconds >= 0 || throw(ArgumentError(
         "lock_timeout_seconds must be non-negative",
+    ))
+    statement_timeout_seconds >= 0 || throw(ArgumentError(
+        "statement_timeout_seconds must be non-negative",
     ))
     return nothing
 end
@@ -1300,7 +1362,7 @@ function _apply_bootstrap_transition!(conn, catalog_entry::Symbol, manifest)
         _upgrade_compatibility_export!(conn)
     catalog_entry == :deployed_first_party_composition &&
         _upgrade_deployed_export!(conn)
-    for statement in POSTGRES_TARGET_DDL
+    for statement in POSTGRES_V1_TARGET_DDL
         _pg_command(conn, statement)
     end
     if catalog_entry in (
@@ -1326,10 +1388,37 @@ function _apply_bootstrap_transition!(conn, catalog_entry::Symbol, manifest)
     return nothing
 end
 
-function _validate_target_manifest(manifest::PostgresDatabaseManifest)
-    _manifest_matches(manifest, POSTGRES_TARGET_MANIFEST) || throw(PostgresMigrationError(
-        POSTGRES_SCHEMA_VERSION,
-        "canonical_v1_baseline",
+function _apply_eod_fetched_at_migration!(conn)
+    _pg_command(conn, """
+        ALTER TABLE "public"."historical_data"
+        ADD COLUMN fetched_at TIMESTAMP
+    """)
+    _pg_command(conn, """
+        UPDATE "public"."historical_data"
+        SET fetched_at = TIMESTAMP '1970-01-01 00:00:00'
+        WHERE fetched_at IS NULL
+    """)
+    _pg_command(conn, """
+        ALTER TABLE "public"."historical_data"
+        ALTER COLUMN fetched_at SET NOT NULL
+    """)
+    _pg_command(conn, """
+        ALTER TABLE "public"."historical_data"
+        ALTER COLUMN fetched_at
+        SET DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+    """)
+    return nothing
+end
+
+function _validate_target_manifest(
+    manifest::PostgresDatabaseManifest,
+    version::Integer=POSTGRES_SCHEMA_VERSION,
+)
+    expected = version == 1 ? POSTGRES_V1_TARGET_MANIFEST : POSTGRES_TARGET_MANIFEST
+    migration_name = POSTGRES_MIGRATIONS[Int(version)].name
+    _manifest_matches(manifest, expected) || throw(PostgresMigrationError(
+        Int(version),
+        migration_name,
         "PostgreSQL schema does not match the canonical target manifest; take a backup before manual repair",
     ))
     return nothing
@@ -1373,8 +1462,13 @@ function migrate_postgres!(
     conn::LibPQ.Connection;
     target_version::Integer=POSTGRES_SCHEMA_VERSION,
     lock_timeout_seconds::Integer=30,
+    statement_timeout_seconds::Integer=300,
 )::PostgresMigrationResult
-    validate_migration_options(target_version, lock_timeout_seconds)
+    validate_migration_options(
+        target_version,
+        lock_timeout_seconds,
+        statement_timeout_seconds,
+    )
     LibPQ.transaction_status(conn) == LibPQ.libpq_c.PQTRANS_IDLE || throw(ArgumentError(
         "migrate_postgres! requires an idle PostgreSQL connection; caller-owned transactions are not supported",
     ))
@@ -1396,6 +1490,11 @@ function migrate_postgres!(
         )
         _pg_command(
             conn,
+            "SELECT pg_catalog.set_config('statement_timeout', \$1, true)",
+            Any["$(Int(statement_timeout_seconds) * 1000)ms"],
+        )
+        _pg_command(
+            conn,
             "SELECT pg_catalog.pg_advisory_xact_lock(1414089038, 1)",
         )
         _create_ledger!(conn)
@@ -1408,17 +1507,45 @@ function migrate_postgres!(
             "database schema version $from_version is newer than requested target $target_version",
         ))
         applied = Int[]
+        working_version = from_version
 
         if from_version == 0
             legacy_manifest = inspect_postgres_manifest(conn)
             catalog_entry = classify_preledger_manifest(legacy_manifest)
-            current_migration = POSTGRES_MIGRATIONS[1]
-            _apply_bootstrap_transition!(conn, catalog_entry, legacy_manifest)
-            _validate_target_manifest(inspect_postgres_manifest(conn))
-            _insert_migration!(conn, current_migration)
-            push!(applied, 1)
+            if catalog_entry == :current_1_2_preledger
+                target_version >= 2 || throw(PostgresMigrationError(
+                    2,
+                    POSTGRES_MIGRATIONS[2].name,
+                    "pre-ledger schema is newer than requested target version 1",
+                ))
+                _validate_target_manifest(legacy_manifest, 2)
+                for version in 1:2
+                    current_migration = POSTGRES_MIGRATIONS[version]
+                    _insert_migration!(conn, current_migration)
+                    push!(applied, version)
+                end
+                working_version = 2
+            else
+                current_migration = POSTGRES_MIGRATIONS[1]
+                _apply_bootstrap_transition!(conn, catalog_entry, legacy_manifest)
+                _validate_target_manifest(inspect_postgres_manifest(conn), 1)
+                _insert_migration!(conn, current_migration)
+                push!(applied, 1)
+                working_version = 1
+            end
         else
-            _validate_target_manifest(inspect_postgres_manifest(conn))
+            _validate_target_manifest(inspect_postgres_manifest(conn), from_version)
+        end
+
+        if working_version < target_version
+            for version in (working_version + 1):target_version
+                current_migration = POSTGRES_MIGRATIONS[version]
+                version == 2 && _apply_eod_fetched_at_migration!(conn)
+                _validate_target_manifest(inspect_postgres_manifest(conn), version)
+                _insert_migration!(conn, current_migration)
+                push!(applied, version)
+                working_version = version
+            end
         end
 
         _pg_command(conn, "COMMIT")

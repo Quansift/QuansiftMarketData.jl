@@ -167,12 +167,14 @@ module API
     using TimeSeries
     using Dates
     using DotEnv
+    using Random
 
     using ..Config
 
     include("api.jl")
 
     export get_api_key, get_ticker_data, fetch_api_data, load_env_file
+    export ApiStatusError, NoDataError, is_no_data_error
 end
 
 using .API
@@ -235,5 +237,6 @@ export postgres_schema_version, migrate_postgres!
 # Export types and errors
 export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQLConnection
 export SyncFailure, HistoricalCollectionResult, FundamentalCollectionResult, SyncIncompleteError
+export ApiStatusError, NoDataError, is_no_data_error
 
 end # module QuansiftMarketData

@@ -90,17 +90,28 @@ function _sync_failure(
             s"\1[REDACTED]",
     )
     normalized = lowercase(message)
-    inferred_retryable = occursin("timeout", normalized) ||
-        occursin("timed out", normalized) ||
-        occursin("temporary", normalized) ||
-        occursin("connection reset", normalized) ||
-        occursin("rate limit", normalized) ||
-        occursin(r"\b(?:429|5\d\d)\b", normalized)
+    # Prefer the status the error carries. Substring matching is the fallback
+    # for errors that never had one — an injected fetcher, a driver error, a
+    # normalization failure — and is fragile by nature: an upstream wording
+    # change would otherwise silently reclassify every failure of that kind.
+    inferred_retryable = if error isa API.NoDataError
+        # The request succeeded; there is nothing to ask again for.
+        false
+    elseif error isa API.ApiStatusError
+        API._is_retryable_status(error.status)
+    else
+        occursin("timeout", normalized) ||
+            occursin("timed out", normalized) ||
+            occursin("temporary", normalized) ||
+            occursin("connection reset", normalized) ||
+            occursin("rate limit", normalized) ||
+            occursin(r"\b(?:429|5\d\d)\b", normalized)
+    end
     return SyncFailure(
         String(entity),
         stage,
         message,
-        something(retryable, inferred_retryable),
+        stage == :write ? false : something(retryable, inferred_retryable),
     )
 end
 

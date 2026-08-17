@@ -230,11 +230,13 @@ function synthetic_eod_frame(
     ticker_index::Integer,
 )::DataFrame
     payload = synthetic_eod_payload(config, ticker_index)
-    return normalize_eod_prices(
+    frame = normalize_eod_prices(
         payload;
         start_date=first(payload.date),
         end_date=last(payload.date),
     )
+    frame[!, :fetched_at] = fill(DateTime(1970, 1, 1), nrow(frame))
+    return frame
 end
 
 function with_benchmark_tempdir(f::Function)

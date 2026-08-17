@@ -2,14 +2,14 @@ module Parquet
     using DBInterface
     using DataFrames
     using DuckDB
-    using LibPQ
 
     using ..Core: validate_identifier, validate_file_path
     using ..Postgres: PostgreSQLConnection
-    using ..Postgres: connection_options_map, postgres_env_vars, with_temporary_env
+    using ..Postgres: with_attached_postgres
     using ..Schema: quote_postgres_identifier
 
     const PARQUET_SOURCE_VIEW = "_tiingo_parquet_source"
+    const PARQUET_POSTGRES_SNAPSHOT = "_tiingo_postgres_snapshot"
     const SUPPORTED_COMPRESSIONS = Set([:zstd, :snappy, :gzip, :uncompressed])
 
     struct ParquetWriteResult
@@ -197,9 +197,7 @@ module Parquet
         qualified_source = "\"postgres_source\".\"public\".$quoted_table"
         compression_sql = validated_compression(compression)
         conn = DBInterface.connect(DuckDB.DB)
-        attached = false
         try
-            env_vars = postgres_env_vars(connection_options_map(pg_conn))
             try
                 DBInterface.execute(conn, "LOAD postgres")
             catch error
@@ -210,22 +208,31 @@ module Parquet
                     "DuckDB error: $(sprint(showerror, error))",
                 ))
             end
-            with_temporary_env(env_vars) do
+
+            # One PostgreSQL SELECT statement owns one MVCC snapshot. Materialize
+            # that scan locally before count/schema/COPY so later verification
+            # cannot observe different commits and SELECT-only roles remain valid.
+            with_attached_postgres(
+                conn,
+                pg_conn;
+                alias="postgres_source",
+                read_only=true,
+            ) do
                 DBInterface.execute(
                     conn,
-                    "ATTACH '' AS postgres_source (TYPE postgres, READ_ONLY)",
+                    "CREATE TEMP TABLE $PARQUET_POSTGRES_SNAPSHOT " *
+                    "AS SELECT * FROM $qualified_source",
                 )
             end
-            attached = true
 
             source_rows = DBInterface.execute(
                 conn,
-                "SELECT count(*) AS row_count FROM $qualified_source",
+                "SELECT count(*) AS row_count FROM $PARQUET_POSTGRES_SNAPSHOT",
             ) |> DataFrame
             expected_rows = Int(source_rows[1, :row_count])
             source_schema = DBInterface.execute(
                 conn,
-                "DESCRIBE SELECT * FROM $qualified_source",
+                "DESCRIBE SELECT * FROM $PARQUET_POSTGRES_SNAPSHOT",
             ) |> DataFrame
             expected_columns = String.(source_schema.column_name)
 
@@ -238,18 +245,12 @@ module Parquet
                 DBInterface.execute(
                     conn,
                     """
-                    COPY (SELECT * FROM $qualified_source)
+                    COPY (SELECT * FROM $PARQUET_POSTGRES_SNAPSHOT)
                     TO '$temporary' (FORMAT PARQUET, COMPRESSION $compression_sql)
                     """,
                 )
             end
         finally
-            if attached
-                try
-                    DBInterface.execute(conn, "DETACH postgres_source")
-                catch
-                end
-            end
             try
                 DBInterface.close!(conn)
             catch

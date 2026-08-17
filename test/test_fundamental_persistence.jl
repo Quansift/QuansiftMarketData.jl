@@ -5,6 +5,7 @@ using DuckDB
 using DBInterface
 using QuansiftMarketData
 using QuansiftMarketData.DB.Schema: generate_create_table_query
+using QuansiftMarketData.DB.Operations: validate_security_observation_keys
 
 function _fundamental_metrics_fixture(metric_dates)
     row_count = length(metric_dates)
@@ -125,6 +126,43 @@ end
     @test !only(result.failures).retryable
 end
 
+@testset "Fundamental metric writer transient failures are not retryable" begin
+    as_of = Date(2024, 1, 2)
+    meta_payload = [(
+        permaTicker = "perm-aapl",
+        ticker = "AAPL",
+        isActive = true,
+        isADR = false,
+        dailyLastUpdated = string(as_of),
+    )]
+    universe_payload = [(
+        ticker = "AAPL",
+        exchange = "NASDAQ",
+        assetType = "Stock",
+        startDate = "2024-01-01",
+        endDate = string(as_of),
+    )]
+
+    result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        initial_start_date = Date(2024, 1, 1),
+        daily_fetcher = (perma_ticker; kwargs...) -> [
+            (date = "2024-01-02", marketCap = 10.0e9),
+        ],
+        metric_writer = (_, _) -> error("connection reset while writing"),
+    )
+
+    @test result.failed == ["perm-aapl"]
+    @test isempty(result.updated)
+    failure = only(result.failures)
+    @test failure.stage == :write
+    @test !failure.retryable
+    @test occursin("connection reset while writing", failure.message)
+end
+
 @testset "Daily Metrics database keys and generic Parquet compatibility" begin
     duplicate = _fundamental_metrics_fixture(fill(Date(2024, 1, 2), 2))
     duplicate.perma_ticker .= "api_key=duplicate-secret"
@@ -204,6 +242,47 @@ end
     end
 end
 
+@testset "Security observation persistence keys fail before mutation" begin
+    observed_at = DateTime(2026, 7, 19, 12)
+    duplicate = DataFrame(
+        perma_ticker = fill("perm-duplicate", 2),
+        observed_at = fill(observed_at, 2),
+        ticker = ["DUP", "DUP.NEW"],
+        is_active = fill(true, 2),
+        is_adr = Union{Missing,Bool}[false, false],
+        daily_last_updated = Union{Missing,DateTime}[missing, missing],
+        exchange = Union{Missing,String}["NYSE", "NYSE"],
+        asset_type = Union{Missing,String}["Stock", "Stock"],
+        price_coverage_start = Union{Missing,Date}[missing, missing],
+        price_coverage_end = Union{Missing,Date}[missing, missing],
+        is_leveraged = Union{Missing,Bool}[missing, missing],
+        join_status = fill("duplicate_perma_ticker", 2),
+    )
+
+    duplicate_error = try
+        validate_security_observation_keys(duplicate)
+        nothing
+    catch error
+        error
+    end
+    @test duplicate_error isa ArgumentError
+    @test sprint(showerror, duplicate_error) ==
+        "ArgumentError: security_observations contains duplicate persistence " *
+        "key (perma_ticker, observed_at) at rows: 2"
+
+    conn = connect_duckdb(":memory:")
+    try
+        @test_throws ArgumentError upsert_security_observations(conn, duplicate)
+        stored = DBInterface.execute(
+            conn,
+            "SELECT count(*) AS row_count FROM security_observations",
+        ) |> DataFrame
+        @test only(stored.row_count) == 0
+    finally
+        close_duckdb(conn)
+    end
+end
+
 @testset "Daily metrics upsert supports nullable and as-of-compatible facts" begin
     conn = connect_duckdb(":memory:")
     try
@@ -246,6 +325,27 @@ end
         @test ismissing(stored.market_cap[3])
         @test ismissing(stored.enterprise_value[3])
         @test ismissing(stored.pe_ratio[3])
+
+        newer = revised[[1], :]
+        newer.market_cap[1] = 10.75e9
+        newer.fetched_at[1] = DateTime(2026, 7, 19, 13)
+        newer.source_revision[1] = "rev-newer"
+        @test upsert_fundamental_daily_metrics(conn, newer) == 1
+
+        stale = copy(newer)
+        stale.market_cap[1] = 9.0e9
+        stale.fetched_at[1] = DateTime(2026, 7, 19, 11)
+        stale.source_revision[1] = "rev-stale"
+        @test upsert_fundamental_daily_metrics(conn, stale) == 0
+
+        preserved = DBInterface.execute(
+            conn,
+            "SELECT market_cap, fetched_at, source_revision " *
+            "FROM fundamental_daily_metrics WHERE metric_date = DATE '2024-01-31'",
+        ) |> DataFrame
+        @test only(preserved.market_cap) == 10.75e9
+        @test only(preserved.fetched_at) == DateTime(2026, 7, 19, 13)
+        @test only(preserved.source_revision) == "rev-newer"
 
         as_of = Date(2024, 12, 31)
         observable = DBInterface.execute(

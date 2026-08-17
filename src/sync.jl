@@ -3,6 +3,52 @@ using ..DB.Operations
 using ..API: get_ticker_data, get_api_key
 using ..QuansiftMarketData: HistoricalCollectionResult, SyncFailure, _finish_collection, _sync_failure
 
+const _MAX_TICKER_ZIP_BYTES = 128 * 1024 * 1024
+const _MAX_TICKER_CSV_BYTES = 512 * 1024 * 1024
+const _TICKER_COPY_CHUNK_BYTES = 64 * 1024
+const _TICKER_READ_TIMEOUT_SECONDS = 30
+
+function _copy_with_byte_limit!(
+    output::IO,
+    input::IO,
+    max_bytes::Int,
+    label::String,
+)::Int
+    copied = 0
+    while !eof(input)
+        remaining = max_bytes - copied
+        read_bytes = remaining >= _TICKER_COPY_CHUNK_BYTES ?
+            _TICKER_COPY_CHUNK_BYTES :
+            remaining + 1
+        chunk = read(input, read_bytes)
+        length(chunk) <= remaining || error("$label exceeds $max_bytes bytes")
+        copied += length(chunk)
+        write(output, chunk)
+    end
+    return copied
+end
+
+function _download_ticker_zip_bounded(
+    url::String,
+    path::String,
+    max_bytes::Int,
+    readtimeout::Int,
+)::String
+    open(path, "w") do output
+        HTTP.open("GET", url; readtimeout) do stream
+            response = HTTP.startread(stream)
+            content_length = tryparse(
+                Int,
+                HTTP.header(response, "Content-Length", ""),
+            )
+            !isnothing(content_length) && content_length > max_bytes &&
+                error("ZIP archive exceeds $max_bytes bytes")
+            _copy_with_byte_limit!(output, stream, max_bytes, "ZIP archive")
+        end
+    end
+    return path
+end
+
 function _canonical_ticker_universe_frame()::DataFrame
     return DataFrame(
         ticker = String[],
@@ -206,7 +252,13 @@ end
         zip_file_path::String = Config.DB.ZIP_FILE_PATH,
         csv_file::String = Config.DB.DEFAULT_CSV_FILE;
         downloader::Function = HTTP.download,
+        max_zip_bytes::Int = _MAX_TICKER_ZIP_BYTES,
+        max_csv_bytes::Int = _MAX_TICKER_CSV_BYTES,
+        readtimeout::Int = _TICKER_READ_TIMEOUT_SECONDS,
     )
+        max_zip_bytes > 0 || throw(ArgumentError("max_zip_bytes must be positive"))
+        max_csv_bytes > 0 || throw(ArgumentError("max_csv_bytes must be positive"))
+        readtimeout > 0 || throw(ArgumentError("readtimeout must be positive"))
         abspath(zip_file_path) == abspath(csv_file) &&
             throw(ArgumentError("ZIP and CSV destinations must be different files"))
         zip_dir = dirname(abspath(zip_file_path))
@@ -219,17 +271,35 @@ end
             mktempdir(csv_dir; prefix=".tiingojulia-tickers-csv-") do csv_temporary_directory
                 temporary_zip = joinpath(zip_temporary_directory, "download.zip")
                 temporary_csv = joinpath(csv_temporary_directory, target_basename)
-                downloader(url, temporary_zip)
+                if downloader === HTTP.download
+                    _download_ticker_zip_bounded(
+                        url,
+                        temporary_zip,
+                        max_zip_bytes,
+                        readtimeout,
+                    )
+                else
+                    downloader(url, temporary_zip)
+                end
                 isfile(temporary_zip) && filesize(temporary_zip) > 0 ||
                     error("Ticker download did not produce a non-empty ZIP archive")
+                filesize(temporary_zip) <= max_zip_bytes ||
+                    error("ZIP archive exceeds $max_zip_bytes bytes")
 
                 found = false
                 reader = ZipFile.Reader(temporary_zip)
                 try
                     for file in reader.files
                         if basename(file.name) == target_basename
+                            file.uncompressedsize <= max_csv_bytes ||
+                                error("CSV entry exceeds $max_csv_bytes bytes")
                             open(temporary_csv, "w") do io
-                                write(io, read(file))
+                                _copy_with_byte_limit!(
+                                    io,
+                                    file,
+                                    max_csv_bytes,
+                                    "CSV entry",
+                                )
                             end
                             found = true
                             break
@@ -248,6 +318,7 @@ end
                 isempty(missing_columns) || error(
                     "Downloaded ticker CSV is missing required columns: $(join(missing_columns, ", "))",
                 )
+                nrow(parsed) > 0 || error("Downloaded ticker CSV contains no rows")
 
                 Base.Filesystem.rename(temporary_zip, zip_file_path)
                 Base.Filesystem.rename(temporary_csv, csv_file)
@@ -386,7 +457,8 @@ end
         max_concurrent::Int = 10,
         add_missing::Bool = true,
         latest_dates_df::Union{DataFrame,Nothing} = nothing,
-        reference_ticker::String = "SPY"
+        reference_ticker::String = "SPY",
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
     )
         # Dispatch to parallel or sequential version
         if use_parallel
@@ -394,13 +466,15 @@ end
                 conn, tickers, api_key;
                 batch_size=batch_size,
                 max_concurrent=max_concurrent,
-                add_missing=add_missing
+                add_missing=add_missing,
+                failed_tickers,
             )
         else
             return update_historical_sequential_impl(
                 conn, tickers, api_key;
                 add_missing=add_missing,
-                latest_dates_df=latest_dates_df
+                latest_dates_df=latest_dates_df,
+                failed_tickers,
             )
         end
     end
@@ -587,6 +661,13 @@ end
     end
 
     function _is_unavailable_historical_error(error)::Bool
+        # A typed error is authoritative: `NoDataError` and a 404/410 status
+        # are the security having nothing to give, and any other carried status
+        # is a failure — a 503 whose body happens to say "no data returned" is
+        # worth retrying, not a recorded absence. Substring matching remains
+        # the fallback for errors that carried neither.
+        API.is_no_data_error(error) && return true
+        error isa API.ApiStatusError && return false
         message = lowercase(sprint(showerror, error))
         return occursin("no data returned", message) ||
             occursin("no data retrieved", message) ||
@@ -701,9 +782,17 @@ end
     Collect Tiingo EOD batches without choosing a database backend. `fetcher`
     receives the same arguments as `get_ticker_data`. When supplied, `writer`
     is called as `writer(ticker, frame)` and must return the number of rows it
-    persisted. Strict mode processes every ticker and then throws
+    persisted. Every writer frame carries the call-scoped `fetched_at`,
+    including frames recovered by a retry sweep. Strict mode processes every
+    ticker and then throws
     `SyncIncompleteError` when one or more fetch, normalization, or write
     operations failed.
+    `retry_rounds` (default 0) sweeps tickers whose FETCH failed with a
+    retryable classification after the main pass; recovered tickers leave
+    `failed` and `failures`. It is opt-in because this entrypoint is
+    sink-neutral and reports complete failure records for the caller to act
+    on. Normalization failures are deterministic and write failures must not
+    be re-driven, so neither is ever swept.
     """
     function collect_historical(
         tickers::DataFrame,
@@ -714,7 +803,11 @@ end
         writer = nothing,
         continue_on_error::Bool = true,
         strict::Bool = false,
+        retry_rounds::Int = 0,
+        fetched_at::DateTime = Dates.now(Dates.UTC),
     )::HistoricalCollectionResult
+        retry_rounds >= 0 ||
+            throw(ArgumentError("retry_rounds must be non-negative"))
         latest_dates_lookup = _historical_latest_dates(latest_dates)
         attempted = String[]
         updated = String[]
@@ -724,19 +817,51 @@ end
         failures = SyncFailure[]
         written_rows = 0
 
-        for (row_index, row) in enumerate(eachrow(tickers))
+        function record_failure!(
+            failure::SyncFailure,
+            failure_index::Union{Int,Nothing},
+        )::Int
+            if isnothing(failure_index)
+                push!(failed, failure.entity)
+                push!(failures, failure)
+                return length(failures)
+            end
+            failures[failure_index] = failure
+            return failure_index
+        end
+
+        # Tickers whose FETCH failed with a retryable classification, swept
+        # after the main pass when `retry_rounds > 0`. Normalization failures
+        # are deterministic and write failures must not be re-driven, so
+        # neither is ever queued here.
+        retry_queue = Tuple{Int,DataFrameRow,Int}[]
+        recovered_failure_indices = Set{Int}()
+
+        function record_recovery!(failure_index::Union{Int,Nothing})
+            !isnothing(failure_index) && push!(recovered_failure_indices, failure_index)
+            return nothing
+        end
+
+        function process_row!(
+            row_index,
+            row,
+            failure_index::Union{Int,Nothing},
+        )
+            sweeping = !isnothing(failure_index)
             symbol = _historical_row_label(row_index)
             try
                 symbol = _historical_symbol(row)
             catch error
                 error isa InterruptException && rethrow()
-                push!(attempted, symbol)
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                sweeping || push!(attempted, symbol)
+                record_failure!(
+                    _sync_failure(symbol, :normalize, error; retryable=false),
+                    failure_index,
+                )
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
-            push!(attempted, symbol)
+            sweeping || push!(attempted, symbol)
 
             ticker_end_date = try
                 _historical_date(
@@ -747,18 +872,22 @@ end
                 )
             catch error
                 error isa InterruptException && rethrow()
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                record_failure!(
+                    _sync_failure(symbol, :normalize, error; retryable=false),
+                    failure_index,
+                )
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
             latest_date = get(latest_dates_lookup, symbol, nothing)
             if !isnothing(latest_date) && latest_date >= ticker_end_date
                 push!(unchanged, symbol)
-                continue
+                record_recovery!(failure_index)
+                return nothing
             elseif isnothing(latest_date) && !add_missing
                 push!(unavailable, symbol)
-                continue
+                record_recovery!(failure_index)
+                return nothing
             end
 
             start_date = if isnothing(latest_date)
@@ -771,13 +900,12 @@ end
                     )
                 catch error
                     error isa InterruptException && rethrow()
-                    push!(failed, symbol)
-                    push!(
-                        failures,
+                    record_failure!(
                         _sync_failure(symbol, :normalize, error; retryable=false),
+                        failure_index,
                     )
                     (!continue_on_error && !strict) && rethrow()
-                    continue
+                    return nothing
                 end
             else
                 latest_date + Day(1)
@@ -797,11 +925,12 @@ end
                 error isa InterruptException && rethrow()
                 if _is_unavailable_historical_error(error)
                     push!(unavailable, symbol)
-                    continue
+                    record_recovery!(failure_index)
+                    return nothing
                 end
-                push!(failed, symbol)
                 failure = _sync_failure(symbol, :fetch, error)
-                push!(failures, failure)
+                failure_index = record_failure!(failure, failure_index)
+                failure.retryable && push!(retry_queue, (row_index, row, failure_index))
                 (!continue_on_error && !strict) && rethrow()
                 @warn(
                     "Historical fetch failed for $symbol; continuing",
@@ -809,7 +938,7 @@ end
                     failure_message=failure.message,
                     retryable=failure.retryable,
                 )
-                continue
+                return nothing
             end
 
             frame = try
@@ -820,14 +949,18 @@ end
                 )
             catch error
                 error isa InterruptException && rethrow()
-                push!(failed, symbol)
-                push!(failures, _sync_failure(symbol, :normalize, error; retryable=false))
+                record_failure!(
+                    _sync_failure(symbol, :normalize, error; retryable=false),
+                    failure_index,
+                )
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
+            frame[!, :fetched_at] = fill(fetched_at, nrow(frame))
             if nrow(frame) == 0
                 push!(isnothing(latest_date) ? unavailable : unchanged, symbol)
-                continue
+                record_recovery!(failure_index)
+                return nothing
             end
 
             if !isnothing(writer)
@@ -837,16 +970,43 @@ end
                         throw(ArgumentError("writer must return an integer row count"))
                     rows >= 0 ||
                         throw(ArgumentError("writer row count must be non-negative"))
+                    rows <= nrow(frame) || throw(ArgumentError(
+                        "writer row count must not exceed frame row count",
+                    ))
                     written_rows += rows
                 catch error
                     error isa InterruptException && rethrow()
-                    push!(failed, symbol)
-                    push!(failures, _sync_failure(symbol, :write, error))
+                    record_failure!(
+                        _sync_failure(symbol, :write, error; retryable=false),
+                        failure_index,
+                    )
                     (!continue_on_error && !strict) && rethrow()
-                    continue
+                    return nothing
                 end
             end
             push!(updated, symbol)
+            record_recovery!(failure_index)
+            return nothing
+        end
+
+        for (row_index, row) in enumerate(eachrow(tickers))
+            process_row!(row_index, row, nothing)
+        end
+
+        for round in 1:retry_rounds
+            isempty(retry_queue) && break
+            round_queue = retry_queue
+            # Rebinding is what makes a repeat failure land in the NEXT
+            # round's queue instead of the one currently being drained.
+            retry_queue = Tuple{Int,DataFrameRow,Int}[]
+            @info "Sweeping retryable historical fetch failures" round tickers=length(round_queue)
+            for (row_index, row, failure_index) in round_queue
+                process_row!(row_index, row, failure_index)
+            end
+        end
+        for failure_index in sort!(collect(recovered_failure_indices); rev=true)
+            deleteat!(failed, failure_index)
+            deleteat!(failures, failure_index)
         end
 
         result = HistoricalCollectionResult(
@@ -877,7 +1037,8 @@ end
         tickers::DataFrame,
         api_key::String;
         add_missing::Bool = true,
-        latest_dates_df::Union{DataFrame,Nothing} = nothing
+        latest_dates_df::Union{DataFrame,Nothing} = nothing,
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
     )
         # Only compute latest dates if not provided (optimization for batch processing)
         if latest_dates_df === nothing
@@ -917,7 +1078,8 @@ end
                         end
                     catch e
                         e isa InterruptException && rethrow()
-                        if (isa(e, ErrorException) && occursin("No data returned", e.msg)) ||
+                        if isa(e, API.NoDataError) ||
+                           (isa(e, ErrorException) && occursin("No data returned", e.msg)) ||
                            (isa(e, AssertionError) && occursin("No data returned", e.msg))
                             @info "$i : $symbol has no new data"
                         else
@@ -932,6 +1094,10 @@ end
         end
 
         log_update_results(missing_tickers, updated_tickers, error_tickers, add_missing)
+        # `missing_tickers` mixes intentional skips with genuine errors, so a
+        # caller gating an export on its length would fire during entirely
+        # normal operation. `failed_tickers` carries the errors alone.
+        isnothing(failed_tickers) || append!(failed_tickers, error_tickers)
         return (updated_tickers, missing_tickers)
     end
 
@@ -941,7 +1107,9 @@ end
         api_key::String = get_api_key();
         batch_size::Int = 50,
         max_concurrent::Int = 10,
-        add_missing::Bool = true
+        add_missing::Bool = true,
+        failed_tickers::Union{Nothing,Vector{String}} = nothing,
+        fetched_at::DateTime = Dates.now(Dates.UTC),
     )
         @info "Starting parallel historical data update" total_tickers=nrow(tickers) batch_size max_concurrent
 
@@ -1011,6 +1179,8 @@ end
                                     if add_missing
                                         ticker_data = get_ticker_data(row; api_key=api_key)
                                         if !isempty(ticker_data)
+                                            ticker_data[!, :fetched_at] =
+                                                fill(fetched_at, nrow(ticker_data))
                                             put!(write_queue, (ticker, ticker_data, true, nothing))
                                         else
                                             put!(write_queue, (ticker, nothing, false, ErrorException("No data retrieved")))
@@ -1027,6 +1197,8 @@ end
                                             api_key = api_key
                                         )
                                         if !isempty(ticker_data)
+                                            ticker_data[!, :fetched_at] =
+                                                fill(fetched_at, nrow(ticker_data))
                                             put!(write_queue, (ticker, ticker_data, true, nothing))
                                         else
                                             put!(write_queue, (ticker, nothing, false, ErrorException("No new data")))
@@ -1064,6 +1236,10 @@ end
                 if !success
                     push!(batch_missing, ticker)
                     if !isnothing(error)
+                        # `batch_missing` also collects tickers skipped on
+                        # purpose (add_missing=false), so only an attached
+                        # error marks a genuine failure.
+                        isnothing(failed_tickers) || push!(failed_tickers, ticker)
                         @warn "Failed to update ticker: $ticker" exception=error
                     end
                 end

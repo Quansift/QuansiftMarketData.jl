@@ -175,7 +175,18 @@ function live_canary_main()::Int
         return report.success ? 0 : 1
     catch error
         error isa InterruptException && rethrow()
-        println(stderr, "status=FAILED")
+        # The message is deliberately NOT printed: it can quote the offending
+        # configuration value, and this runs in CI logs. But a bare
+        # "status=FAILED" made an expired key, an outage and a malformed env
+        # var indistinguishable, which defeats the point of a canary. The
+        # exception type — and, for an HTTP failure, the status — separate them
+        # while carrying none of the input.
+        reason = if error isa QuansiftMarketData.API.ApiStatusError
+            "http_$(error.status)"
+        else
+            string(nameof(typeof(error)))
+        end
+        println(stderr, "status=FAILED reason=$reason")
         return 1
     end
 end

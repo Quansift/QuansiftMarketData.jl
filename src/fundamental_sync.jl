@@ -120,11 +120,17 @@ function _required_payload_bool(row::DataFrameRow, aliases::Tuple, field_name::S
     return value
 end
 
-function _count_values(values)::Dict{String,Int}
+function _canonical_perma_ticker(value)::String
+    normalized = strip(String(value))
+    isempty(normalized) && throw(ArgumentError("permaTicker cannot be empty"))
+    return normalized
+end
+
+function _count_perma_tickers(values)::Dict{String,Int}
     counts = Dict{String,Int}()
     for value in values
-        ismissing(value) && continue
-        key = String(value)
+        (ismissing(value) || isnothing(value)) && continue
+        key = _canonical_perma_ticker(value)
         counts[key] = get(counts, key, 0) + 1
     end
     return counts
@@ -171,8 +177,23 @@ function normalize_security_observations(
     else
         throw(ArgumentError("meta payload is missing permaTicker"))
     end
-    meta_perma_counts = _count_values(perma_values)
-    meta_ticker_counts = _count_tickers(source.ticker)
+    # Ambiguity is decided among the active securities only. `!is_active` is the
+    # first branch below, so an inactive row is already excluded and can never be
+    # the identity this one is confused with — counting it anyway disqualifies a
+    # live security for sharing a symbol with its own delisted predecessor.
+    # Measured 2026-08-15: PARA had three meta rows and MSGY two, with exactly one
+    # active each, and both had been dropped from the sync for three weeks. Their
+    # market caps simply stopped advancing, with nothing reporting it.
+    active_flags = [
+        _required_payload_bool(row, (:isActive, :is_active), "isActive")
+        for row in eachrow(source)
+    ]
+    meta_perma_counts = _count_perma_tickers(
+        value for (value, active) in zip(perma_values, active_flags) if active
+    )
+    meta_ticker_counts = _count_tickers(
+        value for (value, active) in zip(source.ticker, active_flags) if active
+    )
 
     universe_ticker_counts = :ticker in propertynames(universe) ?
         _count_tickers(universe.ticker) : Dict{String,Int}()
@@ -188,10 +209,12 @@ function normalize_security_observations(
 
     result = _canonical_security_observation_frame()
     for row in eachrow(source)
-        perma_ticker = _required_payload_string(
-            row,
-            (:permaTicker, :perma_ticker),
-            "permaTicker",
+        perma_ticker = _canonical_perma_ticker(
+            _required_payload_string(
+                row,
+                (:permaTicker, :perma_ticker),
+                "permaTicker",
+            ),
         )
         ticker = _canonical_ticker(_required_payload_string(row, (:ticker,), "ticker"))
         is_active = _required_payload_bool(row, (:isActive, :is_active), "isActive")
@@ -249,7 +272,7 @@ function normalize_security_observations(
 end
 
 """
-    normalize_fundamental_daily_metrics(payload, perma_ticker; fetched_at=Dates.now())
+    normalize_fundamental_daily_metrics(payload, perma_ticker; fetched_at=Dates.now(Dates.UTC))
 
 Normalize a Tiingo Daily Metrics payload. Historical `available_at` is kept
 missing unless the individual payload row explicitly supplies `availableAt`.
@@ -257,7 +280,7 @@ missing unless the individual payload row explicitly supplies `availableAt`.
 function normalize_fundamental_daily_metrics(
     payload,
     perma_ticker::String;
-    fetched_at::DateTime = Dates.now(),
+    fetched_at::DateTime = Dates.now(Dates.UTC),
 )::DataFrame
     normalized_perma_ticker = strip(perma_ticker)
     isempty(normalized_perma_ticker) && throw(ArgumentError("perma_ticker cannot be empty"))
@@ -332,20 +355,6 @@ function _eligible_backfill_rows(observations::DataFrame)::DataFrame
     end
     sort!(eligible, [:perma_ticker, :observed_at])
 
-    seen_perma = Set{String}()
-    seen_ticker = Set{String}()
-    for row in eachrow(eligible)
-        perma_ticker = String(row.perma_ticker)
-        ticker = String(row.ticker)
-        perma_ticker in seen_perma && throw(ArgumentError(
-            "multiple eligible rows for permaTicker $perma_ticker",
-        ))
-        ticker in seen_ticker && throw(ArgumentError(
-            "multiple eligible rows for ticker $ticker",
-        ))
-        push!(seen_perma, perma_ticker)
-        push!(seen_ticker, ticker)
-    end
     return eligible
 end
 
@@ -369,6 +378,10 @@ all supported response fields. Use `initial_start_date` or `columns` to bound
 new-security requests explicitly.
 Strict mode processes every eligible security and then throws
 `SyncIncompleteError` if any required operation failed.
+`retry_rounds` (default 0) sweeps securities whose FETCH failed with a
+retryable classification after the main pass; recovered securities leave
+`failed` and `failures`. It is opt-in because this entrypoint is sink-neutral
+and reports complete failure records for the caller to act on.
 """
 function collect_fundamentals(
     meta_payload,
@@ -379,13 +392,16 @@ function collect_fundamentals(
     initial_start_date::Union{Date,Nothing} = nothing,
     columns::Union{Nothing,AbstractVector{<:AbstractString}} = nothing,
     observed_at::DateTime = Dates.now(),
-    fetched_at::DateTime = Dates.now(),
+    fetched_at::DateTime = Dates.now(Dates.UTC),
     daily_fetcher = get_daily_fundamental,
     observation_writer = nothing,
     metric_writer = nothing,
     continue_on_error::Bool = true,
     strict::Bool = false,
+    retry_rounds::Int = 0,
 )::FundamentalCollectionResult
+    retry_rounds >= 0 ||
+        throw(ArgumentError("retry_rounds must be non-negative"))
     !isnothing(initial_start_date) && initial_start_date > as_of &&
         throw(ArgumentError("initial_start_date must be on or before as_of"))
     normalized_watermarks = Dict(
@@ -410,6 +426,19 @@ function collect_fundamentals(
     observation_rows = 0
     metric_rows = 0
 
+    function record_failure!(
+        failure::SyncFailure,
+        failure_index::Union{Int,Nothing},
+    )::Int
+        if isnothing(failure_index)
+            push!(failed, failure.entity)
+            push!(failures, failure)
+            return length(failures)
+        end
+        failures[failure_index] = failure
+        return failure_index
+    end
+
     if !isnothing(observation_writer)
         try
             rows = observation_writer(observations)
@@ -417,6 +446,9 @@ function collect_fundamentals(
                 throw(ArgumentError("observation_writer must return an integer row count"))
             rows >= 0 ||
                 throw(ArgumentError("observation_writer row count must be non-negative"))
+            rows <= nrow(observations) || throw(ArgumentError(
+                "observation_writer row count must not exceed frame row count",
+            ))
             observation_rows = rows
         catch error
             error isa InterruptException && rethrow()
@@ -427,16 +459,33 @@ function collect_fundamentals(
         end
     end
 
-    for security in eachrow(eligible_securities)
+    # Securities whose FETCH failed with a retryable classification, swept
+    # after the main pass when `retry_rounds > 0`. Write and normalization
+    # failures are never swept — a normalization failure is deterministic, and
+    # re-driving writes is what turns one dead sink into a full-run cascade.
+    retry_queue = Tuple{DataFrameRow,Int}[]
+    recovered_failure_indices = Set{Int}()
+
+    function record_recovery!(failure_index::Union{Int,Nothing})
+        !isnothing(failure_index) && push!(recovered_failure_indices, failure_index)
+        return nothing
+    end
+
+    function process_security!(
+        security,
+        failure_index::Union{Int,Nothing},
+    )
+        sweeping = !isnothing(failure_index)
         perma_ticker = String(security.perma_ticker)
-        push!(attempted, perma_ticker)
+        sweeping || push!(attempted, perma_ticker)
         has_watermark = haskey(normalized_watermarks, perma_ticker)
         start_date = has_watermark ?
             normalized_watermarks[perma_ticker] + Day(1) :
             initial_start_date
         if !isnothing(start_date) && start_date > as_of
             push!(unchanged, perma_ticker)
-            continue
+            record_recovery!(failure_index)
+            return nothing
         end
 
         payload = try
@@ -450,10 +499,11 @@ function collect_fundamentals(
             )
         catch error
             error isa InterruptException && rethrow()
-            push!(failed, perma_ticker)
-            push!(failures, _sync_failure(perma_ticker, :fetch, error))
+            failure = _sync_failure(perma_ticker, :fetch, error)
+            failure_index = record_failure!(failure, failure_index)
+            failure.retryable && push!(retry_queue, (security, failure_index))
             (!continue_on_error && !strict) && rethrow()
-            continue
+            return nothing
         end
 
         metrics = try
@@ -464,15 +514,17 @@ function collect_fundamentals(
             )
         catch error
             error isa InterruptException && rethrow()
-            push!(failed, perma_ticker)
-            push!(failures, _sync_failure(
-                perma_ticker,
-                :normalize,
-                error;
-                retryable = false,
-            ))
+            record_failure!(
+                _sync_failure(
+                    perma_ticker,
+                    :normalize,
+                    error;
+                    retryable = false,
+                ),
+                failure_index,
+            )
             (!continue_on_error && !strict) && rethrow()
-            continue
+            return nothing
         end
         if nrow(metrics) > 0
             in_requested_range = metrics.metric_date .<= as_of
@@ -483,7 +535,8 @@ function collect_fundamentals(
         end
         if nrow(metrics) == 0
             push!(has_watermark ? unchanged : unavailable, perma_ticker)
-            continue
+            record_recovery!(failure_index)
+            return nothing
         end
 
         if !isnothing(metric_writer)
@@ -493,16 +546,43 @@ function collect_fundamentals(
                     throw(ArgumentError("metric_writer must return an integer row count"))
                 rows >= 0 ||
                     throw(ArgumentError("metric_writer row count must be non-negative"))
+                rows <= nrow(metrics) || throw(ArgumentError(
+                    "metric_writer row count must not exceed frame row count",
+                ))
                 metric_rows += rows
             catch error
                 error isa InterruptException && rethrow()
-                push!(failed, perma_ticker)
-                push!(failures, _sync_failure(perma_ticker, :write, error))
+                record_failure!(
+                    _sync_failure(perma_ticker, :write, error; retryable=false),
+                    failure_index,
+                )
                 (!continue_on_error && !strict) && rethrow()
-                continue
+                return nothing
             end
         end
         push!(updated, perma_ticker)
+        record_recovery!(failure_index)
+        return nothing
+    end
+
+    for security in eachrow(eligible_securities)
+        process_security!(security, nothing)
+    end
+
+    for round in 1:retry_rounds
+        isempty(retry_queue) && break
+        round_queue = retry_queue
+        # Rebinding is what makes a repeat failure land in the NEXT round's
+        # queue instead of the one currently being drained.
+        retry_queue = Tuple{DataFrameRow,Int}[]
+        @info "Sweeping retryable Fundamentals fetch failures" round securities=length(round_queue)
+        for (security, failure_index) in round_queue
+            process_security!(security, failure_index)
+        end
+    end
+    for failure_index in sort!(collect(recovered_failure_indices); rev=true)
+        deleteat!(failed, failure_index)
+        deleteat!(failures, failure_index)
     end
 
     result = FundamentalCollectionResult(
@@ -549,6 +629,13 @@ driver and the registration is not fully released (~2.9 MB apiece, against
 33 KB for the same statement issued as pure SQL). If a batched write fails
 it is retried one security at a time, so batching never coarsens which
 security gets recorded as failed.
+
+`retry_rounds` (default 1, or `FUNDAMENTALS_RETRY_ROUNDS`) sweeps securities
+whose FETCH failed with a retryable classification once the main pass has
+finished; 0 disables it. The sweep trails the pass instead of retrying inline
+because one slow security must not stall a 5,400-security sequential run.
+Write failures are never swept: after a checkpoint FATAL the database is
+invalidated, so re-driving writes only reproduces the cascade.
 """
 function sync_fundamentals!(
     conn::DuckDBConnection,
@@ -558,7 +645,7 @@ function sync_fundamentals!(
     as_of::Date = Date(Dates.now()),
     history_years::Int = 3,
     observed_at::DateTime = Dates.now(),
-    fetched_at::DateTime = Dates.now(),
+    fetched_at::DateTime = Dates.now(Dates.UTC),
     daily_fetcher::Function = get_daily_fundamental,
     continue_on_error::Bool = true,
     # 100, not 500: the buffer manager was exhausted after roughly 460
@@ -574,19 +661,27 @@ function sync_fundamentals!(
     batch_size::Int = parse(
         Int, get(ENV, "FUNDAMENTALS_UPSERT_BATCH", "100"),
     ),
+    # Sweeps over securities whose FETCH failed with a retryable
+    # classification, after the main pass has finished. 0 disables it.
+    retry_rounds::Int = parse(
+        Int, get(ENV, "FUNDAMENTALS_RETRY_ROUNDS", "1"),
+    ),
+    checkpointer::Function = connection -> DBInterface.execute(connection, "CHECKPOINT"),
 )
     history_years > 0 || throw(ArgumentError("history_years must be positive"))
     checkpoint_every >= 0 ||
         throw(ArgumentError("checkpoint_every must be non-negative"))
     batch_size > 0 || throw(ArgumentError("batch_size must be positive"))
+    retry_rounds >= 0 ||
+        throw(ArgumentError("retry_rounds must be non-negative"))
 
     observations = normalize_security_observations(
         meta_payload,
         universe_payload;
         observed_at,
     )
-    eligible_securities = _eligible_backfill_rows(observations)
     observation_rows = upsert_security_observations(conn, observations)
+    eligible_securities = _eligible_backfill_rows(observations)
     watermarks = get_fundamental_watermarks(conn)
 
     requested = String[]
@@ -616,6 +711,8 @@ function sync_fundamentals!(
     upsert_attempts = 0
     since_checkpoint = 0
 
+    record_failed!(ticker::String) = ticker in failed ? nothing : push!(failed, ticker)
+
     # Write the buffer as one statement. On failure, retry the batch one
     # security at a time: batching must not coarsen failure attribution, or a
     # single malformed security would take out the other batch_size-1 with it
@@ -636,7 +733,7 @@ function sync_fundamentals!(
                     metric_rows += upsert_fundamental_daily_metrics(conn, frame)
                     push!(requested, ticker)
                 catch write_error
-                    push!(failed, ticker)
+                    record_failed!(ticker)
                     if length(failed) <= 5
                         @warn "Fundamentals write failed" perma_ticker=ticker exception=(write_error, catch_backtrace())
                     else
@@ -653,7 +750,62 @@ function sync_fundamentals!(
         return nothing
     end
 
-    for security in eachrow(eligible_securities)
+    # DuckDB holds written changes in memory until a checkpoint puts them in
+    # the database file, so the buffer manager grows across a run:
+    #   Out of Memory Error: failed to allocate data of size 4.0 KiB
+    # Checkpointing bounds that by the interval rather than by the size of
+    # the universe.
+    #
+    # The cadence counts securities WRITTEN, not stored, deliberately: when
+    # memory is tight the writes fail, so a success-keyed counter stops
+    # advancing and the checkpoint that would release the memory can never
+    # run. Measured on 2026-08-13 — two runs stalled at 461 and 459 successes
+    # against a 500 interval, fired zero checkpoints, and lost ~95% of
+    # securities to OOM.
+    #
+    # A failed CHECKPOINT is NOT recoverable, so this stops the run. DuckDB
+    # invalidates the whole database, not just the statement:
+    #   FATAL Error: database has been invalidated because of a previous
+    #   fatal error. The database must be restarted prior to being used
+    #   again.
+    # An earlier version warned and carried on. That turned one checkpoint
+    # failure at attempt 1,400 into 3,458 failures: every later security was
+    # still fetched from the API — real quota, real time — and then written to
+    # a dead connection, burying the single line that explained the run under
+    # ~3,300 identical cascade errors. Stopping immediately keeps the
+    # diagnosis legible and leaves committed rows intact for the next resume.
+    function run_checkpoint!()
+        try
+            checkpointer(conn)
+        catch checkpoint_error
+            @error "DuckDB checkpoint failed; aborting run (the database is now invalidated, so every later write would fail)" upsert_attempts securities_completed=length(requested) exception=checkpoint_error
+            rethrow()
+        end
+        return nothing
+    end
+
+    function maybe_checkpoint!()
+        if checkpoint_every > 0 && since_checkpoint >= checkpoint_every
+            run_checkpoint!()
+            since_checkpoint = 0
+        end
+        return nothing
+    end
+
+    # Securities whose FETCH failed with a retryable classification. They are
+    # swept after the pass rather than retried inline: with ~5,400 sequential
+    # securities an inline retry stalls the entire run behind one slow
+    # security, and the nightly window does not stretch.
+    #
+    # Only fetch-stage failures land here. A write failure is not swept: after
+    # a checkpoint FATAL the database is invalidated, so re-driving writes
+    # reproduces exactly the 3,458-failure cascade described above.
+    retry_queue = DataFrameRow[]
+
+    # `sweeping` securities are already recorded in `failed`; a repeat failure
+    # must not record them twice, and a recovery is removed from `failed` by
+    # the caller once the flush that stores their rows has run.
+    function process_security!(security, sweeping::Bool)
         perma_ticker = String(security.perma_ticker)
         has_watermark = haskey(watermarks, perma_ticker)
         start_date = has_watermark ?
@@ -661,11 +813,11 @@ function sync_fundamentals!(
             as_of - Year(history_years)
         if start_date > as_of
             push!(skipped, perma_ticker)
-            continue
+            return nothing
         end
 
-        try
-            payload = daily_fetcher(
+        payload = try
+            daily_fetcher(
                 perma_ticker;
                 api_key,
                 start_date,
@@ -673,30 +825,12 @@ function sync_fundamentals!(
                 columns = ["marketCap"],
                 return_type = "original",
             )
-            metrics = normalize_fundamental_daily_metrics(
-                payload,
-                perma_ticker;
-                fetched_at,
-            )
-            if nrow(metrics) == 0
-                push!(has_watermark ? unchanged : unavailable, perma_ticker)
-                continue
-            end
-            in_requested_range = (
-                (metrics.metric_date .>= start_date) .&
-                (metrics.metric_date .<= as_of)
-            )
-            metrics = metrics[in_requested_range, :]
-            if nrow(metrics) == 0
-                push!(has_watermark ? unchanged : unavailable, perma_ticker)
-                continue
-            end
-            push!(pending_metrics, metrics)
-            push!(pending_tickers, perma_ticker)
         catch error
             error isa InterruptException && rethrow()
             continue_on_error || rethrow()
-            push!(failed, perma_ticker)
+            failure = _sync_failure(perma_ticker, :fetch, error)
+            sweeping || record_failed!(perma_ticker)
+            failure.retryable && push!(retry_queue, security)
             # Log the reason. Swallowing it silently made a 44%-failure run
             # (2,368 of 5,404 securities on 2026-08-13) indistinguishable from
             # a healthy one in the log: the caller only sees a count, and
@@ -710,58 +844,78 @@ function sync_fundamentals!(
             else
                 @warn "Fundamentals fetch failed" perma_ticker start_date error=sprint(showerror, error)
             end
+            return nothing
         end
 
-        length(pending_tickers) >= batch_size && flush_pending!()
-
-        # DuckDB holds written changes in memory until a checkpoint puts them
-        # in the database file, so the buffer manager grows across a run:
-        #   Out of Memory Error: failed to allocate data of size 4.0 KiB
-        # Checkpointing bounds that by the interval rather than by the size of
-        # the universe.
-        #
-        # The cadence counts securities WRITTEN, not stored, deliberately:
-        # when memory is tight the writes fail, so a success-keyed counter
-        # stops advancing and the checkpoint that would release the memory can
-        # never run. Measured on 2026-08-13 — two runs stalled at 461 and 459
-        # successes against a 500 interval, fired zero checkpoints, and lost
-        # ~95% of securities to OOM.
-        #
-        # A failed CHECKPOINT is NOT recoverable, so this stops the loop.
-        # DuckDB invalidates the whole database, not just the statement:
-        #   FATAL Error: database has been invalidated because of a previous
-        #   fatal error. The database must be restarted prior to being used
-        #   again.
-        # An earlier version warned and carried on. That turned one checkpoint
-        # failure at attempt 1,400 into 3,458 failures: every later security
-        # was still fetched from the API — real quota, real time — and then
-        # written to a dead connection, burying the single line that explained
-        # the run under ~3,300 identical cascade errors. Stopping immediately
-        # keeps the diagnosis legible and leaves committed rows intact for the
-        # next resume.
-        if checkpoint_every > 0 && since_checkpoint >= checkpoint_every
-            try
-                DBInterface.execute(conn, "CHECKPOINT")
-                since_checkpoint = 0
-            catch checkpoint_error
-                @error "DuckDB checkpoint failed; aborting run (the database is now invalidated, so every later write would fail)" upsert_attempts securities_completed=length(requested) exception=checkpoint_error
-                rethrow()
+        metrics = try
+            metrics = normalize_fundamental_daily_metrics(
+                payload,
+                perma_ticker;
+                fetched_at,
+            )
+            if nrow(metrics) == 0
+                push!(has_watermark ? unchanged : unavailable, perma_ticker)
+                return nothing
             end
+            in_requested_range = (
+                (metrics.metric_date .>= start_date) .&
+                (metrics.metric_date .<= as_of)
+            )
+            metrics = metrics[in_requested_range, :]
+            if nrow(metrics) == 0
+                push!(has_watermark ? unchanged : unavailable, perma_ticker)
+                return nothing
+            end
+            metrics
+        catch error
+            error isa InterruptException && rethrow()
+            continue_on_error || rethrow()
+            failure = _sync_failure(
+                perma_ticker,
+                :normalize,
+                error;
+                retryable=false,
+            )
+            sweeping || record_failed!(perma_ticker)
+            @warn "Fundamentals normalization failed" perma_ticker start_date failure_stage=failure.stage failure_message=failure.message retryable=failure.retryable
+            return nothing
         end
+        push!(pending_metrics, metrics)
+        push!(pending_tickers, perma_ticker)
+        return nothing
+    end
+
+    for security in eachrow(eligible_securities)
+        process_security!(security, false)
+        length(pending_tickers) >= batch_size && flush_pending!()
+        maybe_checkpoint!()
     end
 
     # Whatever the last partial batch holds still has to be written.
     flush_pending!()
 
+    for round in 1:retry_rounds
+        isempty(retry_queue) && break
+        round_queue = retry_queue
+        # Rebinding is what makes a repeat failure land in the NEXT round's
+        # queue instead of the one currently being drained.
+        retry_queue = DataFrameRow[]
+        @info "Sweeping retryable Fundamentals fetch failures" round securities=length(round_queue)
+        for security in round_queue
+            process_security!(security, true)
+            length(pending_tickers) >= batch_size && flush_pending!()
+            maybe_checkpoint!()
+        end
+        flush_pending!()
+        recovered = Set{String}(vcat(requested, unchanged, unavailable))
+        filter!(perma_ticker -> !(perma_ticker in recovered), failed)
+    end
+
     # Then flush DuckDB itself, so the caller's validation and export steps
     # start from a clean buffer rather than inheriting this loop's high-water
     # mark.
     if checkpoint_every > 0
-        try
-            DBInterface.execute(conn, "CHECKPOINT")
-        catch checkpoint_error
-            @warn "final DuckDB checkpoint failed; continuing" exception=checkpoint_error
-        end
+        run_checkpoint!()
     end
 
     return (;

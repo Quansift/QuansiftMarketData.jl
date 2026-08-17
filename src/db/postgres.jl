@@ -9,7 +9,9 @@ module Postgres
     using ..Core: DuckDBConnection, validate_identifier, validate_file_path
     import ..Operations: upsert_stock_data, upsert_stock_data_bulk
     import ..Operations: upsert_security_observations, upsert_fundamental_daily_metrics
-    using ..Operations: validate_fundamental_daily_metrics_keys
+    using ..Operations:
+        validate_fundamental_daily_metrics_keys,
+        validate_security_observation_keys
     using ..Schema:
         create_or_replace_table,
         generate_create_table_query,
@@ -192,7 +194,7 @@ module Postgres
 
     function drop_postgres_table_if_exists(pg_conn::PostgreSQLConnection, table_name::String)
         safe_name = validate_identifier(table_name)
-        LibPQ.execute(pg_conn, generate_drop_postgres_table_query(safe_name))
+        close(LibPQ.execute(pg_conn, generate_drop_postgres_table_query(safe_name)))
     end
 
     function generate_drop_postgres_table_query(table_name::String)::String
@@ -248,8 +250,11 @@ module Postgres
                   AND confrelid = '$qualified_name'::regclass
             )
         """)
-        df = DataFrame(result)
-        return df[1, 1]
+        try
+            return DataFrame(result)[1, 1]
+        finally
+            close(result)
+        end
     end
 
     """
@@ -269,8 +274,27 @@ module Postgres
               AND i.indisprimary
             ORDER BY a.attnum
         """)
-        df = DataFrame(result)
-        return String.(df[!, :attname])
+        try
+            return String.(DataFrame(result)[!, :attname])
+        finally
+            close(result)
+        end
+    end
+
+    function generate_missing_primary_keys_query(
+        target_table::String,
+        staging_table::String,
+        primary_key_columns::AbstractVector{<:AbstractString},
+    )::String
+        columns_sql = join(
+            quote_postgres_identifier.(lowercase.(primary_key_columns)),
+            ", ",
+        )
+        return "SELECT EXISTS (SELECT $columns_sql FROM " *
+               "$(qualified_postgres_identifier(validate_identifier(target_table))) " *
+               "EXCEPT SELECT $columns_sql FROM " *
+               "$(qualified_postgres_identifier(validate_identifier(staging_table)))) " *
+               "AS missing_primary_keys"
     end
 
     function generate_refresh_upsert_query(
@@ -316,23 +340,36 @@ module Postgres
         target_table::String,
         staging_table::String,
     )::Nothing
-        safe_target = validate_identifier(target_table)
-        safe_staging = validate_identifier(staging_table)
+        safe_target = lowercase(validate_identifier(target_table))
+        safe_staging = lowercase(validate_identifier(staging_table))
         qualified_target = qualified_postgres_identifier(safe_target)
         qualified_staging = qualified_postgres_identifier(safe_staging)
         quoted_target_name = quote_postgres_identifier(lowercase(safe_target))
 
-        # Check if the target table exists and is referenced by foreign keys
-        target_exists = false
-        try
-            res = LibPQ.execute(pg_conn, """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = '$safe_target'
-                )
-            """)
-            target_exists = DataFrame(res)[1, 1]
-        catch
+        # Check if the target table exists and is referenced by foreign keys.
+        # This probe must NOT be wrapped in a swallowing catch: a failure
+        # would leave target_exists false, skip the FK check, and take the
+        # drop+rename path on a table that does have FK dependents — the
+        # exact outcome the FK check exists to prevent. Let it abort the
+        # surrounding transaction instead.
+        existence_result = LibPQ.execute(pg_conn, """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = '$safe_target'
+            )
+        """)
+        target_exists = try
+            DataFrame(existence_result)[1, 1]
+        finally
+            close(existence_result)
+        end
+
+        if target_exists
+            close(LibPQ.execute(
+                pg_conn,
+                "LOCK TABLE $qualified_target " *
+                "IN SHARE ROW EXCLUSIVE MODE NOWAIT",
+            ))
         end
 
         fk_referenced = target_exists && is_fk_referenced(pg_conn, safe_target)
@@ -345,13 +382,60 @@ module Postgres
                       "an upsert key is required to refresh in-place without dropping the table")
             end
 
+            close(LibPQ.execute(
+                pg_conn,
+                "LOCK TABLE $qualified_staging " *
+                "IN SHARE ROW EXCLUSIVE MODE NOWAIT",
+            ))
+
+            missing_columns_result = LibPQ.execute(pg_conn, """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '$safe_target'
+                EXCEPT
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '$safe_staging'
+                ORDER BY column_name
+            """)
+            missing_columns = try
+                String.(DataFrame(missing_columns_result)[!, :column_name])
+            finally
+                close(missing_columns_result)
+            end
+            isempty(missing_columns) || throw(ArgumentError(
+                "Cannot replace $safe_target: staging is missing target columns: " *
+                join(missing_columns, ", "),
+            ))
+
+            missing_result = LibPQ.execute(
+                pg_conn,
+                generate_missing_primary_keys_query(
+                    safe_target,
+                    safe_staging,
+                    pk_cols,
+                ),
+            )
+            missing_primary_keys = try
+                Bool(DataFrame(missing_result)[1, :missing_primary_keys])
+            finally
+                close(missing_result)
+            end
+            missing_primary_keys && throw(ArgumentError(
+                "Cannot replace $safe_target: target primary keys are absent from staging",
+            ))
+
             # Get column list from the staging table
             col_result = LibPQ.execute(pg_conn, """
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = '$safe_staging'
                 ORDER BY ordinal_position
             """)
-            all_cols = String.(DataFrame(col_result)[!, :column_name])
+            all_cols = try
+                String.(DataFrame(col_result)[!, :column_name])
+            finally
+                close(col_result)
+            end
             upsert_query = generate_refresh_upsert_query(
                 safe_target,
                 safe_staging,
@@ -360,15 +444,25 @@ module Postgres
             )
 
             @info "Table $safe_target is FK-referenced; using upsert instead of drop+rename"
-            LibPQ.execute(pg_conn, upsert_query)
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;")
+            close(LibPQ.execute(pg_conn, upsert_query))
+            close(LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_staging;"))
         else
-            # Fast path: drop + rename (no FK dependents)
-            LibPQ.execute(pg_conn, "DROP TABLE IF EXISTS $qualified_target;")
-            LibPQ.execute(
+            # Fast path: publish by rename when there are no FK dependents.
+            if target_exists
+                close(LibPQ.execute(
+                    pg_conn,
+                    "LOCK TABLE $qualified_target " *
+                    "IN ACCESS EXCLUSIVE MODE NOWAIT",
+                ))
+                close(LibPQ.execute(
+                    pg_conn,
+                    "DROP TABLE IF EXISTS $qualified_target;",
+                ))
+            end
+            close(LibPQ.execute(
                 pg_conn,
                 "ALTER TABLE $qualified_staging RENAME TO $quoted_target_name;",
-            )
+            ))
         end
         return nothing
     end
@@ -378,18 +472,18 @@ module Postgres
         target_table::String,
         staging_table::String,
     )::Nothing
-        safe_target = validate_identifier(target_table)
-        safe_staging = validate_identifier(staging_table)
+        safe_target = lowercase(validate_identifier(target_table))
+        safe_staging = lowercase(validate_identifier(staging_table))
         require_idle_transaction(pg_conn, "PostgreSQL table replacement")
 
-        LibPQ.execute(pg_conn, "BEGIN")
+        close(LibPQ.execute(pg_conn, "BEGIN"))
         try
             publish_postgres_table!(pg_conn, safe_target, safe_staging)
-            LibPQ.execute(pg_conn, "COMMIT")
+            close(LibPQ.execute(pg_conn, "COMMIT"))
             return nothing
         catch e
             try
-                LibPQ.execute(pg_conn, "ROLLBACK")
+                close(LibPQ.execute(pg_conn, "ROLLBACK"))
             catch
             end
             try
@@ -458,6 +552,30 @@ module Postgres
         end
     end
 
+    # Ceiling on a single connect retry wait. Doubling without one turns a
+    # generous configured delay into a stalled run.
+    const _MAX_CONNECT_RETRY_DELAY_SECONDS = 60
+
+    """
+        _connect_retry_delay_seconds(retry_delay, attempt)
+
+    Exponential backoff for connection retries, capped.
+
+    A fixed delay retries three times inside 15 seconds, which is short enough
+    that all three attempts land inside the same failover or restart the
+    connection was waiting out. Doubling spreads them across it instead.
+    """
+    function _connect_retry_delay_seconds(retry_delay::Integer, attempt::Integer)::Int
+        retry_delay <= 0 && return 0
+        exponent = max(attempt - 1, 0)
+        # Compare in Float64 so a large configured delay clamps instead of
+        # overflowing on the way to the cap.
+        scaled = float(retry_delay) * 2.0^exponent
+        return scaled >= _MAX_CONNECT_RETRY_DELAY_SECONDS ?
+            _MAX_CONNECT_RETRY_DELAY_SECONDS :
+            Int(round(scaled))
+    end
+
     function connect_postgres(connection_string::String;
                              timeout_seconds::Int=30,
                              max_retries::Int=3,
@@ -482,8 +600,9 @@ module Postgres
                 @warn "PostgreSQL connection attempt $attempt/$max_retries failed" exception=(safe_error, catch_backtrace())
 
                 if attempt < max_retries
-                    @info "Retrying in $retry_delay seconds..."
-                    sleep(retry_delay)
+                    delay = _connect_retry_delay_seconds(retry_delay, attempt)
+                    @info "Retrying in $delay seconds..."
+                    sleep(delay)
                 end
             end
         end
@@ -541,8 +660,15 @@ module Postgres
         conflict_columns::Vector{Symbol},
         update_columns::Vector{Symbol};
         select_expressions::Union{Nothing,Vector{String}}=nothing,
+        update_guard_column::Union{Nothing,Symbol}=nothing,
+        lock_timeout_seconds::Integer=30,
+        statement_timeout_seconds::Integer=300,
     )::Int
         nrow(data) == 0 && return 0
+        lock_timeout_seconds >= 0 ||
+            throw(ArgumentError("lock_timeout_seconds must be non-negative"))
+        statement_timeout_seconds >= 0 ||
+            throw(ArgumentError("statement_timeout_seconds must be non-negative"))
 
         safe_table = validate_identifier(table_name)
         staging_name = validate_identifier("_tiingo_$(safe_table)_$(time_ns())")
@@ -570,10 +696,31 @@ module Postgres
         source_sql = isnothing(select_expressions) ?
             column_sql :
             join(select_expressions, ", ")
+        update_guard_sql = if isnothing(update_guard_column)
+            ""
+        else
+            quoted_guard = quote_postgres_identifier(string(update_guard_column))
+            "WHERE EXCLUDED.$quoted_guard >= $qualified_table.$quoted_guard"
+        end
 
         require_idle_transaction(pg_conn, "PostgreSQL DataFrame upsert")
         close(LibPQ.execute(pg_conn, "BEGIN"))
         try
+            # Bound the wait. Without these the nightly upsert blocks forever
+            # behind any conflicting lock (a reader holding the table, an
+            # abandoned session) — the cron run stalls with no error, no
+            # timeout, and nothing to page on. `true` scopes both to this
+            # transaction, so the connection is left as it was found.
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('lock_timeout', \$1, true)",
+                Any["$(Int(lock_timeout_seconds) * 1000)ms"],
+            ))
+            close(LibPQ.execute(
+                pg_conn,
+                "SELECT pg_catalog.set_config('statement_timeout', \$1, true)",
+                Any["$(Int(statement_timeout_seconds) * 1000)ms"],
+            ))
             close(LibPQ.execute(
                 pg_conn,
                 "CREATE TEMP TABLE $quoted_staging " *
@@ -590,6 +737,7 @@ module Postgres
                 INSERT INTO $qualified_table ($column_sql)
                 SELECT $source_sql FROM $qualified_staging
                 ON CONFLICT ($conflict_sql) DO UPDATE SET $update_sql
+                $update_guard_sql
                 """,
             )
             affected_rows = try
@@ -623,6 +771,7 @@ module Postgres
         :adjVolume => :adjvolume,
         :divCash => :divcash,
         :splitFactor => :splitfactor,
+        :fetched_at => :fetched_at,
     ]
 
     const SECURITY_OBSERVATION_COLUMN_MAPPINGS = [
@@ -799,6 +948,24 @@ module Postgres
             filtered_data,
             TICKER_UNIVERSE_COLUMN_MAPPINGS,
         )
+        nrow(all_frame) > 0 || throw(ArgumentError(
+            "all ticker universe must not be empty",
+        ))
+        nrow(filtered_frame) > 0 || throw(ArgumentError(
+            "filtered ticker universe must not be empty",
+        ))
+        for (label, frame) in (("all", all_frame), ("filtered", filtered_frame))
+            duplicate_rows = findall(nonunique(frame, [:ticker]))
+            isempty(duplicate_rows) || throw(ArgumentError(
+                "$label ticker universe contains duplicate canonical ticker keys " *
+                "at rows: $(join(duplicate_rows, ", "))",
+            ))
+        end
+        filtered_only = setdiff(Set(filtered_frame.ticker), Set(all_frame.ticker))
+        isempty(filtered_only) || throw(ArgumentError(
+            "filtered ticker universe contains keys absent from all ticker universe: " *
+            join(sort!(string.(collect(filtered_only))), ", "),
+        ))
         require_idle_transaction(pg_conn, "replace_ticker_universe")
         filtered_stocks_fk = quote_postgres_identifier(POSTGRES_FILTERED_STOCKS_FK)
 
@@ -874,6 +1041,9 @@ module Postgres
         data::DataFrame,
         ticker::String,
     )::Int
+        :fetched_at in propertynames(data) || throw(ArgumentError(
+            "EOD data is missing required provenance column: fetched_at",
+        ))
         nrow(data) == 0 && return 0
         frame = select_upsert_columns(data, STOCK_COLUMN_MAPPINGS)
         insertcols!(frame, 1, :ticker => fill(ticker, nrow(frame)))
@@ -892,6 +1062,7 @@ module Postgres
             "COALESCE(adjvolume, 0)",
             "COALESCE(divcash, 0.0)",
             "COALESCE(splitfactor, 1.0)",
+            "fetched_at",
         ]
         return transactional_upsert!(
             pg_conn,
@@ -900,6 +1071,7 @@ module Postgres
             [:ticker, :date],
             Symbol.(names(frame)[3:end]);
             select_expressions,
+            update_guard_column=:fetched_at,
         )
     end
 
@@ -914,6 +1086,9 @@ module Postgres
         data::DataFrame,
         ticker::String,
     )::Int
+        :fetched_at in propertynames(data) || throw(ArgumentError(
+            "EOD data is missing required provenance column: fetched_at",
+        ))
         nrow(data) == 0 && return 0
         ticker_data = if :ticker in propertynames(data)
             filter(
@@ -937,6 +1112,7 @@ module Postgres
         pg_conn::PostgreSQLConnection,
         data::DataFrame,
     )::Int
+        validate_security_observation_keys(data; require_columns=true)
         nrow(data) == 0 && return 0
         frame = select_upsert_columns(data, SECURITY_OBSERVATION_COLUMN_MAPPINGS)
         return transactional_upsert!(
@@ -966,6 +1142,7 @@ module Postgres
             frame,
             [:perma_ticker, :metric_date],
             Symbol.(names(frame)[3:end]),
+            update_guard_column=:fetched_at,
         )
     end
 
@@ -1184,7 +1361,7 @@ module Postgres
             base_table_name=safe_name,
         )
         drop_postgres_table_if_exists(pg_conn, safe_staging)
-        LibPQ.execute(pg_conn, create_table_query)
+        close(LibPQ.execute(pg_conn, create_table_query))
 
         insert_query = generate_dataframe_insert_query(safe_staging, names(df))
         LibPQ.load!(df, pg_conn, insert_query)
@@ -1262,52 +1439,46 @@ module Postgres
         @info "Exporting table $safe_name to PostgreSQL using Parquet"
 
         return with_owned_parquet_file(parquet_file) do temporary_parquet
-            attached = false
-            try
-                # Export to a library-owned temporary parquet file.
-                DBInterface.execute(
-                    duckdb_conn,
-                    """COPY $safe_name TO '$temporary_parquet';""",
-                )
-                @info "Exported $safe_name to temporary parquet file"
+            # Export to a library-owned temporary parquet file.
+            DBInterface.execute(
+                duckdb_conn,
+                """COPY $safe_name TO '$temporary_parquet';""",
+            )
+            @info "Exported $safe_name to temporary parquet file"
 
-                # Create and load a staging table before swapping it into place.
-                schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
-                create_table_query = generate_create_table_query(
-                    safe_staging,
-                    schema;
-                    base_table_name=safe_name,
-                )
-                drop_postgres_table_if_exists(pg_conn, safe_staging)
-                LibPQ.execute(pg_conn, create_table_query)
+            # Create and load a staging table before swapping it into place.
+            schema = DBInterface.execute(duckdb_conn, "DESCRIBE $safe_name") |> DataFrame
+            create_table_query = generate_create_table_query(
+                safe_staging,
+                schema;
+                base_table_name=safe_name,
+            )
+            drop_postgres_table_if_exists(pg_conn, safe_staging)
+            close(LibPQ.execute(pg_conn, create_table_query))
 
-                # Copy data from parquet to PostgreSQL
-                setup_postgres_connection(
-                    duckdb_conn,
-                    pg_conn;
-                    connection_string=pg_connection_string,
-                    pg_host=pg_host,
-                    pg_user=pg_user,
-                    pg_dbname=pg_dbname,
-                )
-                attached = true
+            # The COPY runs inside the attachment scope: it is served by the
+            # scanner's connection pool, which resolves credentials from the
+            # environment at the moment each connection is opened.
+            attach_source = something(pg_connection_string, pg_conn)
+            options = connection_options_map(attach_source)
+            !isnothing(pg_host) && !isempty(strip(pg_host)) && (options["host"] = pg_host)
+            !isnothing(pg_user) && !isempty(strip(pg_user)) && (options["user"] = pg_user)
+            !isnothing(pg_dbname) && !isempty(strip(pg_dbname)) && (options["dbname"] = pg_dbname)
+
+            with_attached_postgres(
+                duckdb_conn,
+                build_postgres_connection_string(options);
+                alias="postgres_db",
+            ) do
                 DBInterface.execute(
                     duckdb_conn,
                     """COPY $postgres_duckdb_staging FROM '$temporary_parquet';""",
                 )
-                DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-                attached = false
-                row_count = postgres_table_row_count(pg_conn, safe_staging)
-                @info "Copied $row_count rows from Parquet into PostgreSQL staging table $safe_staging"
-                return row_count
-            finally
-                if attached
-                    try
-                        DBInterface.execute(duckdb_conn, "DETACH postgres_db;")
-                    catch
-                    end
-                end
             end
+
+            row_count = postgres_table_row_count(pg_conn, safe_staging)
+            @info "Copied $row_count rows from Parquet into PostgreSQL staging table $safe_staging"
+            return row_count
         end
     end
 
@@ -1407,9 +1578,71 @@ module Postgres
     end
 
     """
+        with_attached_postgres(f, duckdb_conn, source; alias, read_only, execute)
+
+    Attach PostgreSQL to DuckDB, run `f()`, and detach.
+
+    The connection details travel through libpq environment variables so the
+    password never reaches SQL text, catalogs, or error messages. The scope of
+    those variables must therefore cover the ATTACHMENT'S LIFETIME, not just the
+    `ATTACH` statement: DuckDB's postgres scanner opens further libpq
+    connections lazily as later queries run, and each reads the environment at
+    the moment it is opened. Restoring the environment right after `ATTACH`
+    leaves those later connections to fall back on ambient libpq defaults —
+    observed 2026-08-15 as
+
+        IO Error: Unable to connect to Postgres at :
+        connection to server on socket "/tmp/.s.PGSQL.5432" failed:
+        FATAL: database "otwn" does not exist
+
+    where "otwn" is the OS user, from a hydration whose connection string named
+    a different host and database entirely. It is pool-dependent, so it strikes
+    intermittently: the first query reuses the attach-time connection and
+    succeeds, while a later one needing a second pooled connection fails.
+
+    Running `f` inside the environment scope makes that impossible to get wrong,
+    so callers never have to know the rule.
+    """
+    function with_attached_postgres(
+        f::Function,
+        duckdb_conn,
+        source::Union{String,PostgreSQLConnection};
+        alias::AbstractString="postgres_db",
+        read_only::Bool=false,
+        execute::Function=DBInterface.execute,
+    )
+        safe_alias = validate_identifier(String(alias))
+        options = connection_options_map(source)
+        env_vars = postgres_env_vars(options)
+        attach_options = read_only ? "TYPE postgres, READ_ONLY" : "TYPE postgres"
+
+        return with_temporary_env(env_vars) do
+            load_postgres_extension!(duckdb_conn; execute)
+            execute(duckdb_conn, "ATTACH '' AS $safe_alias ($attach_options);")
+            try
+                return f()
+            finally
+                # Guarded: an exception raised in `finally` replaces the one
+                # actually being propagated, so a detach failure must never be
+                # allowed to bury the real error.
+                try
+                    execute(duckdb_conn, "DETACH $safe_alias;")
+                catch detach_error
+                    @warn "Failed to detach PostgreSQL scanner" alias=safe_alias exception=detach_error
+                end
+            end
+        end
+    end
+
+    """
         setup_postgres_connection(duckdb_conn::DuckDBConnection, pg_host::String, pg_user::String, pg_dbname::String)
 
     Set up a PostgreSQL connection in DuckDB.
+
+    Prefer [`with_attached_postgres`](@ref): this leaves the attachment live
+    after the libpq environment has been restored, so any query the scanner
+    serves from a new pooled connection resolves against ambient defaults
+    rather than the supplied connection details.
     """
     function setup_postgres_connection(
         duckdb_conn::DuckDBConnection,
@@ -1456,6 +1689,6 @@ module Postgres
     export upsert_stock_data, upsert_stock_data_bulk
     export upsert_security_observations, upsert_fundamental_daily_metrics
     export export_table_to_postgres, export_table_to_postgres_dataframe, export_table_to_postgres_parquet
-    export setup_postgres_connection, load_postgres_extension!
+    export setup_postgres_connection, load_postgres_extension!, with_attached_postgres
     export normalize_postgres_connection_string, connection_options_map, postgres_env_vars
 end

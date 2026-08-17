@@ -45,6 +45,43 @@ using QuansiftMarketData
     @test which(create_tables, schema_signature).module === schema_module
 end
 
+@testset "PostgreSQL upsert guards accept only typed columns" begin
+    postgres_module = QuansiftMarketData.DB.Postgres
+    method = which(
+        postgres_module.transactional_upsert!,
+        Tuple{
+            LibPQ.Connection,
+            String,
+            DataFrame,
+            Vector{Symbol},
+            Vector{Symbol},
+        },
+    )
+    keyword_arguments = Base.kwarg_decl(method)
+
+    @test :update_guard_column in keyword_arguments
+    @test :update_where ∉ keyword_arguments
+end
+
+@testset "PostgreSQL observation upsert validates canonical keys before SQL" begin
+    postgres_source = read(
+        joinpath(@__DIR__, "..", "src", "db", "postgres.jl"),
+        String,
+    )
+
+    @test occursin(r"using \.\.Operations:.*validate_security_observation_keys"s,
+                   postgres_source)
+    observation_method = match(
+        r"function upsert_security_observations\(.*?\n    end"s,
+        postgres_source,
+    )
+    @test !isnothing(observation_method)
+    @test occursin(
+        "validate_security_observation_keys(data; require_columns=true)",
+        isnothing(observation_method) ? "" : observation_method.match,
+    )
+end
+
 @testset "PostgreSQL temporary environment is serialized and restored" begin
     postgres_module = QuansiftMarketData.DB.Postgres
     variable = "TIINGO_TEST_TEMPORARY_ENV_LOCK"
@@ -142,6 +179,8 @@ end
 
 @testset "PostgreSQL upsert column mappings" begin
     postgres_module = QuansiftMarketData.DB.Postgres
+    @test last(postgres_module.STOCK_COLUMN_MAPPINGS) ==
+          (:fetched_at => :fetched_at)
     mapping_contracts = [
         postgres_module.STOCK_COLUMN_MAPPINGS,
         postgres_module.SECURITY_OBSERVATION_COLUMN_MAPPINGS,
@@ -182,4 +221,102 @@ end
             @test occursin(string(missing_source), sprint(showerror, error))
         end
     end
+end
+
+@testset "Attached PostgreSQL keeps its environment for the whole scope" begin
+    # The libpq environment must cover the ATTACHMENT'S LIFETIME, not just the
+    # ATTACH statement. DuckDB's postgres scanner opens further connections
+    # lazily as later queries run, and each reads the environment when it is
+    # opened. A narrower scope left those connections resolving against ambient
+    # defaults — hydration failed on 2026-08-15 naming a unix socket and a
+    # database named after the OS user, neither of which appeared anywhere in
+    # the connection string it was given.
+    postgres_module = QuansiftMarketData.DB.Postgres
+    connection_string = "postgresql://scope-user@scope-host:5432/scope-db"
+
+    statements = String[]
+    seen_inside = Dict{String,Union{Nothing,String}}()
+    before = Dict(
+        name => get(ENV, name, nothing)
+        for name in ("PGHOST", "PGUSER", "PGDATABASE")
+    )
+
+    result = postgres_module.with_attached_postgres(
+        nothing,
+        connection_string;
+        alias = "pg_scope",
+        read_only = true,
+        execute = (_, sql) -> (push!(statements, String(sql)); nothing),
+    ) do
+        for name in ("PGHOST", "PGUSER", "PGDATABASE")
+            seen_inside[name] = get(ENV, name, nothing)
+        end
+        return :body_ran
+    end
+
+    @test result == :body_ran
+    # The body — where every scanner query runs — sees the real target.
+    @test seen_inside["PGHOST"] == "scope-host"
+    @test seen_inside["PGUSER"] == "scope-user"
+    @test seen_inside["PGDATABASE"] == "scope-db"
+    # And the environment is handed back exactly as it was found.
+    for (name, original) in before
+        @test get(ENV, name, nothing) == original
+    end
+
+    @test any(sql -> occursin("LOAD postgres", sql), statements)
+    attach_sql = only(filter(sql -> occursin("ATTACH", sql), statements))
+    @test occursin("AS pg_scope", attach_sql)
+    @test occursin("READ_ONLY", attach_sql)
+    # The password never reaches SQL text, which is the whole reason the
+    # environment mechanism exists rather than ATTACH '<conninfo>'.
+    @test all(sql -> !occursin("scope-user", sql), statements)
+    @test occursin("DETACH pg_scope", last(statements))
+end
+
+@testset "Attached PostgreSQL detaches without burying the real error" begin
+    postgres_module = QuansiftMarketData.DB.Postgres
+    connection_string = "postgresql://scope-user@scope-host:5432/scope-db"
+
+    # Detach must run even when the body throws.
+    statements = String[]
+    caught = try
+        postgres_module.with_attached_postgres(
+            nothing,
+            connection_string;
+            alias = "pg_scope",
+            execute = (_, sql) -> (push!(statements, String(sql)); nothing),
+        ) do
+            error("body failure")
+        end
+        nothing
+    catch error
+        error
+    end
+    @test caught isa ErrorException
+    @test occursin("body failure", sprint(showerror, caught))
+    @test occursin("DETACH pg_scope", last(statements))
+
+    # And a failing detach must not replace the error being propagated: an
+    # exception raised in `finally` silently wins, which is how a cleanup
+    # problem ends up masquerading as the root cause.
+    hostile_execute = function (_, sql)
+        occursin("DETACH", String(sql)) && error("detach exploded")
+        return nothing
+    end
+    masked = try
+        postgres_module.with_attached_postgres(
+            nothing,
+            connection_string;
+            alias = "pg_scope",
+            execute = hostile_execute,
+        ) do
+            error("the real failure")
+        end
+        nothing
+    catch error
+        error
+    end
+    @test occursin("the real failure", sprint(showerror, masked))
+    @test !occursin("detach exploded", sprint(showerror, masked))
 end

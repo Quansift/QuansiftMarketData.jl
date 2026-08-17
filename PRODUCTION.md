@@ -101,7 +101,7 @@ Before releasing or consuming a QuansiftMarketData build:
 
 QuansiftMarketData exposes a forward-only PostgreSQL schema contract through
 `POSTGRES_SCHEMA_VERSION`, `postgres_schema_version`, and `migrate_postgres!`.
-The current schema version is `1`. PostgreSQL `create_tables(pg_conn)` delegates
+The current schema version is `3`. PostgreSQL `create_tables(pg_conn)` delegates
 to this migration path, so existing databases receive the same validation as
 fresh databases.
 

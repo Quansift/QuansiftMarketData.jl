@@ -167,6 +167,16 @@ end
     @test failure.stage == :write
     @test !failure.retryable
     @test occursin("must not exceed frame row count", failure.message)
+
+    boolean_result = collect_historical(
+        tickers[[1], :],
+        "offline-token";
+        fetcher = (row; kwargs...) -> _eod_fixture("2024-01-02T00:00:00Z"),
+        writer = (_, _) -> true,
+    )
+    @test boolean_result.failed == ["OVER"]
+    @test boolean_result.written_rows == 0
+    @test occursin("integer row count", only(boolean_result.failures).message)
 end
 
 @testset "Historical collection isolates row normalization failures" begin
@@ -1220,6 +1230,19 @@ end
     @test failure.stage == :write
     @test !failure.retryable
     @test occursin("must not exceed frame row count", failure.message)
+
+    boolean_result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        daily_fetcher = (ticker; kwargs...) ->
+            [(date = string(as_of), marketCap = 200.0)],
+        metric_writer = (_, _) -> true,
+    )
+    @test boolean_result.failed == ["perm-overcount"]
+    @test boolean_result.metric_rows == 0
+    @test occursin("integer row count", only(boolean_result.failures).message)
 end
 
 @testset "Fundamentals observation write failures are never retryable" begin
@@ -1265,6 +1288,17 @@ end
     @test overcount_failure.stage == :write
     @test !overcount_failure.retryable
     @test occursin("must not exceed frame row count", overcount_failure.message)
+
+    boolean_result = collect_fundamentals(
+        meta_payload,
+        universe_payload;
+        api_key = "offline-token",
+        as_of,
+        observation_writer = _ -> true,
+    )
+    @test boolean_result.failed == ["security_observations"]
+    @test boolean_result.observation_rows == 0
+    @test occursin("integer row count", only(boolean_result.failures).message)
 end
 
 @testset "Collection classification follows the HTTP status, not the wording" begin

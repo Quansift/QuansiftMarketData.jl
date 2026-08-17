@@ -213,8 +213,8 @@ canary contract without live credentials.
 
 ## Bounded live integration smoke
 
-The bundled smoke scripts validate a small real Tiingo request and the existing
-DuckDB/PostgreSQL compatibility path. They are not a full-universe ingest and
+The bundled smoke scripts validate a small real Tiingo request using disposable
+DuckDB state. They are not a full-universe ingest, do not publish PostgreSQL, and
 must not be installed as the canonical production scheduler.
 
 1. Copy the example and set a real Tiingo API key:
@@ -223,21 +223,16 @@ must not be installed as the canonical production scheduler.
    cp .env.staging.example .env.staging
    ```
 
-2. Keep PostgreSQL export disabled for the first run:
+2. Run a bounded sample:
 
    ```bash
    TIINGO_SMOKE_TICKER_LIMIT=5 \
-   TIINGO_SMOKE_EXPORT_POSTGRES=false \
    scripts/run_staging_smoke.sh
    ```
 
-3. To validate the compatibility export path, set
-   `OHLCV_PG_CONNECTION` in `.env.staging`, point it only at an isolated
-   integration database, and run with `TIINGO_SMOKE_EXPORT_POSTGRES=true`.
-
 The smoke will create a local DuckDB file, download ticker metadata, fetch a
-bounded price sample, and optionally export the sample to PostgreSQL. That
-DuckDB file is disposable validation state, but it is still persistent Tiingo
+bounded price sample, and validate the typed collection result. That DuckDB
+file is disposable validation state, but it is still persistent Tiingo
 Data. Use this smoke only when the applicable account terms or a separate
 written agreement permit persistence; it is not a Starter or Trial Plan path.
 
@@ -259,7 +254,6 @@ for a bounded integration check:
 ```bash
 docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
   -e TIINGO_SMOKE_TICKER_LIMIT=5 \
-  -e TIINGO_SMOKE_EXPORT_POSTGRES=false \
   pipeline
 ```
 

@@ -424,18 +424,18 @@
     </section>
 
     <section aria-labelledby="deprecated-title">
-      <h2 id="deprecated-title">9. Deprecated DuckDB-first Entry Points</h2>
-      <p>DuckDB自体はdeprecatedではありません。full-historyをDuckDB経由に固定する次の7 entry pointだけが将来のmajor releaseで削除予定です。</p>
+      <h2 id="deprecated-title">9. Removed DuckDB-first Entry Points</h2>
+      <p>DuckDB自体は引き続きsupportedです。full-historyをDuckDB経由に固定していた次の7 entry pointはversion 4で削除されました。</p>
       <table>
-        <thead><tr><th scope="col">Deprecated</th><th scope="col">Replacement</th></tr></thead>
+        <thead><tr><th scope="col">Removed</th><th scope="col">Replacement</th></tr></thead>
         <tbody>
-          <tr><td data-label="Deprecated"><code>export_to_postgres</code></td><td data-label="Replacement">PostgreSQL <code>upsert_*</code> overloads + <code>write_parquet</code></td></tr>
-          <tr><td data-label="Deprecated"><code>update_historical</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
-          <tr><td data-label="Deprecated"><code>update_historical_parallel</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
-          <tr><td data-label="Deprecated"><code>update_historical_sequential</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
-          <tr><td data-label="Deprecated"><code>download_tickers_duckdb</code></td><td data-label="Replacement"><code>collect_ticker_universe</code> + <code>replace_ticker_universe</code></td></tr>
-          <tr><td data-label="Deprecated"><code>add_historical_data</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
-          <tr><td data-label="Deprecated"><code>update_split_ticker</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Removed"><code>export_to_postgres</code></td><td data-label="Replacement">PostgreSQL <code>upsert_*</code> overloads + <code>write_parquet</code></td></tr>
+          <tr><td data-label="Removed"><code>update_historical</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Removed"><code>update_historical_parallel</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Removed"><code>update_historical_sequential</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Removed"><code>download_tickers_duckdb</code></td><td data-label="Replacement"><code>collect_ticker_universe</code> + <code>replace_ticker_universe</code></td></tr>
+          <tr><td data-label="Removed"><code>add_historical_data</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
+          <tr><td data-label="Removed"><code>update_split_ticker</code></td><td data-label="Replacement"><code>collect_historical</code> + caller-supplied writer</td></tr>
         </tbody>
       </table>
     </section>
@@ -447,7 +447,7 @@
         <li class="badge authoritative-label">AUTHORITATIVE</li>
         <li class="badge optional-label">OPTIONAL / EPHEMERAL</li>
         <li class="badge archive-label">ARCHIVE</li>
-        <li class="badge deprecated-label">DEPRECATED ENTRY POINT</li>
+        <li class="badge deprecated-label">REMOVED ENTRY POINT</li>
       </ul>
       <p class="footer-note">Machine-readable companion: <code>system-flow.json</code>. The same JSON is embedded below for offline inspection; this HTML does not execute JavaScript.</p>
     </section>

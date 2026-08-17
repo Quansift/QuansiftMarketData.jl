@@ -136,8 +136,8 @@ result = collect_historical(
 per-ticker failures while continuing by default. Select bounded ticker slices
 at the caller and treat `strict=true` as the job boundary when incomplete work
 must fail. Cross-batch concurrency, rate limiting, and retry scheduling belong
-to the consuming scheduler; do not introduce new callers of the deprecated
-DuckDB-first parallel update functions.
+to the consuming scheduler; the DuckDB-first parallel update functions were
+removed in version 4.
 
 `TIINGO_API_MAX_RETRIES` and `TIINGO_API_RETRY_DELAY` control retries within a
 Tiingo HTTP request. Job-level retry policy belongs to the consuming scheduler.

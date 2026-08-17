@@ -162,6 +162,60 @@ end
         close_duckdb(reopened_conn)
     end
 
+    @testset "Security observation key migration preserves state history" begin
+        legacy_path = tempname() * ".duckdb"
+        legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)
+        DBInterface.execute(legacy_conn, """
+            CREATE TABLE security_observations (
+                perma_ticker VARCHAR NOT NULL,
+                observed_at TIMESTAMP NOT NULL,
+                ticker VARCHAR NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_adr BOOLEAN,
+                daily_last_updated TIMESTAMP,
+                exchange VARCHAR,
+                asset_type VARCHAR,
+                price_coverage_start DATE,
+                price_coverage_end DATE,
+                is_leveraged BOOLEAN,
+                join_status VARCHAR NOT NULL,
+                PRIMARY KEY (perma_ticker, observed_at)
+            )
+        """)
+        DBInterface.execute(legacy_conn, """
+            INSERT INTO security_observations
+                (perma_ticker, observed_at, ticker, is_active, join_status)
+            VALUES ('perm-old', TIMESTAMP '2026-07-19 12:00:00',
+                    'OLD', true, 'matched')
+        """)
+        DBInterface.close!(legacy_conn)
+
+        migrated_conn = connect_duckdb(legacy_path)
+        constraints = DBInterface.execute(migrated_conn, """
+            SELECT constraint_column_names
+            FROM duckdb_constraints()
+            WHERE schema_name = 'main'
+              AND table_name = 'security_observations'
+              AND constraint_type = 'PRIMARY KEY'
+        """) |> DataFrame
+        @test only(constraints.constraint_column_names) ==
+              ["perma_ticker", "observed_at", "ticker", "is_active"]
+        DBInterface.execute(migrated_conn, """
+            INSERT INTO security_observations
+                (perma_ticker, observed_at, ticker, is_active, join_status)
+            VALUES ('perm-old', TIMESTAMP '2026-07-19 12:00:00',
+                    'OLD', false, 'inactive')
+        """)
+        stored = DBInterface.execute(migrated_conn, """
+            SELECT ticker, is_active, join_status
+            FROM security_observations
+            ORDER BY is_active DESC
+        """) |> DataFrame
+        @test stored.is_active == [true, false]
+        @test stored.join_status == ["matched", "inactive"]
+        close_duckdb(migrated_conn)
+    end
+
     @testset "Table Operations" begin
         conn = connect_duckdb(test_db_path)
 

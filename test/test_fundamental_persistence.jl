@@ -61,6 +61,8 @@ end
         @test security_schema[coalesce.(security_schema.key .== "PRI", false), :column_name] == [
             "perma_ticker",
             "observed_at",
+            "ticker",
+            "is_active",
         ]
         @test metrics_schema[coalesce.(metrics_schema.key .== "PRI", false), :column_name] == [
             "perma_ticker",
@@ -73,7 +75,7 @@ end
         metrics_query = generate_create_table_query("fundamental_daily_metrics_staging", metrics_schema)
         @test occursin("PRIMARY KEY (\"ticker\", \"date\")", historical_query)
         @test occursin(
-            "PRIMARY KEY (\"perma_ticker\", \"observed_at\")",
+            "PRIMARY KEY (\"perma_ticker\", \"observed_at\", \"ticker\", \"is_active\")",
             security_query,
         )
         @test occursin(
@@ -244,11 +246,11 @@ end
 
 @testset "Security observation persistence keys fail before mutation" begin
     observed_at = DateTime(2026, 7, 19, 12)
-    duplicate = DataFrame(
+    distinct_states = DataFrame(
         perma_ticker = fill("perm-duplicate", 2),
         observed_at = fill(observed_at, 2),
-        ticker = ["DUP", "DUP.NEW"],
-        is_active = fill(true, 2),
+        ticker = fill("DUP", 2),
+        is_active = [true, false],
         is_adr = Union{Missing,Bool}[false, false],
         daily_last_updated = Union{Missing,DateTime}[missing, missing],
         exchange = Union{Missing,String}["NYSE", "NYSE"],
@@ -256,8 +258,12 @@ end
         price_coverage_start = Union{Missing,Date}[missing, missing],
         price_coverage_end = Union{Missing,Date}[missing, missing],
         is_leveraged = Union{Missing,Bool}[missing, missing],
-        join_status = fill("duplicate_perma_ticker", 2),
+        join_status = ["active", "inactive"],
     )
+
+    @test validate_security_observation_keys(distinct_states) === nothing
+
+    duplicate = vcat(distinct_states[[1], :], distinct_states[[1], :])
 
     duplicate_error = try
         validate_security_observation_keys(duplicate)
@@ -268,16 +274,17 @@ end
     @test duplicate_error isa ArgumentError
     @test sprint(showerror, duplicate_error) ==
         "ArgumentError: security_observations contains duplicate persistence " *
-        "key (perma_ticker, observed_at) at rows: 2"
+        "key (perma_ticker, observed_at, ticker, is_active) at rows: 2"
 
     conn = connect_duckdb(":memory:")
     try
+        @test upsert_security_observations(conn, distinct_states) == 2
         @test_throws ArgumentError upsert_security_observations(conn, duplicate)
         stored = DBInterface.execute(
             conn,
             "SELECT count(*) AS row_count FROM security_observations",
         ) |> DataFrame
-        @test only(stored.row_count) == 0
+        @test only(stored.row_count) == 2
     finally
         close_duckdb(conn)
     end

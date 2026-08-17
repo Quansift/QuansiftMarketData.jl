@@ -6,17 +6,6 @@ using DataFrames
 using Logging
 using QuansiftMarketData
 
-function parse_bool_env(name::String, default::Bool)::Bool
-    raw = lowercase(strip(get(ENV, name, default ? "true" : "false")))
-    if raw in ("1", "true", "yes", "on")
-        return true
-    elseif raw in ("0", "false", "no", "off")
-        return false
-    end
-
-    throw(ArgumentError("Invalid boolean value for $name: '$raw'"))
-end
-
 function parse_int_env(name::String, default::Int)::Int
     raw = strip(get(ENV, name, string(default)))
     try
@@ -103,34 +92,24 @@ function staging_smoke_main()
             get(ENV, "TIINGO_DUCKDB_PATH",
                 get(ENV, "TIINGO_DB_PATH", joinpath(pwd(), "data", "staging_smoke.duckdb"))))))
     ticker_limit = parse_int_env("TIINGO_SMOKE_TICKER_LIMIT", 25)
-    export_postgres = parse_bool_env("TIINGO_SMOKE_EXPORT_POSTGRES", false)
-    # Canonical: OHLCV_PG_CONNECTION; legacy alias: TIINGO_PG_CONNECTION
-    pg_connection_string = String(strip(get(ENV, "OHLCV_PG_CONNECTION",
-        get(ENV, "TIINGO_PG_CONNECTION", ""))))
-
     if ticker_limit < 1
         throw(ArgumentError("TIINGO_SMOKE_TICKER_LIMIT must be >= 1"))
-    end
-    if export_postgres && isempty(pg_connection_string)
-        throw(ArgumentError("OHLCV_PG_CONNECTION (or legacy TIINGO_PG_CONNECTION) is required when TIINGO_SMOKE_EXPORT_POSTGRES=true"))
     end
 
     mkpath(dirname(db_path))
 
     conn = nothing
-    pg_conn = nothing
 
     try
-        @info "Starting staging smoke test" date=string(today()) db_path ticker_limit export_postgres
+        @info "Starting staging smoke test" date=string(today()) db_path ticker_limit
 
         conn = connect_duckdb(db_path)
         optimize_database(conn)
         create_indexes(conn)
-        download_tickers_duckdb(conn)
-
-        stocks = get_tickers_stock(conn)
+        universe = collect_ticker_universe()
+        stocks = filter(row -> row.asset_type == "Stock", universe.filtered)
         if nrow(stocks) == 0
-            error("No stock tickers were loaded into us_tickers_filtered")
+            error("The collected ticker universe contains no active stocks")
         end
 
         smoke_count = min(ticker_limit, nrow(stocks))
@@ -167,25 +146,11 @@ function staging_smoke_main()
             collection_result,
             historical_row_count,
             () -> begin
-                if export_postgres
-                    pg_conn = connect_postgres(pg_connection_string)
-                    export_to_postgres(
-                        conn,
-                        pg_conn,
-                        ["historical_data", "us_tickers_filtered"];
-                        pg_connection_string=pg_connection_string,
-                    )
-                    @info "Staging PostgreSQL export completed" tables=["historical_data", "us_tickers_filtered"]
-                else
-                    @info "Skipping PostgreSQL export" reason="TIINGO_SMOKE_EXPORT_POSTGRES=false"
-                end
+                @info "Staging collection gate passed"
             end;
             sampled_active_tickers,
         )
     finally
-        if pg_conn !== nothing
-            close_postgres(pg_conn)
-        end
         if conn !== nothing
             close_duckdb(conn)
         end

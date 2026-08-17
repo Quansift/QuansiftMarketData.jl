@@ -7,6 +7,7 @@ using Logging
 using Random
 
 # Import the functions using QuansiftMarketData
+using QuansiftMarketData
 using QuansiftMarketData.API
 
 struct _InterruptingAPIResponseBody
@@ -211,6 +212,8 @@ end
         @test occursin("HTTP 503", message)
         @test occursin("response body omitted", message)
         @test !occursin(secret, message)
+        # An exhausted retryable status is a failure, not an absence.
+        @test !API.is_no_data_error(caught)
     end
 
     @testset "fetch_api_data does not follow redirects" begin
@@ -482,6 +485,7 @@ end
         @test caught isa ErrorException
         @test occursin("injected transport failure", sprint(showerror, caught))
         @test attempts[] == 2
+        @test !API.is_no_data_error(caught)
     end
 
     @testset "fetch_api_data preserves cancellation identity" begin
@@ -607,6 +611,173 @@ end
         @test !occursin("uri-secret", captured_log)
         @test !occursin("query-secret", captured_log)
         @test occursin("example.invalid/private/path", captured_log)
+    end
+
+    @testset "A 200 carrying no rows is a typed absence" begin
+        # The absence used to arrive as an `ErrorException`, so every consumer
+        # recovered it by matching English in the message. It is not a failure
+        # either: the request succeeded, so there is nothing to ask again for.
+        requests = Ref(0)
+        handler = function (_)
+            requests[] += 1
+            return HTTP.Response(
+                200,
+                ["Content-Type" => "application/json"],
+                "[]",
+            )
+        end
+
+        caught = _with_loopback_api(handler) do url
+            try
+                fetch_api_data(
+                    url,
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries=3,
+                    retry_delay=0,
+                )
+                nothing
+            catch error
+                error
+            end
+        end
+
+        @test caught isa API.NoDataError
+        @test !(caught isa ErrorException)
+        @test requests[] == 1
+        @test occursin("No data returned from", sprint(showerror, caught))
+        @test API.is_no_data_error(caught)
+
+        # `allow_empty=true` is the opt-out and still hands back the payload.
+        requests[] = 0
+        data = _with_loopback_api(handler) do url
+            fetch_api_data(
+                url,
+                Dict{String,String}(),
+                Dict{String,String}();
+                max_retries=3,
+                retry_delay=0,
+                allow_empty=true,
+            )
+        end
+        @test isempty(data)
+        @test requests[] == 1
+    end
+
+    @testset "An unparseable 200 stays an untyped failure" begin
+        requests = Ref(0)
+        handler = function (_)
+            requests[] += 1
+            return HTTP.Response(
+                200,
+                ["Content-Type" => "application/json"],
+                "<html>bad gateway</html>",
+            )
+        end
+
+        caught = _with_loopback_api(handler) do url
+            try
+                fetch_api_data(
+                    url,
+                    Dict{String,String}(),
+                    Dict{String,String}();
+                    max_retries=3,
+                    retry_delay=0,
+                )
+                nothing
+            catch error
+                error
+            end
+        end
+
+        @test caught isa ErrorException
+        @test occursin("Invalid JSON response from", sprint(showerror, caught))
+        @test requests[] == 1
+        # A malformed body is a broken response, not a security with nothing.
+        @test !API.is_no_data_error(caught)
+    end
+
+    @testset "is_no_data_error asks the type, not the wording" begin
+        redacted_url = "https://example.test/daily/AAPL/prices"
+
+        @test API.is_no_data_error(
+            API.NoDataError("No data returned from $redacted_url"),
+        )
+        for status in (404, 410)
+            @test API.is_no_data_error(
+                API._http_status_error(status, redacted_url, "body"),
+            )
+        end
+
+        # Any other carried status is a failure, whatever the body said. 429
+        # and 503 keep their retries; the retry testsets above pin that.
+        for status in (400, 401, 403, 429, 500, 503)
+            @test !API.is_no_data_error(
+                API.ApiStatusError(status, "no data returned for this security"),
+            )
+        end
+
+        # Wording alone proves nothing, including the exact wording that used
+        # to be load-bearing.
+        for message in (
+            "No data returned from $redacted_url",
+            "HTTP 404 for $redacted_url; response body omitted",
+            "HTTP 410 for $redacted_url; response body omitted",
+            "Invalid JSON response from $redacted_url",
+            "injected transport failure",
+        )
+            @test !API.is_no_data_error(ErrorException(message))
+        end
+        @test !API.is_no_data_error(ArgumentError("max_retries must be >= 1"))
+
+        # A distinct type, not a relabelled `ErrorException`.
+        @test API.NoDataError <: Exception
+        @test !(API.NoDataError <: ErrorException)
+    end
+
+    @testset "No-data errors carry only a redacted URL" begin
+        hostile_url =
+            "http://review-user:uri-secret@example.invalid/private/path?token=query-secret"
+        layer = _handler -> function (_request; kwargs...)
+            return HTTP.Response(200, "[]")
+        end
+
+        HTTP.pushlayer!(layer)
+        caught = try
+            with_logger(NullLogger()) do
+                try
+                    fetch_api_data(
+                        hostile_url,
+                        Dict{String,String}(),
+                        Dict{String,String}();
+                        max_retries=1,
+                        retry_delay=0,
+                    )
+                    nothing
+                catch error
+                    error
+                end
+            end
+        finally
+            HTTP.poplayer!()
+        end
+
+        message = sprint(showerror, caught)
+        @test caught isa API.NoDataError
+        @test !occursin("review-user", message)
+        @test !occursin("uri-secret", message)
+        @test !occursin("query-secret", message)
+        @test occursin("[REDACTED]", message)
+        # Exactly the redacted URL and nothing else: no body, no headers.
+        @test message ==
+              "No data returned from " * API._redact_api_error(hostile_url)
+    end
+
+    @testset "The no-data surface is exported" begin
+        for name in (:ApiStatusError, :NoDataError, :is_no_data_error)
+            @test name in names(QuansiftMarketData.API)
+            @test name in names(QuansiftMarketData)
+        end
     end
 
     # @testset "generate_filtered_tickers" begin

@@ -86,6 +86,46 @@ end
     @test calls == ["perm-empty", "perm-ok"]
 end
 
+@testset "Refresh Fundamentals uses the collected universe" begin
+    refresh_source = read(refresh_script, String)
+    @test occursin(
+        r"universe_payload\s*=\s*universe\.filtered",
+        refresh_source,
+    )
+    @test !occursin(
+        r"universe_payload\s*=\s*get_tickers_all\(conn\)",
+        refresh_source,
+    )
+
+    universe = collect_ticker_universe(DataFrame(
+        ticker = ["AAPL"],
+        exchange = ["NYSE"],
+        assetType = ["Stock"],
+        priceCurrency = ["USD"],
+        startDate = [Date(1980, 12, 12)],
+        endDate = [Date(2026, 8, 17)],
+    ))
+    calls = String[]
+    result = collect_fundamentals(
+        DataFrame(
+            permaTicker = ["perm-aapl"],
+            ticker = ["AAPL"],
+            isActive = [true],
+        ),
+        universe.filtered;
+        api_key = "offline-token",
+        as_of = Date(2026, 8, 17),
+        daily_fetcher = function (ticker; kwargs...)
+            push!(calls, ticker)
+            return [(date = "2026-08-17", marketCap = 1.0)]
+        end,
+    )
+
+    @test result.attempted == ["perm-aapl"]
+    @test isempty(result.failed)
+    @test calls == ["perm-aapl"]
+end
+
 @testset "Refresh table contract" begin
     @test TABLES_TO_HYDRATE == [
         "historical_data",

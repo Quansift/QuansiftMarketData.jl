@@ -1498,14 +1498,47 @@ function _apply_security_observation_state_key_migration!(conn)
     primary_key_name = quote_postgres_identifier(
         String(only(primary_key.constraint_name)),
     )
+    unique_indexes = _pg_dataframe(conn, """
+        SELECT index_relation.relname AS index_name
+        FROM pg_catalog.pg_index AS index_entry
+        JOIN pg_catalog.pg_class AS table_relation
+          ON table_relation.oid = index_entry.indrelid
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = table_relation.relnamespace
+        JOIN pg_catalog.pg_class AS index_relation
+          ON index_relation.oid = index_entry.indexrelid
+        JOIN pg_catalog.pg_attribute AS perma_column
+          ON perma_column.attrelid = table_relation.oid
+         AND perma_column.attname = 'perma_ticker'
+        JOIN pg_catalog.pg_attribute AS observed_column
+          ON observed_column.attrelid = table_relation.oid
+         AND observed_column.attname = 'observed_at'
+        WHERE namespace.nspname = 'public'
+          AND table_relation.relname = 'security_observations'
+          AND index_entry.indisunique
+          AND NOT index_entry.indisprimary
+          AND index_entry.indpred IS NULL
+          AND index_entry.indexprs IS NULL
+          AND index_entry.indnkeyatts = 2
+          AND index_entry.indnatts = 2
+          AND (index_entry.indkey::smallint[])[0] = perma_column.attnum
+          AND (index_entry.indkey::smallint[])[1] = observed_column.attnum
+        ORDER BY index_relation.relname
+    """)
+    nrow(unique_indexes) >= 1 || throw(PostgresMigrationError(
+        3,
+        "security_observation_state_key",
+        "security_observations must have a unique state-key index before migration",
+    ))
     _pg_command(
         conn,
         "ALTER TABLE \"public\".\"security_observations\" " *
         "DROP CONSTRAINT $primary_key_name",
     )
-    _pg_command(conn, """
-        DROP INDEX "public"."uq_security_observations_key"
-    """)
+    for index_name in unique_indexes.index_name
+        quoted_index_name = quote_postgres_identifier(String(index_name))
+        _pg_command(conn, "DROP INDEX \"public\".$quoted_index_name")
+    end
     _pg_command(conn, """
         ALTER TABLE "public"."security_observations"
         ADD CONSTRAINT tiingojulia_security_observations_pkey

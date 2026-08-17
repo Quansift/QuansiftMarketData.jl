@@ -340,7 +340,7 @@ function main()
         if do_fundamentals_sync
             @info "Fetching current Fundamentals identity metadata"
             meta_payload = get_fundamental_meta(api_key=api_key)
-            universe_payload = get_tickers_all(conn)
+            universe_payload = universe.filtered
             observed_at = now(UTC)
             observations = normalize_security_observations(
                 meta_payload,

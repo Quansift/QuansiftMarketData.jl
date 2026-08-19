@@ -175,31 +175,72 @@ module Schema
         end
 
         historical_columns = DBInterface.execute(conn, """
-            SELECT column_name
+            SELECT is_nullable
             FROM information_schema.columns
             WHERE table_schema = 'main'
               AND table_name = 'historical_data'
               AND column_name = 'fetched_at'
         """) |> DataFrame
-        if isempty(historical_columns)
-            DBInterface.execute(conn, """
-                ALTER TABLE historical_data
-                ADD COLUMN fetched_at TIMESTAMP
-            """)
+        column_missing = isempty(historical_columns)
+        # A database left half-migrated by an earlier failed attempt has the
+        # column but not the constraint, so key the migration on the invariant
+        # rather than on the column's absence.
+        column_nullable = column_missing || uppercase(
+            String(only(historical_columns.is_nullable)),
+        ) != "NO"
+        if column_nullable
+            # DuckDB refuses to alter a table while catalog entries depend on
+            # it, so the secondary indexes have to come off first. Their DDL is
+            # read back from the catalog instead of hardcoded, so an index this
+            # build does not know about is still restored exactly.
+            historical_indexes = DBInterface.execute(conn, """
+                SELECT index_name, sql
+                FROM duckdb_indexes()
+                WHERE schema_name = 'main'
+                  AND table_name = 'historical_data'
+            """) |> DataFrame
+            if column_missing
+                DBInterface.execute(conn, """
+                    ALTER TABLE historical_data
+                    ADD COLUMN fetched_at TIMESTAMP
+                """)
+            end
+            # The backfill has to commit before the constraint is applied:
+            # DuckDB refuses to build the NOT NULL index while the same
+            # transaction still holds outstanding updates.
             DBInterface.execute(conn, """
                 UPDATE historical_data
                 SET fetched_at = TIMESTAMP '1970-01-01 00:00:00'
                 WHERE fetched_at IS NULL
             """)
-            DBInterface.execute(conn, """
-                ALTER TABLE historical_data
-                ALTER COLUMN fetched_at SET NOT NULL
-            """)
-            DBInterface.execute(conn, """
-                ALTER TABLE historical_data
-                ALTER COLUMN fetched_at SET DEFAULT
-                    make_timestamp_ms(epoch_ms(current_timestamp))
-            """)
+            DBInterface.execute(conn, "BEGIN TRANSACTION")
+            try
+                for index_name in historical_indexes.index_name
+                    DBInterface.execute(
+                        conn,
+                        "DROP INDEX $(validate_identifier(String(index_name)))",
+                    )
+                end
+                DBInterface.execute(conn, """
+                    ALTER TABLE historical_data
+                    ALTER COLUMN fetched_at SET NOT NULL
+                """)
+                DBInterface.execute(conn, """
+                    ALTER TABLE historical_data
+                    ALTER COLUMN fetched_at SET DEFAULT
+                        make_timestamp_ms(epoch_ms(current_timestamp))
+                """)
+                for index_sql in historical_indexes.sql
+                    DBInterface.execute(conn, String(index_sql))
+                end
+                DBInterface.execute(conn, "COMMIT")
+            catch
+                try
+                    DBInterface.execute(conn, "ROLLBACK")
+                catch
+                end
+                rethrow()
+            end
             DBInterface.execute(conn, "CHECKPOINT")
         end
     end

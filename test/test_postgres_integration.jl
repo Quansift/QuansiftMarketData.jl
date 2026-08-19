@@ -1487,17 +1487,31 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
                 end
             end
 
+            # The supported-tickers feed lists the same symbol under several
+            # exchanges, so repeated tickers are the universe's normal state
+            # rather than corruption.
+            duplicated_all = vcat(
+                all_universe,
+                transform(
+                    all_universe[[1], :],
+                    :exchange => (_ -> ["NYSE"]) => :exchange,
+                ),
+            )
+            duplicated_filtered = vcat(
+                filtered_universe,
+                transform(
+                    filtered_universe[[1], :],
+                    :exchange => (_ -> ["NYSE"]) => :exchange,
+                ),
+            )
+            @test replace_ticker_universe(
+                pg,
+                duplicated_all,
+                duplicated_filtered,
+            ) == (all_rows = 3, filtered_rows = 2)
+            @test LibPQ.transaction_status(pg) == LibPQ.libpq_c.PQTRANS_IDLE
+
             inconsistent_universes = (
-                (
-                    vcat(all_universe, all_universe[[1], :]),
-                    filtered_universe,
-                    "all ticker universe contains duplicate canonical ticker keys",
-                ),
-                (
-                    all_universe,
-                    vcat(filtered_universe, filtered_universe),
-                    "filtered ticker universe contains duplicate canonical ticker keys",
-                ),
                 (
                     all_universe,
                     transform(filtered_universe, :ticker => (_ -> ["MSFT"]) => :ticker),

@@ -969,13 +969,12 @@ module Postgres
         nrow(filtered_frame) > 0 || throw(ArgumentError(
             "filtered ticker universe must not be empty",
         ))
-        for (label, frame) in (("all", all_frame), ("filtered", filtered_frame))
-            duplicate_rows = findall(nonunique(frame, [:ticker]))
-            isempty(duplicate_rows) || throw(ArgumentError(
-                "$label ticker universe contains duplicate canonical ticker keys " *
-                "at rows: $(join(duplicate_rows, ", "))",
-            ))
-        end
+        # Ticker is not a key of either universe table: the supported-tickers
+        # feed lists the same symbol under several exchanges and asset types,
+        # and the canonical PostgreSQL schema indexes ticker without a unique
+        # constraint. Uniqueness is only required when the optional
+        # filtered_stocks foreign key is deployed, and PostgreSQL enforces that
+        # itself through the unique bridge index that foreign key depends on.
         filtered_only = setdiff(Set(filtered_frame.ticker), Set(all_frame.ticker))
         isempty(filtered_only) || throw(ArgumentError(
             "filtered ticker universe contains keys absent from all ticker universe: " *

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-19
+
 ### Added
 
 - `NoDataError` and the public predicate `is_no_data_error`, plus an export of
@@ -35,6 +37,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `download_tickers_duckdb`, `add_historical_data`, and
   `update_split_ticker`. Use the sink-neutral collectors and explicit
   PostgreSQL, Parquet, or DuckDB persistence primitives instead.
+
+### Fixed
+
+- The DuckDB `historical_data.fetched_at` migration no longer fails on any
+  database carrying secondary indexes. `ALTER COLUMN ... SET NOT NULL` rewrites
+  the column's storage, and DuckDB refuses to alter a table while other catalog
+  entries depend on it, so the migration now drops and recreates the secondary
+  indexes around the alter in one transaction. Index DDL is read back from
+  `duckdb_indexes()` rather than hardcoded, so an index this build does not
+  know about is still restored exactly. The `UNIQUE (ticker, date)` constraint
+  does not block the alter and the table is not rebuilt.
+- The same migration is now keyed on `fetched_at` being nullable rather than
+  absent, so a database left half-migrated by the failure above repairs itself
+  on the next connect instead of never being retried.
+- `replace_ticker_universe` no longer rejects duplicate canonical ticker keys.
+  Ticker is not a key of either universe table: the supported-tickers feed
+  lists the same symbol under several exchanges and asset types, and the
+  canonical PostgreSQL schema indexes ticker without a unique constraint.
+  Uniqueness is only required when the optional `filtered_stocks` foreign key
+  is deployed, and PostgreSQL enforces that itself through the unique bridge
+  index that foreign key depends on.
 
 ## [3.0.0] - 2026-08-11
 
@@ -151,7 +174,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v3.0.0...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.0.0
 [3.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v3.0.0
 [2.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v2.0.0
 [1.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v1.0.0

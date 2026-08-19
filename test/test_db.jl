@@ -162,6 +162,58 @@ end
         close_duckdb(reopened_conn)
     end
 
+    @testset "Historical data fetched_at migration survives dependent indexes" begin
+        legacy_path = tempname() * ".duckdb"
+        legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)
+        DBInterface.execute(legacy_conn, """
+            CREATE TABLE historical_data (
+                ticker VARCHAR,
+                date DATE,
+                UNIQUE (ticker, date)
+            )
+        """)
+        for statement in (
+            "CREATE INDEX idx_historical_ticker ON historical_data(ticker)",
+            "CREATE INDEX idx_historical_date ON historical_data(date)",
+            "CREATE INDEX idx_historical_ticker_date ON historical_data(ticker, date)",
+        )
+            DBInterface.execute(legacy_conn, statement)
+        end
+        DBInterface.execute(
+            legacy_conn,
+            "INSERT INTO historical_data VALUES ('OLD', DATE '2024-01-02')",
+        )
+        DBInterface.close!(legacy_conn)
+
+        migrated_conn = connect_duckdb(legacy_path)
+        nullability = DBInterface.execute(migrated_conn, """
+            SELECT is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'historical_data'
+              AND column_name = 'fetched_at'
+        """) |> DataFrame
+        @test only(nullability.is_nullable) == "NO"
+
+        restored_indexes = DBInterface.execute(migrated_conn, """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE schema_name = 'main' AND table_name = 'historical_data'
+        """) |> DataFrame
+        @test sort(String.(restored_indexes.index_name)) == [
+            "idx_historical_date",
+            "idx_historical_ticker",
+            "idx_historical_ticker_date",
+        ]
+
+        backfilled = DBInterface.execute(
+            migrated_conn,
+            "SELECT fetched_at FROM historical_data WHERE ticker = 'OLD'",
+        ) |> DataFrame
+        @test only(backfilled.fetched_at) == DateTime(1970, 1, 1)
+        close_duckdb(migrated_conn)
+    end
+
     @testset "Security observation key migration preserves state history" begin
         legacy_path = tempname() * ".duckdb"
         legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)

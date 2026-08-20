@@ -214,6 +214,70 @@ end
         close_duckdb(migrated_conn)
     end
 
+    @testset "Historical data fetched_at migration restores a missing default" begin
+        # Reachable by hand repair: an operator who read the failure, applied
+        # the obvious ALTER, and stopped there leaves NOT NULL without the
+        # canonical default. Keying the migration on nullability alone would
+        # skip such a database forever.
+        legacy_path = tempname() * ".duckdb"
+        legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)
+        DBInterface.execute(legacy_conn, """
+            CREATE TABLE historical_data (
+                ticker VARCHAR,
+                date DATE,
+                fetched_at TIMESTAMP NOT NULL,
+                UNIQUE (ticker, date)
+            )
+        """)
+        DBInterface.execute(
+            legacy_conn,
+            "CREATE INDEX idx_historical_ticker ON historical_data(ticker)",
+        )
+        DBInterface.execute(
+            legacy_conn,
+            "INSERT INTO historical_data " *
+            "VALUES ('OLD', DATE '2024-01-02', TIMESTAMP '2024-01-02 00:00:00')",
+        )
+        DBInterface.close!(legacy_conn)
+
+        migrated_conn = connect_duckdb(legacy_path)
+        fetched_at_default = only((DBInterface.execute(
+            migrated_conn,
+            "SELECT column_default FROM information_schema.columns " *
+            "WHERE table_schema = 'main' " *
+            "AND table_name = 'historical_data' " *
+            "AND column_name = 'fetched_at'",
+        ) |> DataFrame).column_default)
+        @test occursin(
+            "make_timestamp_ms(epoch_ms(current_timestamp))",
+            lowercase(replace(fetched_at_default, " " => "")),
+        )
+
+        nullability = DBInterface.execute(migrated_conn, """
+            SELECT is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'historical_data'
+              AND column_name = 'fetched_at'
+        """) |> DataFrame
+        @test only(nullability.is_nullable) == "NO"
+
+        restored_indexes = DBInterface.execute(migrated_conn, """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE schema_name = 'main' AND table_name = 'historical_data'
+        """) |> DataFrame
+        @test String.(restored_indexes.index_name) == ["idx_historical_ticker"]
+
+        # The repair must not disturb provenance that was already correct.
+        preserved = DBInterface.execute(
+            migrated_conn,
+            "SELECT fetched_at FROM historical_data WHERE ticker = 'OLD'",
+        ) |> DataFrame
+        @test only(preserved.fetched_at) == DateTime(2024, 1, 2)
+        close_duckdb(migrated_conn)
+    end
+
     @testset "Security observation key migration preserves state history" begin
         legacy_path = tempname() * ".duckdb"
         legacy_conn = DBInterface.connect(DuckDB.DB, legacy_path)

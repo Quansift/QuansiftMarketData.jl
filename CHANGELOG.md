@@ -23,8 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SyncFailure` construction still works and infers `:transient` or
   `:permanent` from `retryable`.
 
+### Fixed
+
+- The DuckDB `historical_data.fetched_at` migration now also repairs a column
+  that carries `NOT NULL` but no default. The guard was keyed on the two states
+  the original bug produced — absent, or present and nullable — so a database
+  repaired by hand, which is how the constraint gets applied without the
+  default, was skipped forever. It is now keyed on the invariant the canonical
+  DDL declares. The two repairs are issued independently: re-applying
+  `SET NOT NULL` to a column that already carries it aborts the DuckDB process
+  rather than raising.
+
 ### Changed
 
+- `migrate_postgres!` defaults `statement_timeout_seconds` to 3600 and
+  `lock_timeout_seconds` to 30, both now named constants rather than literals
+  repeated across call sites. The former 300s statement timeout could not
+  complete migration 2, which rewrites every row of `historical_data` in one
+  transaction and measured 19m49s against 20,622,888 rows on the production
+  data plane. The lock timeout is unchanged in value and stays small: it bounds
+  contention with another writer, not the work itself.
 - An unrecognised `TIINGO_LOGGER` value now falls back to the console logger
   and warns, naming the rejected value and the supported modes. It previously
   installed a `NullLogger`, discarding every diagnostic the package emits —

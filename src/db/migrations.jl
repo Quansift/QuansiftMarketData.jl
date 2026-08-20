@@ -767,10 +767,33 @@ bootstrap_phase_order() = [
     :commit,
 ]
 
+"""
+Seconds a single migration statement may run before PostgreSQL cancels it.
+
+Migration 2 rewrites every row of `historical_data` inside one transaction. On
+the production data plane that took 19m49s against 20,622,888 rows, so the
+former 300s default could not complete a migration this package ships. Sized
+with headroom over that measurement rather than to it — a busier server is
+slower, and the cost of overshooting is a longer wait while the cost of
+undershooting is a cancelled maintenance window. Callers with a smaller
+database should pass a smaller value.
+"""
+const DEFAULT_STATEMENT_TIMEOUT_SECONDS = 3600
+
+"""
+Seconds to wait for the locks a migration needs.
+
+Deliberately small, and unrelated to `DEFAULT_STATEMENT_TIMEOUT_SECONDS`: it
+bounds contention with another writer, not the work itself. Waiting a long time
+for a lock means someone else is using the database, which is a reason to stop
+rather than to be patient.
+"""
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 30
+
 function validate_migration_options(
     target_version::Integer,
     lock_timeout_seconds::Integer,
-    statement_timeout_seconds::Integer=300,
+    statement_timeout_seconds::Integer=DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )
     1 <= target_version <= POSTGRES_SCHEMA_VERSION || throw(ArgumentError(
         "target_version must be between 1 and $POSTGRES_SCHEMA_VERSION",
@@ -1609,8 +1632,8 @@ end
 function migrate_postgres!(
     conn::LibPQ.Connection;
     target_version::Integer=POSTGRES_SCHEMA_VERSION,
-    lock_timeout_seconds::Integer=30,
-    statement_timeout_seconds::Integer=300,
+    lock_timeout_seconds::Integer=DEFAULT_LOCK_TIMEOUT_SECONDS,
+    statement_timeout_seconds::Integer=DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )::PostgresMigrationResult
     validate_migration_options(
         target_version,

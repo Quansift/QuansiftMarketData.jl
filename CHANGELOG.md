@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `is_quota_failure` and a `category` field on `SyncFailure`, carrying one of
+  `:quota`, `:no_data`, `:transient`, or `:permanent`. A provider rejecting a
+  request because the hourly quota is spent is now distinguishable from a
+  request that failed on its own merits, so a caller can treat the gap a later
+  cycle will collect differently from something worth alerting on. Only a
+  status the thrower committed to earns a category; message wording never does,
+  matching the reasoning behind `is_no_data_error`. Four-argument
+  `SyncFailure` construction still works and infers `:transient` or
+  `:permanent` from `retryable`.
+
+### Changed
+
+- An unrecognised `TIINGO_LOGGER` value now falls back to the console logger
+  and warns, naming the rejected value and the supported modes. It previously
+  installed a `NullLogger`, discarding every diagnostic the package emits —
+  silently, since the logger that would have carried the warning was the one
+  being discarded. Silence is still available, but only by asking for it with
+  the new `none` mode.
+
 ## [4.0.0] - 2026-08-19
 
 ### Added

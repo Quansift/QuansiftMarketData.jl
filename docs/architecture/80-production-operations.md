@@ -195,7 +195,7 @@ The independent `benchmark/` project exercises current sink-neutral
 normalization and persistence APIs with seeded synthetic data. It never calls
 Tiingo or requires a Tiingo secret. Run `micro`, `load`, and `soak` only with
 finite environment bounds documented in
-[`docs/src/PERFORMANCE.md`](docs/src/PERFORMANCE.md).
+[`docs/src/PERFORMANCE.md`](../src/PERFORMANCE.md).
 
 Timing, allocation, and resident-memory observations are report-only. A run
 fails only for correctness, idempotency, cleanup, configuration bounds, or
@@ -301,7 +301,7 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 The compose and systemd files under `deploy/` are retained as integration-smoke
 examples for existing users. Enabling their timer would merely schedule the
 bounded smoke; it would not create the canonical Quansift production workflow.
-See [`deploy/README.md`](deploy/README.md) for their exact scope.
+See [`deploy/README.md`](../../deploy/README.md) for their exact scope.
 
 ## Consumer integration requirements
 

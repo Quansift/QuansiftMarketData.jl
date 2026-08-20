@@ -36,7 +36,7 @@ whenever the pinned revision does.
 
 So the chain is:
 
-```
+```text
 commit on main  →  tag  →  scheduler [sources] rev  →  Pkg cache  →  pipeline
 ```
 

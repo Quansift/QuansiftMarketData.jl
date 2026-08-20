@@ -69,7 +69,7 @@ window. Guessing costs the data.
 
 Since 4.1.0 the refusal **names what differs**:
 
-```
+```text
 PostgreSQL schema does not match the canonical target manifest for version 1;
 take a backup before manual repair:
   security_observations.ticker: expected NOT NULL, found nullable

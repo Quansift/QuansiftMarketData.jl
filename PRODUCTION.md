@@ -71,10 +71,21 @@ Before releasing or consuming a QuansiftMarketData build:
    PostgreSQL ticker-universe tables are exact, replaceable snapshots. The
    canonical schema intentionally does not make full-history price or
    Fundamentals tables children of those snapshots, so delisting a ticker from
-   the latest universe never deletes its historical rows. Consumer-added
-   foreign keys targeting a universe table are outside this contract: an exact
-   replacement fails and rolls back atomically while the foreign key exists.
-   Do not add `CASCADE` to work around that failure.
+   the latest universe never deletes its historical rows.
+
+   One consumer foreign key is supported by name: `filtered_stocks_ticker_fkey`
+   on `public.filtered_stocks`, referencing `us_tickers_filtered (ticker)`.
+   `replace_ticker_universe` recognises it only when it matches an exact
+   fingerprint, then drops it, reloads both snapshots, and recreates it
+   verbatim — including its `ON DELETE CASCADE` — inside the replacement
+   transaction, verifying the fingerprint again before committing. That cascade
+   belongs to the library, not to an operator working around a failure.
+
+   Every other consumer foreign key targeting a universe table is outside this
+   contract. An exact replacement fails and rolls back atomically while such a
+   key exists, and adding `CASCADE` to work around that failure is not
+   supported: it would let a universe replacement delete consumer rows the
+   library never inspected.
 
    For downloaded ticker metadata, the validated CSV is the canonical
    downstream artifact and the retained ZIP is ancillary input. Each is

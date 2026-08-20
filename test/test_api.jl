@@ -55,6 +55,61 @@ end
         end
     end
 
+    @testset "a relative .env follows the caller, not the package" begin
+        # A Pkg-installed package lives under ~/.julia/packages/<name>/<hash>/,
+        # a directory Pkg owns and re-hashes on every version change. Resolving
+        # a relative default there tells the operator to keep a credential
+        # somewhere it will be silently orphaned.
+        caller_dir = mktempdir()
+        package_dir = mktempdir()
+        try
+            write(joinpath(caller_dir, ".env"), "TIINGO_API_KEY=from-caller\n")
+            write(joinpath(package_dir, ".env"), "TIINGO_API_KEY=from-package\n")
+
+            @test API.resolve_env_path(".env"; search_roots=(caller_dir, package_dir)) ==
+                  joinpath(caller_dir, ".env")
+
+            # The package directory still answers when the caller has no .env,
+            # so a repository checkout keeps working.
+            @test API.resolve_env_path(".env"; search_roots=(mktempdir(), package_dir)) ==
+                  joinpath(package_dir, ".env")
+
+            # With nothing on disk the caller is named, because that is where
+            # the operator should create the file.
+            empty_caller = mktempdir()
+            @test API.resolve_env_path(".env"; search_roots=(empty_caller, mktempdir())) ==
+                  joinpath(empty_caller, ".env")
+
+            # An absolute path is the caller's decision and is never searched.
+            absolute = joinpath(package_dir, ".env")
+            @test API.resolve_env_path(absolute; search_roots=(caller_dir,)) == absolute
+        finally
+            rm(caller_dir; force=true, recursive=true)
+            rm(package_dir; force=true, recursive=true)
+        end
+    end
+
+    @testset "a missing key names a writable location" begin
+        original_key = get(ENV, "TIINGO_API_KEY", nothing)
+        original_load_attempted = API.ENV_LOAD_ATTEMPTED[]
+        pop!(ENV, "TIINGO_API_KEY", nothing)
+        try
+            message = try
+                get_api_key(env_path=joinpath(mktempdir(), ".env"), reload_env=true)
+                ""
+            catch caught
+                sprint(showerror, caught)
+            end
+            @test occursin("TIINGO_API_KEY", message)
+            # Never point at the package cache; it is not a place to keep a key.
+            @test !occursin(".julia/packages", message)
+        finally
+            API.ENV_LOAD_ATTEMPTED[] = original_load_attempted
+            isnothing(original_key) ? pop!(ENV, "TIINGO_API_KEY", nothing) :
+                (ENV["TIINGO_API_KEY"] = original_key)
+        end
+    end
+
     @testset "fetch_api_data rejects invalid resource limits before I/O" begin
         arguments = (
             "http://example.invalid",

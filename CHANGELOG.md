@@ -36,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A relative `.env` is now looked for in the caller's working directory before
+  the package's own directory. The package directory was the only root, which
+  is correct for a repository checkout and wrong for a `Pkg`-installed package,
+  where it resolves to `~/.julia/packages/<name>/<hash>/` — a directory `Pkg`
+  owns, re-hashes on every version change, and may garbage-collect. The missing
+  key error named that path as the place to put a credential; it now names a
+  location the operator controls, and mentions `env_path=`. Absolute paths are
+  unaffected, and a checkout that keeps its `.env` beside the package still
+  resolves through the retained fallback.
+- `PRODUCTION.md` no longer claims that every consumer foreign key blocks a
+  universe replacement. `replace_ticker_universe` supports exactly one by name,
+  `filtered_stocks_ticker_fkey`, recreating it with its `ON DELETE CASCADE`
+  inside the replacement transaction — so the document forbade a clause the
+  library itself writes. Other consumer foreign keys still fail closed.
 - A migration refused because the schema does not match the canonical manifest
   now names each relation, column, and index at fault instead of only saying
   that something differs. The message previously ended with an instruction to

@@ -4,6 +4,8 @@ type: concept
 source_of_truth:
   - AGENTS.md
   - src/QuansiftMarketData.jl
+  - scripts/live_canary.jl
+  - scripts/staging_smoke_test.jl
   - deploy/README.md
 last_verified: 2026-08-20
 ---
@@ -39,10 +41,16 @@ channel, and no knowledge of DigitalOcean.
   Managed PostgreSQL.
 - Notifications, and QuantScreener/TATSU sequencing.
 
-A consequence worth stating plainly: **this package never decides that a run
-succeeded.** It reports what happened — including a structured list of
-failures — and the scheduler decides what that means. If partial data must not
-be published, that gate lives in the scheduler, not here.
+A consequence worth stating plainly: **the library never decides that a
+production run succeeded.** It reports what happened — including a structured
+list of failures — and the scheduler decides what that means. If partial data
+must not be published, that gate lives in the scheduler, not here.
+
+The bundled scripts are the exception, and a narrow one. `live_canary.jl` and
+`staging_smoke_test.jl` do evaluate their own success condition and exit
+non-zero on failure, because a canary with no verdict is not a canary. That
+verdict covers only the script's own bounded check, never a production
+ingest.
 
 ## The role of each sink
 

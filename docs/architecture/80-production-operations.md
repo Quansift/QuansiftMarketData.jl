@@ -3,9 +3,16 @@ title: Production operations
 type: task
 source_of_truth:
   - src/db/migrations.jl
+  - src/db/schema.jl
+  - src/db/postgres.jl
   - src/db/parquet.jl
+  - src/sync.jl
+  - src/fundamental_sync.jl
   - scripts/
   - deploy/README.md
+  - .github/workflows/CI.yml
+external_authority:
+  - Tiingo plan terms
 last_verified: 2026-08-20
 ---
 

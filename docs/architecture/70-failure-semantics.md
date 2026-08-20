@@ -4,8 +4,13 @@ type: concept
 source_of_truth:
   - src/results.jl
   - src/api.jl
+  - src/sync.jl
+  - src/fundamental_sync.jl
   - src/db/migrations.jl
   - src/db/schema.jl
+  - src/db/operations.jl
+  - src/db/postgres.jl
+  - src/db/parquet.jl
   - src/QuansiftMarketData.jl
 last_verified: 2026-08-20
 ---
@@ -62,8 +67,13 @@ unseen.
 
 **Only a status the thrower committed to earns a category.** An
 `ErrorException` whose wording mentions a rate limit does not become `:quota`,
-for the same reason `is_no_data_error` refuses to read messages: wording is not
-a fact.
+because wording is not a fact the thrower committed to.
+
+Note the asymmetry with `_is_unavailable_historical_error` in `src/sync.jl`,
+which *does* fall back to substring matching for errors carrying no status at
+all. That fallback is deliberate and documented at the call site; the category
+admits no such fallback, because a wrong category would silence an alert rather
+than merely misfile one record.
 
 ## Silent failures that were removed
 
@@ -92,8 +102,11 @@ Measured against DuckDB.jl 1.5.2. Both are **process aborts**, not exceptions �
 caught, so both must be avoided by construction.
 
 1. **Re-applying `SET NOT NULL` to a column that already carries it aborts.**
-   The `fetched_at` repair therefore issues the constraint and the default
-   independently rather than as a fixed pair.
+   The `fetched_at` repair therefore evaluates `needs_not_null` and
+   `needs_default` as independent conditions, so the default-only branch never
+   re-issues a constraint that is already satisfied. Where the constraint *is*
+   missing, both statements still run together in one transaction — it is the
+   conditions that are independent, not the SQL.
 2. **`COMMIT` aborts when a transaction carries only `DROP INDEX`,
    `SET DEFAULT`, and `CREATE INDEX`.** The same statements outside a
    transaction are fine, and the same transaction with `SET NOT NULL` in it is
@@ -102,6 +115,28 @@ caught, so both must be avoided by construction.
    because that branch rewrites no data.
 
 Revisit both if a DuckDB release changes the behaviour.
+
+## A checkpoint FATAL is not retryable
+
+`sync_fundamentals!` checkpoints DuckDB every `checkpoint_every` upsert
+attempts — default 100, or `FUNDAMENTALS_CHECKPOINT_EVERY` — to bound the
+buffer manager, which otherwise grows with the size of the run rather than the
+size of a batch.
+
+**A failed checkpoint aborts the run, and must.** DuckDB invalidates the entire
+database on a checkpoint FATAL, so every later write is guaranteed to fail.
+Carrying on would turn one clear error into a long tail of confusing ones, and
+this is why write failures are never swept for retry after a checkpoint FATAL.
+
+The operator response is not to retry:
+
+1. Stop. Do not reissue writes against that connection; it is dead.
+2. Close it and reopen the database.
+3. Resume from the last committed watermark via `get_fundamental_watermarks`.
+   Work completed before the FATAL is durable; work after it never happened.
+
+Retrying the dead connection produces failures that look like data problems and
+are not.
 
 ## What the caller must decide
 

@@ -5,13 +5,14 @@ source_of_truth:
   - src/db/migrations.jl
   - src/db/schema.jl
   - src/db/operations.jl
+  - src/db/postgres.jl
   - src/db/parquet.jl
 last_verified: 2026-08-20
 ---
 
 # Data model and persistence
 
-Four relations carry everything this package produces. Their shape is declared
+Five relations carry everything this package produces. Their shape is declared
 once, in a manifest, and every deployed database is checked against it.
 
 ## The relations
@@ -31,8 +32,9 @@ took down both exports for five days.
 
 `us_tickers` is the raw feed. The same symbol legitimately appears under
 several exchanges and asset types, so **duplicate tickers are its normal
-state**, not corruption. On the production universe of 108,342 rows, 2,274
-tickers were duplicated. `us_tickers_filtered` is nearly unique but not
+state**, not corruption. Measured on the production data plane on 2026-08-19: 108,342 rows,
+106,068 distinct tickers, 2,274 duplicated. That figure is an observation of a
+running system, not a property of this code — re-measure rather than cite it. `us_tickers_filtered` is nearly unique but not
 entirely.
 
 The canonical schema reflects this: both tables index `ticker` **without** a

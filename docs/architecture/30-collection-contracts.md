@@ -6,6 +6,8 @@ source_of_truth:
   - src/fundamental_sync.jl
   - src/results.jl
   - src/api.jl
+  - src/db/operations.jl
+  - src/db/postgres.jl
 last_verified: 2026-08-20
 ---
 
@@ -18,7 +20,11 @@ the run was acceptable.
 ## Sink-neutral collection
 
 `collect_ticker_universe`, `collect_historical`, and `collect_fundamentals`
-return canonical `DataFrame`s and a typed result. Persistence is a separate
+return canonical `DataFrame`s. The two that operate per entity —
+`collect_historical` and `collect_fundamentals` — also return a typed result
+carrying per-entity outcomes; `collect_ticker_universe` returns a plain
+`NamedTuple` of `all` and `filtered`, because a universe download either
+produced a feed or threw. Persistence is a separate
 step, performed by a writer the caller supplies or by an explicit `upsert_*`
 call.
 
@@ -74,9 +80,14 @@ rather than per row, so one collection produces one provenance stamp.
 without provenance cannot be compared for freshness, so it is refused rather
 than defaulted.
 
-Splits are detected in newly collected data, and an affected ticker has its
-full history refetched rather than patched — a split changes every historical
-adjusted price, so incremental repair would be wrong.
+`find_split_refresh_targets` reports which tickers show a split in newly
+collected data. **It only reports them.** Refetching the full history for a
+target, and deciding the scan range, belongs to the caller — in production, the
+scheduler. Do not read this as self-healing.
+
+A split must be repaired by full refetch rather than by patching, because it
+changes every historical adjusted price for that security. Incremental repair
+would leave the series internally inconsistent.
 
 ## The Fundamentals contract
 
@@ -98,11 +109,16 @@ A provider that returns 200 with no rows throws `NoDataError`, distinct from
 `ApiStatusError` for a failed request. `is_no_data_error` covers both
 `NoDataError` and an `ApiStatusError` carrying 404 or 410.
 
-The reason is stated in the source and worth repeating: an `ErrorException`
-whose wording happens to mention "no data" does not qualify, **because wording
-is not a fact the thrower committed to**. Callers must never classify by
-matching English substrings in a message. The same principle governs
-`SyncFailure.category`.
+The rule is a precedence, not a prohibition. **A typed status is
+authoritative**: a 503 whose body happens to say "no data returned" is worth
+retrying, not recorded as an absence. Substring matching survives only as a
+fallback for errors that carried no status at all — an injected fetcher, a
+driver error, a normalisation failure — and `_is_unavailable_historical_error`
+says so at the point where it does it.
+
+`SyncFailure.category` is stricter and admits no fallback: only a status the
+thrower committed to earns a category, so an `ErrorException` mentioning a rate
+limit never becomes `:quota`.
 
 ## What would make this page wrong
 

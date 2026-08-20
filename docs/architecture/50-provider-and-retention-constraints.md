@@ -4,6 +4,8 @@ type: reference
 source_of_truth:
   - src/api.jl
   - src/results.jl
+  - config.toml
+  - scripts/live_canary.jl
   - docs/architecture/80-production-operations.md
 external_authority:
   - Tiingo plan terms and API documentation
@@ -87,7 +89,10 @@ At 9,000, start planning — splitting stock across two hours, or pacing request
 
 The API layer treats 429 and 5xx as retryable, honours a `Retry-After` header,
 and backs off exponentially with additive jitter, never shrinking, capped at
-300 seconds. Defaults are 3 retries with a 2-second base delay.
+300 seconds. The default is a **maximum of 3 attempts** — one initial request and up to
+two retries — with a 2-second base delay. `max_retries` bounds attempts, not
+retries: the loop runs `for attempt in 1:max_retries` and only backs off while
+`attempt < max_retries`. Budget quota-recovery waits accordingly.
 
 That is correct for a transient error and **cannot bridge a spent quota**,
 which recovers only at the top of the hour. Quota exhaustion is a capacity

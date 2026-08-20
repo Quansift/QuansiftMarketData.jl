@@ -122,6 +122,7 @@ try
         pg;
         target_version=POSTGRES_SCHEMA_VERSION,
         lock_timeout_seconds=30,
+        statement_timeout_seconds=3600,
     )
     @info "PostgreSQL migration complete" current result
 finally
@@ -133,6 +134,16 @@ end
 in another transaction. It begins one transaction, sets a transaction-local
 lock timeout, and acquires PostgreSQL advisory lock `(1414089038, 1)`. A lock
 timeout, validation error, or cancellation rolls the transaction back.
+
+Size `statement_timeout_seconds` against your own `historical_data`, not
+against the default. Migration 2 rewrites every row of that table inside the
+one transaction: on a 20,622,888-row, 4179 MB table it took 19m49s, and the
+whole migration is cancelled and rolled back if the timeout expires first.
+Because the rewrite is one transaction, PostgreSQL holds every replaced row
+version until it commits, so the table needs roughly twice its size in free
+space plus room for the write-ahead log — budget around 10 GB free for a 4 GB
+table. Confirm both before opening a maintenance window; a rehearsal against a
+restored copy is the only way to know the real numbers for your host.
 `InterruptException` remains a cancellation signal and is rethrown.
 
 The ledger is `public.tiingojulia_schema_migrations`. Ledger versions must be

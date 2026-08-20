@@ -27,6 +27,27 @@ const MigrationSchema = QuansiftMarketData.DB.Schema
     ]
 end
 
+@testset "Default statement timeout can complete the migrations we ship" begin
+    # Migration 2 rewrites every row of historical_data in one transaction.
+    # On the production data plane that measured 19m49s against 20,622,888
+    # rows, so a default below that cancels the migration this package ships.
+    # Lowering this constant again should fail here rather than in a
+    # maintenance window.
+    measured_seconds = 19 * 60 + 49
+    @test MigrationSchema.DEFAULT_STATEMENT_TIMEOUT_SECONDS > measured_seconds
+
+    # One constant, so the two call sites cannot drift apart.
+    @test MigrationSchema.validate_migration_options(
+        1,
+        30,
+        MigrationSchema.DEFAULT_STATEMENT_TIMEOUT_SECONDS,
+    ) === nothing
+
+    # The lock timeout is a different failure mode and stays small.
+    @test MigrationSchema.DEFAULT_LOCK_TIMEOUT_SECONDS <
+          MigrationSchema.DEFAULT_STATEMENT_TIMEOUT_SECONDS
+end
+
 @testset "PostgreSQL migration registry is immutable and contiguous" begin
     migrations = MigrationSchema.POSTGRES_MIGRATIONS
     @test collect(map(migration -> migration.version, migrations)) ==

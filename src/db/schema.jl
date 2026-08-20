@@ -502,4 +502,6 @@ module Schema
     export quote_postgres_identifier, qualified_postgres_identifier
     export POSTGRES_SCHEMA_VERSION, PostgresMigrationResult, PostgresMigrationError
     export postgres_schema_version, migrate_postgres!
+    export postgres_migration_readiness, PostgresMigrationReadiness
+    export PostgresManifestDrift
 end

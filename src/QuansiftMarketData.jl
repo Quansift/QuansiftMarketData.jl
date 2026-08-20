@@ -254,6 +254,8 @@ export get_fundamental_watermarks, sync_fundamentals!
 export create_or_replace_table, create_tables, create_indexes, optimize_database
 export POSTGRES_SCHEMA_VERSION, PostgresMigrationResult, PostgresMigrationError
 export postgres_schema_version, migrate_postgres!
+export postgres_migration_readiness, PostgresMigrationReadiness
+export PostgresManifestDrift
 # Export types and errors
 export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQLConnection
 export SyncFailure, HistoricalCollectionResult, FundamentalCollectionResult, SyncIncompleteError

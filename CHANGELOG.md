@@ -23,8 +23,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SyncFailure` construction still works and infers `:transient` or
   `:permanent` from `retryable`.
 
+### Added
+
+- `postgres_migration_readiness`, a read-only report of whether a database is
+  ready to migrate. It takes no lock, opens no transaction, and creates
+  nothing, so it is safe against a live database at any time — including from a
+  monitoring check. `migrate_postgres!` answered the same question only by
+  attempting the work, which meant discovering a problem inside a maintenance
+  window rather than while planning one. The report carries `state`
+  (`:ready`, `:migration_required`, `:drift`, `:newer_schema`,
+  `:unknown_layout`, or `:invalid_ledger`), `ready`, `migratable`, the ledger
+  and target versions, and structured `drift`. Note that `postgres_schema_version`
+  cannot distinguish a fresh database from an unrecognised pre-ledger one —
+  both report `0` — while the readiness report separates them.
+
 ### Fixed
 
+- A migration refused because the schema does not match the canonical manifest
+  now names each relation, column, and index at fault instead of only saying
+  that something differs. The message previously ended with an instruction to
+  repair by hand while withholding what to repair, so an operator had to
+  reconstruct it against undocumented internals. `_manifest_matches` is now
+  defined as the drift report being empty, so the predicate and the message
+  cannot disagree, and a long list is summarised rather than dumped.
 - The DuckDB `historical_data.fetched_at` migration now also repairs a column
   that carries `NOT NULL` but no default. The guard was keyed on the two states
   the original bug produced — absent, or present and nullable — so a database

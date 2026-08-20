@@ -307,6 +307,70 @@ pg_connection_string = get(ENV, "TIINGO_TEST_PG_CONNECTION", "")
             ).server_version_num)
             @test 170_000 <= server_version_num < 180_000
 
+            @testset "Migration readiness reports without migrating" begin
+                _pg_integration_cleanup(pg)
+                ledger_relation() = only(_pg_integration_query(
+                    pg,
+                    "SELECT pg_catalog.to_regclass(" *
+                    "'public.tiingojulia_schema_migrations') AS relation",
+                ).relation)
+
+                # A fresh database is migratable and says so without being
+                # touched — the ledger must not be created as a side effect.
+                fresh = postgres_migration_readiness(pg)
+                @test fresh.state === :migration_required
+                @test fresh.migratable
+                @test !fresh.ready
+                @test fresh.from_version == 0
+                @test fresh.target_version == POSTGRES_SCHEMA_VERSION
+                @test ismissing(ledger_relation())
+
+                migrate_postgres!(pg)
+                current = postgres_migration_readiness(pg)
+                @test current.state === :ready
+                @test current.ready
+                @test current.migratable
+                @test current.from_version == POSTGRES_SCHEMA_VERSION
+                @test isempty(current.drift)
+
+                # Drift is named, not merely detected. This is the shape the
+                # data plane was in on 2026-08-19.
+                _pg_integration_command(pg, """
+                    ALTER TABLE "public"."security_observations"
+                    ALTER COLUMN join_status DROP NOT NULL
+                """)
+                drifted = postgres_migration_readiness(pg)
+                @test drifted.state === :drift
+                @test !drifted.ready
+                @test !drifted.migratable
+                @test any(
+                    finding -> finding.relation == "security_observations" &&
+                        finding.subject == "join_status",
+                    drifted.drift,
+                )
+                # migrate_postgres! must still refuse, and its message must
+                # carry the same subject the readiness report did.
+                refusal = try
+                    migrate_postgres!(pg)
+                    nothing
+                catch caught
+                    caught
+                end
+                @test refusal isa PostgresMigrationError
+                @test occursin("join_status", sprint(showerror, refusal))
+
+                _pg_integration_command(pg, """
+                    ALTER TABLE "public"."security_observations"
+                    ALTER COLUMN join_status SET NOT NULL
+                """)
+                @test postgres_migration_readiness(pg).state === :ready
+
+                # An older build reading a newer ledger is a distinct state.
+                behind = postgres_migration_readiness(pg; target_version=1)
+                @test behind.state === :newer_schema
+                @test !behind.migratable
+            end
+
             @testset "PostgreSQL migration fresh and finite legacy catalog" begin
                 _pg_integration_cleanup(pg)
                 @test postgres_schema_version(pg) == 0

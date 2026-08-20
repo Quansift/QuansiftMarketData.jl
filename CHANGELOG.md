@@ -22,9 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching the reasoning behind `is_no_data_error`. Four-argument
   `SyncFailure` construction still works and infers `:transient` or
   `:permanent` from `retryable`.
-
-### Added
-
 - `postgres_migration_readiness`, a read-only report of whether a database is
   ready to migrate. It takes no lock, opens no transaction, and creates
   nothing, so it is safe against a live database at any time — including from a

@@ -65,4 +65,4 @@ jobs:
 
               with:
                   fail: true
-                  args: --config '.lychee.toml' README.md CHANGELOG.md PRODUCTION.md CLAUDE.md AGENTS.md docs/src
+                  args: --config '.lychee.toml' README.md CHANGELOG.md CLAUDE.md AGENTS.md docs/architecture docs/src

@@ -111,6 +111,6 @@ are in the [full documentation](https://quansift.github.io/QuansiftMarketData.jl
 
 - [Documentation](https://quansift.github.io/QuansiftMarketData.jl/dev)
 - [Contributing guide](docs/src/90-contributing.md)
-- [Production operations](PRODUCTION.md)
+- [Production operations](docs/architecture/80-production-operations.md)
 - [Changelog](CHANGELOG.md)
 - [Citation](CITATION.cff)

@@ -1,3 +1,14 @@
+---
+title: Production operations
+type: task
+source_of_truth:
+  - src/db/migrations.jl
+  - src/db/parquet.jl
+  - scripts/
+  - deploy/README.md
+last_verified: 2026-08-20
+---
+
 # Production integration checklist
 
 QuansiftMarketData is a library, not the Quansift production scheduler. It owns
@@ -128,6 +139,14 @@ both in the operator's deletion inventory.
 ```julia
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
+    # Preflight. Read-only: takes no lock, opens no transaction, and creates
+    # nothing — unlike migrate_postgres!, which creates the ledger as a side
+    # effect and so cannot be used as a dry run. Do this before opening a
+    # maintenance window, not inside one.
+    readiness = postgres_migration_readiness(pg)
+    readiness.migratable || error("not migratable: $(readiness.state)")
+    isempty(readiness.drift) || error("schema drift: $(readiness.drift)")
+
     current = postgres_schema_version(pg)
     result = migrate_postgres!(
         pg;

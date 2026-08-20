@@ -154,15 +154,17 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
   DuckDB retention period or use DuckDB as the production full-history source.
   The rolling three-year rule belongs exclusively to Managed PostgreSQL
   publication and must not be restated as a DuckDB requirement.
-- The DuckDB-first full-history path is deprecated and targeted for removal in
-  a future major release: `export_to_postgres`, `update_historical`,
+- The DuckDB-first full-history path was **removed in 4.0.0**, not merely
+  deprecated: `export_to_postgres`, `update_historical`,
   `update_historical_parallel`, `update_historical_sequential`,
-  `download_tickers_duckdb`, `add_historical_data`, and `update_split_ticker`.
-  Do not add new callers. New work uses `collect_historical` with a
-  caller-supplied writer, `collect_ticker_universe` with
-  `replace_ticker_universe`, the PostgreSQL `upsert_*` overloads, and
-  `write_parquet`. DuckDB connection, schema, upsert, and query primitives are
-  not deprecated.
+  `download_tickers_duckdb`, `add_historical_data`, and `update_split_ticker`
+  no longer exist. Use `collect_historical` with a caller-supplied writer,
+  `collect_ticker_universe` with `replace_ticker_universe`, the PostgreSQL
+  `upsert_*` overloads, and `write_parquet`. DuckDB connection, schema, upsert,
+  and query primitives are unaffected and remain supported.
+- Architecture and operations live in `docs/architecture/`. Read it before
+  proposing a change to persistence, migrations, or collection; each document
+  names the source files it is derived from and when it was last verified.
 - PostgreSQL changes must pass the opt-in PostgreSQL 17 integration test in
   `test/test_postgres_integration.jl`; CI provides the required service.
 - PostgreSQL-to-Parquet requires DuckDB's `postgres` extension to be installed

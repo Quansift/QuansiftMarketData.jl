@@ -4,8 +4,12 @@
 
 | Version | Supported |
 | --- | --- |
-| 2.x | Yes |
+| 4.x | Yes |
 | Earlier versions | No |
+
+Versions before 4.0 predate the package rename from `Tiingo` to
+`QuansiftMarketData` in 3.0.0 and the removal of the DuckDB-first entry points
+in 4.0.0. Report against a 4.x version or a commit on `main`.
 
 ## Reporting a vulnerability
 

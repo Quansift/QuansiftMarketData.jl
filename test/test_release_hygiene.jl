@@ -592,7 +592,12 @@ supported_asset_types = ["Stock"]
         root = normpath(joinpath(@__DIR__, ".."))
         project = TOML.parsefile(joinpath(root, "Project.toml"))
         @test project["name"] == "QuansiftMarketData"
-        @test project["version"] == "4.0.0"
+        # Not pinned to a literal: this testset is about the rename contract,
+        # and a pinned version turns every release into a test edit. Keeping
+        # version, CHANGELOG, and CITATION consistent is
+        # scripts/ci/validate_release_hygiene.jl's job. What matters here is
+        # that the rename has not been undone.
+        @test VersionNumber(project["version"]) >= v"4.0.0"
         @test project["uuid"] == "1316d3df-ea13-4eef-8810-037e2b70086f"
 
         entrypoint = joinpath(root, "src", "QuansiftMarketData.jl")

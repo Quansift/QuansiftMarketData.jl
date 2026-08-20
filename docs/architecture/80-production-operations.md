@@ -1,3 +1,21 @@
+---
+title: Production operations
+type: task
+source_of_truth:
+  - src/db/migrations.jl
+  - src/db/schema.jl
+  - src/db/postgres.jl
+  - src/db/parquet.jl
+  - src/sync.jl
+  - src/fundamental_sync.jl
+  - scripts/
+  - deploy/README.md
+  - .github/workflows/CI.yml
+external_authority:
+  - Tiingo plan terms
+last_verified: 2026-08-20
+---
+
 # Production integration checklist
 
 QuansiftMarketData is a library, not the Quansift production scheduler. It owns
@@ -128,6 +146,14 @@ both in the operator's deletion inventory.
 ```julia
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
+    # Preflight. Read-only: takes no lock, opens no transaction, and creates
+    # nothing — unlike migrate_postgres!, which creates the ledger as a side
+    # effect and so cannot be used as a dry run. Do this before opening a
+    # maintenance window, not inside one.
+    readiness = postgres_migration_readiness(pg)
+    readiness.migratable || error("not migratable: $(readiness.state)")
+    isempty(readiness.drift) || error("schema drift: $(readiness.drift)")
+
     current = postgres_schema_version(pg)
     result = migrate_postgres!(
         pg;
@@ -176,7 +202,7 @@ The independent `benchmark/` project exercises current sink-neutral
 normalization and persistence APIs with seeded synthetic data. It never calls
 Tiingo or requires a Tiingo secret. Run `micro`, `load`, and `soak` only with
 finite environment bounds documented in
-[`docs/src/PERFORMANCE.md`](docs/src/PERFORMANCE.md).
+[`docs/src/PERFORMANCE.md`](../src/PERFORMANCE.md).
 
 Timing, allocation, and resident-memory observations are report-only. A run
 fails only for correctness, idempotency, cleanup, configuration bounds, or
@@ -282,7 +308,7 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 The compose and systemd files under `deploy/` are retained as integration-smoke
 examples for existing users. Enabling their timer would merely schedule the
 bounded smoke; it would not create the canonical Quansift production workflow.
-See [`deploy/README.md`](deploy/README.md) for their exact scope.
+See [`deploy/README.md`](../../deploy/README.md) for their exact scope.
 
 ## Consumer integration requirements
 

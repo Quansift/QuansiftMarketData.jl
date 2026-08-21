@@ -46,15 +46,16 @@ jobs:
                     - "1.9"
                     - "1.12"
                 os:
+                    # Linux only. Everything this package runs on is an Ubuntu
+                    # droplet, so a macOS job verified an OS production does not
+                    # use — and it was the only part of this public repository's
+                    # CI that GitHub bills, at $0.062/minute against $0 for
+                    # Linux: 435 minutes and $1.67 in August 2026 alone.
+                    # Restore it only if a macOS deployment target appears.
                     - ubuntu-latest
-                    - macos-latest
-                exclude:
-                    - version: "1.9"
-                      os: macos-latest
-                # arch is auto-detected by julia-actions/setup-julia based on
-                # the runner OS (ubuntu-latest -> x64, macos-latest -> aarch64).
-                # Hardcoding `x64` broke macos-latest after GitHub migrated the
-                # default macOS runner to Apple Silicon.
+                # arch is auto-detected by julia-actions/setup-julia from the
+                # runner OS. Do not hardcode it; that broke when GitHub moved
+                # the default macOS runner to Apple Silicon.
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:

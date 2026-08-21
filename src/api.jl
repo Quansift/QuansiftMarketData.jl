@@ -11,6 +11,35 @@ using ..Config
 const ENV_LOAD_ATTEMPTED = Ref(false)
 
 """
+Tiingo HTTP requests issued since the last reset.
+
+Tiingo meters hourly *requests*, not tickers, and the two diverge exactly where
+nobody can see: a date range longer than the chunk size becomes several
+requests, and a retryable failure becomes several more. A phase that fetched
+8,013 tickers may have spent well over 8,013 requests, and until this counter
+existed there was no way to know by how much — the only estimate in the system
+was an unmeasured `tickers * 5` upper bound.
+
+Counted here rather than at a collection loop because this is where a request is
+actually issued, so chunking and retries are included without any caller having
+to remember them.
+
+Atomic because a future caller may fetch concurrently; the cost is negligible
+against an HTTP round trip and the alternative is a counter that silently
+undercounts the day someone parallelises.
+"""
+const API_REQUEST_COUNT = Threads.Atomic{Int}(0)
+
+"""Requests issued since the last `reset_api_request_count!`."""
+api_request_count()::Int = API_REQUEST_COUNT[]
+
+"""Zero the request counter, so one phase can be measured on its own."""
+function reset_api_request_count!()::Nothing
+    API_REQUEST_COUNT[] = 0
+    return nothing
+end
+
+"""
 Where a relative `.env` is looked for, in order: the directory the caller is
 running from, then the package's own directory.
 
@@ -340,6 +369,7 @@ function fetch_api_data(
     safe_url = _redact_api_error(url)
 
     for attempt in 1:max_retries
+        Threads.atomic_add!(API_REQUEST_COUNT, 1)
         @info "API request attempt $attempt for URL: $safe_url"
         response = nothing
         response_buffer = _BoundedResponseBuffer(max_response_bytes)

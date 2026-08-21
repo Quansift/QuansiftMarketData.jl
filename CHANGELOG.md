@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `api_request_count` and `reset_api_request_count!`, reporting Tiingo HTTP
+  requests issued since the last reset. Tiingo meters hourly *requests*, not
+  tickers, and the two diverge exactly where nobody could see: a date range
+  longer than the chunk size becomes several requests, and a retryable failure
+  becomes several more. A phase that fetched 8,013 tickers may have spent well
+  over 8,013 requests against a 10,000/hour ceiling, and the only estimate in
+  the system was an unmeasured `tickers * 5` upper bound. Counted where the
+  request is issued rather than at a collection loop, so chunking and retries
+  are included without a caller having to remember them.
+
 ## [4.1.0] - 2026-08-20
 
 ### Added

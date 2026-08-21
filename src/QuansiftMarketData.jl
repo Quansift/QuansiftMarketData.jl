@@ -197,6 +197,7 @@ module API
 
     export get_api_key, get_ticker_data, fetch_api_data, load_env_file
     export ApiStatusError, NoDataError, is_no_data_error
+    export api_request_count, reset_api_request_count!
 end
 
 using .API
@@ -261,5 +262,6 @@ export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQL
 export SyncFailure, HistoricalCollectionResult, FundamentalCollectionResult, SyncIncompleteError
 export is_quota_failure
 export ApiStatusError, NoDataError, is_no_data_error
+export api_request_count, reset_api_request_count!
 
 end # module QuansiftMarketData

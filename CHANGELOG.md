@@ -29,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constant matched reality, which is why it passed throughout. It now also
   asserts the `@main` form is absent.
 
-
 ## [4.2.0] - 2026-08-22
 
 ### Fixed

@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The tag release gate in `docker-publish.yml` and `Docs.yml` matched the
+  preflight run on `.path == ".github/workflows/release-preflight.yml@main"`.
+  The Actions API reports `path` without an `@ref` suffix — that form belongs
+  to `workflow_ref` — so the condition could never hold and both workflows
+  failed on every release tag, v4.1.0 and v4.2.0 included. Image publication
+  and documentation deployment from a tag have therefore never run; the `main`
+  paths were unaffected because the gate only applies to tags.
+
+  The branch is now pinned separately with `.head_branch == "main"`, so
+  dropping the suffix does not weaken the check that the attesting run came
+  from `main`.
+
+  The contract test asserted the shape of this condition, not whether its
+  constant matched reality, which is why it passed throughout. It now also
+  asserts the `@main` form is absent.
+
 ## [4.2.0] - 2026-08-22
 
 ### Fixed

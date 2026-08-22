@@ -60,7 +60,8 @@ jobs:
                     "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
                     --jq "select(
                       (.id | tostring) == \"${run_id}\" and
-                      .path == \".github/workflows/release-preflight.yml@main\" and
+                      .path == \".github/workflows/release-preflight.yml\" and
+                      .head_branch == \"main\" and
                       .display_title == \"${expected_title}\" and
                       .head_sha == \"${tag_commit}\" and
                       .event == \"workflow_dispatch\" and

@@ -500,10 +500,14 @@ supported_asset_types = ["Stock"]
             @test occursin("github-actions[bot]", source)
             @test occursin("target_url", source)
             @test occursin("actions/runs/\${run_id}", source)
+            # `path` carries no @ref suffix -- that form belongs to
+            # workflow_ref, not path -- so the branch is pinned separately.
             @test occursin(
-                ".path == \\\".github/workflows/release-preflight.yml@main\\\"",
+                ".path == \\\".github/workflows/release-preflight.yml\\\"",
                 source,
             )
+            @test !occursin("release-preflight.yml@main", source)
+            @test occursin(".head_branch == \\\"main\\\"", source)
             @test occursin(".display_title == \\\"\${expected_title}\\\"", source)
             @test occursin(".head_sha ==", source)
             @test occursin(".event == \\\"workflow_dispatch\\\"", source)

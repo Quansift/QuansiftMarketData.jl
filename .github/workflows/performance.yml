@@ -57,9 +57,15 @@ jobs:
                   version: "1.10"
             - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Resolve independent benchmark environment at Julia floor
+              # The depot cache is keyed by Julia version, so the first run on a
+              # new floor restores no registry and Pkg.resolve fails before it
+              # resolves anything.
               run: >-
                   julia --project=benchmark -e
-                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+                  'using Pkg;
+                  isempty(Pkg.Registry.reachable_registries()) &&
+                  Pkg.Registry.add("General");
+                  Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
             - name: Run deterministic Julia floor micro smoke
               env:
                   TIINGO_BENCH_TICKERS: "1"

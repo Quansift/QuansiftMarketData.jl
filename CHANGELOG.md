@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `close_duckdb` no longer reduces every close failure to a warning. A failed
+  close is now raised when the caller is on a normal return path, and demoted
+  to a logged error only while an exception is already unwinding, so a
+  `finally` still surfaces the original failure rather than the cleanup one.
+
+  Swallowing unconditionally made a failed close invisible in the one place it
+  mattered: the scheduler closes and then immediately prints a success line,
+  and its shell wrapper reads the Julia exit code as the verdict, so the run
+  reported success either way.
+
+  This is behavioural for callers that close outside a `finally` — a close
+  failure that previously produced a warning and exit 0 now propagates.
+
 ### Changed
 
 - Minimum supported Julia is now 1.10, the current long-term-support release.

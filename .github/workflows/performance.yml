@@ -47,19 +47,25 @@ jobs:
                   retention-days: 14
 
     resolver-floor-smoke:
-        name: Linux / Julia 1.9 / resolver floor smoke
+        name: Linux / Julia 1.10 / resolver floor smoke
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
               with:
-                  version: "1.9"
+                  version: "1.10"
             - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
             - name: Resolve independent benchmark environment at Julia floor
+              # The depot cache is keyed by Julia version, so the first run on a
+              # new floor restores no registry and Pkg.resolve fails before it
+              # resolves anything.
               run: >-
                   julia --project=benchmark -e
-                  'using Pkg; Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
+                  'using Pkg;
+                  isempty(Pkg.Registry.reachable_registries()) &&
+                  Pkg.Registry.add("General");
+                  Pkg.develop(path="."); Pkg.resolve(); Pkg.instantiate()'
             - name: Run deterministic Julia floor micro smoke
               env:
                   TIINGO_BENCH_TICKERS: "1"
@@ -68,14 +74,14 @@ jobs:
                   TIINGO_BENCH_ITERATIONS: "1"
                   TIINGO_BENCH_MAX_ELAPSED_SECONDS: "90"
                   TIINGO_BENCH_SINK: local
-                  TIINGO_BENCH_OUTPUT: benchmark/micro-result-julia-1.9.json
+                  TIINGO_BENCH_OUTPUT: benchmark/micro-result-julia-1.10.json
               run: julia --project=benchmark benchmark/run.jl micro
             - name: Upload metadata-only Julia floor result
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: benchmark-micro-julia-1.9-${{ github.run_id }}
-                  path: benchmark/micro-result-julia-1.9.json
+                  name: benchmark-micro-julia-1.10-${{ github.run_id }}
+                  path: benchmark/micro-result-julia-1.10.json
                   if-no-files-found: error
                   retention-days: 14
 

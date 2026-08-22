@@ -281,7 +281,7 @@ end
     end
     benchmark_readme = read(joinpath(benchmark_directory, "README.md"), String)
     @test occursin("intentionally has no committed", benchmark_readme)
-    @test occursin("Julia 1.9", benchmark_readme)
+    @test occursin("Julia 1.10", benchmark_readme)
     @test occursin("Julia 1.12", benchmark_readme)
     @test occursin("Pkg.resolve()", benchmark_readme)
 
@@ -306,7 +306,7 @@ end
         split(workflow, '\n'),
     ) == 3
     @test count(
-        line -> occursin(r"version:\s*[\"']1\.9[\"']", strip(line)),
+        line -> occursin(r"version:\s*[\"']1\.10[\"']", strip(line)),
         split(workflow, '\n'),
     ) == 1
     @test occursin("resolver-floor-smoke:", workflow)

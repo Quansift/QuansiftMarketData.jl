@@ -43,7 +43,7 @@ jobs:
             fail-fast: false
             matrix:
                 version:
-                    - "1.9"
+                    - "1.10"
                     - "1.12"
                 os:
                     # Linux only. Everything this package runs on is an Ubuntu
@@ -69,6 +69,16 @@ jobs:
               run: |
                   julia --project=. -e '
                     import Pkg
+                    # julia-actions/cache keys the depot by Julia version, so the
+                    # first run on a new version restores nothing and the depot has
+                    # no registry. Pkg.resolve does not fetch one, and fails with
+                    # "expected package CSV to be registered". The job then never
+                    # succeeds, so the cache is never saved and the next run repeats
+                    # it. Raising the floor to 1.10 hit exactly this; any future
+                    # version bump would too.
+                    if isempty(Pkg.Registry.reachable_registries())
+                        Pkg.Registry.add("General")
+                    end
                     manifest_path = joinpath(dirname(Base.active_project()), "Manifest.toml")
                     if VERSION < v"1.12" && isfile(manifest_path)
                         rm(manifest_path)

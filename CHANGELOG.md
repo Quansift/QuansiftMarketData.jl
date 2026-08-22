@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Minimum supported Julia is now 1.10, the current long-term-support release.
+  The floor was 1.9, which is no longer an LTS and which CI could only test by
+  deleting the manifest and resolving fresh. That resolution selected DuckDB.jl
+  1.3.2 against DuckDB_jll 1.5.5 — a wrapper two minor versions behind its
+  native library, a pairing no other CI lane and no production deployment uses.
+  Julia 1.10 resolves DuckDB.jl 1.5.2 against the same 1.5.5 native library,
+  which is also the version the `historical_data` migration workaround in
+  `src/db/schema.jl` was written against.
+
+  This is a breaking change for callers on Julia 1.9.
+
 ### Added
 
 - `api_request_count` and `reset_api_request_count!`, reporting Tiingo HTTP

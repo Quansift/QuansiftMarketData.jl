@@ -513,7 +513,7 @@ supported_asset_types = ["Stock"]
         end
 
         ci = read(joinpath(workflow_directory, "CI.yml"), String)
-        @test occursin("- \"1.9\"", ci)
+        @test occursin("- \"1.10\"", ci)
         @test occursin("- \"1.12\"", ci)
         @test !occursin("secrets.TIINGO_API_KEY", ci)
         @test !occursin("actions: write", ci)

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-08-22
+
 ### Fixed
 
 - `close_duckdb` no longer reduces every close failure to a warning. A failed
@@ -287,7 +289,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.1.0...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.0...HEAD
+[4.2.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.0
 [4.1.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.1.0
 [4.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.0.0
 [3.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v3.0.0

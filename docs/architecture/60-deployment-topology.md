@@ -7,7 +7,7 @@ source_of_truth:
   - Project.toml
 external_authority:
   - quansift_scheduler Project.toml and Manifest.toml
-last_verified: 2026-08-20
+last_verified: 2026-08-23
 ---
 
 # Deployment topology
@@ -26,7 +26,7 @@ because the obvious answer is wrong.
 
 ```toml
 [sources]
-QuansiftMarketData = {rev = "v4.1.0", url = "https://github.com/Quansift/QuansiftMarketData.jl.git"}
+QuansiftMarketData = {rev = "v4.2.1", url = "https://github.com/Quansift/QuansiftMarketData.jl.git"}
 ```
 
 `Pkg` fetches that revision from GitHub into
@@ -54,12 +54,19 @@ commit on main  →  tag  →  scheduler [sources] rev  →  Pkg cache  →  pip
 
    ```bash
    cd /path/to/quansift_scheduler
-   julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl.git", rev="v4.1.0")'
+   julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl.git", rev="v4.2.1")'
    julia --project=. -e 'using QuansiftMarketData; println(pathof(QuansiftMarketData))'
+   julia --project=. -e 'using QuansiftMarketData; println(pkgversion(QuansiftMarketData))'
    ```
 
    The cache hash in that path **must change**. If it does not, the fetch did
-   not happen.
+   not happen. That test is relative, so it only works if the earlier value was
+   recorded; `pkgversion` answers the same question absolutely and is the one to
+   reach for when it was not.
+
+   The hash is `Base.version_slug(uuid, tree_sha1)`, so it can also be computed
+   rather than remembered. The 4.1.0 to 4.2.1 deployment moved it from `I3BmL`
+   to `XpnH1`, matching trees `243d2f67` and `d96f8678`.
 
 5. Commit the scheduler's `Project.toml` **and** `Manifest.toml`, and push.
    Uncommitted, the next clone or reset silently reverts to the previous pin.

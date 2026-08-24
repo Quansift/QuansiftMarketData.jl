@@ -22,7 +22,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e
@@ -55,7 +55,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
               with:
                   version: "1.10"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Resolve independent benchmark environment at Julia floor
               # The depot cache is keyed by Julia version, so the first run on a
               # new floor restores no registry and Pkg.resolve fails before it
@@ -108,7 +108,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e
@@ -158,7 +158,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Instantiate independent benchmark environment
               run: >-
                   julia --project=benchmark -e

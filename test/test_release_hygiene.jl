@@ -500,10 +500,14 @@ supported_asset_types = ["Stock"]
             @test occursin("github-actions[bot]", source)
             @test occursin("target_url", source)
             @test occursin("actions/runs/\${run_id}", source)
+            # `path` carries no @ref suffix -- that form belongs to
+            # workflow_ref, not path -- so the branch is pinned separately.
             @test occursin(
-                ".path == \\\".github/workflows/release-preflight.yml@main\\\"",
+                ".path == \\\".github/workflows/release-preflight.yml\\\"",
                 source,
             )
+            @test !occursin("release-preflight.yml@main", source)
+            @test occursin(".head_branch == \\\"main\\\"", source)
             @test occursin(".display_title == \\\"\${expected_title}\\\"", source)
             @test occursin(".head_sha ==", source)
             @test occursin(".event == \\\"workflow_dispatch\\\"", source)
@@ -513,7 +517,7 @@ supported_asset_types = ["Stock"]
         end
 
         ci = read(joinpath(workflow_directory, "CI.yml"), String)
-        @test occursin("- \"1.9\"", ci)
+        @test occursin("- \"1.10\"", ci)
         @test occursin("- \"1.12\"", ci)
         @test !occursin("secrets.TIINGO_API_KEY", ci)
         @test !occursin("actions: write", ci)
@@ -592,7 +596,12 @@ supported_asset_types = ["Stock"]
         root = normpath(joinpath(@__DIR__, ".."))
         project = TOML.parsefile(joinpath(root, "Project.toml"))
         @test project["name"] == "QuansiftMarketData"
-        @test project["version"] == "4.0.0"
+        # Not pinned to a literal: this testset is about the rename contract,
+        # and a pinned version turns every release into a test edit. Keeping
+        # version, CHANGELOG, and CITATION consistent is
+        # scripts/ci/validate_release_hygiene.jl's job. What matters here is
+        # that the rename has not been undone.
+        @test VersionNumber(project["version"]) >= v"4.0.0"
         @test project["uuid"] == "1316d3df-ea13-4eef-8810-037e2b70086f"
 
         entrypoint = joinpath(root, "src", "QuansiftMarketData.jl")
@@ -686,7 +695,7 @@ supported_asset_types = ["Stock"]
             read.(
                 [
                     joinpath(root, "README.md"),
-                    joinpath(root, "PRODUCTION.md"),
+                    joinpath(root, "docs", "architecture", "80-production-operations.md"),
                     joinpath(root, "AGENTS.md"),
                     joinpath(root, ".env.example"),
                     joinpath(root, ".github", "workflows", "CI.yml"),

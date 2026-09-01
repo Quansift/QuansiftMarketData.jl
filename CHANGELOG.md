@@ -11,6 +11,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-08-22
+
+### Fixed
+
+- The tag release gate in `docker-publish.yml` and `Docs.yml` matched the
+  preflight run on `.path == ".github/workflows/release-preflight.yml@main"`.
+  The Actions API reports `path` without an `@ref` suffix — that form belongs
+  to `workflow_ref` — so the condition could never hold and both workflows
+  failed on every release tag, v4.1.0 and v4.2.0 included. Image publication
+  and documentation deployment from a tag have therefore never run; the `main`
+  paths were unaffected because the gate only applies to tags.
+
+  The branch is now pinned separately with `.head_branch == "main"`, so
+  dropping the suffix does not weaken the check that the attesting run came
+  from `main`.
+
+  The contract test asserted the shape of this condition, not whether its
+  constant matched reality, which is why it passed throughout. It now also
+  asserts the `@main` form is absent.
+
+## [4.2.0] - 2026-08-22
+
+### Fixed
+
+- `close_duckdb` no longer reduces every close failure to a warning. A failed
+  close is now raised when the caller is on a normal return path, and demoted
+  to a logged error only while an exception is already unwinding, so a
+  `finally` still surfaces the original failure rather than the cleanup one.
+
+  Swallowing unconditionally made a failed close invisible in the one place it
+  mattered: the scheduler closes and then immediately prints a success line,
+  and its shell wrapper reads the Julia exit code as the verdict, so the run
+  reported success either way.
+
+  This is behavioural for callers that close outside a `finally` — a close
+  failure that previously produced a warning and exit 0 now propagates.
+
+### Changed
+
+- Minimum supported Julia is now 1.10, the current long-term-support release.
+  The floor was 1.9, which is no longer an LTS and which CI could only test by
+  deleting the manifest and resolving fresh. That resolution selected DuckDB.jl
+  1.3.2 against DuckDB_jll 1.5.5 — a wrapper two minor versions behind its
+  native library, a pairing no other CI lane and no production deployment uses.
+  Julia 1.10 resolves DuckDB.jl 1.5.2 against the same 1.5.5 native library,
+  which is also the version the `historical_data` migration workaround in
+  `src/db/schema.jl` was written against.
+
+  This is a breaking change for callers on Julia 1.9.
+
+### Added
+
+- `api_request_count` and `reset_api_request_count!`, reporting Tiingo HTTP
+  requests issued since the last reset. Tiingo meters hourly *requests*, not
+  tickers, and the two diverge exactly where nobody could see: a date range
+  longer than the chunk size becomes several requests, and a retryable failure
+  becomes several more. A phase that fetched 8,013 tickers may have spent well
+  over 8,013 requests against a 10,000/hour ceiling, and the only estimate in
+  the system was an unmeasured `tickers * 5` upper bound. Counted where the
+  request is issued rather than at a collection loop, so chunking and retries
+  are included without a caller having to remember them.
+
+## [4.1.0] - 2026-08-20
+
+### Added
+
+- `is_quota_failure` and a `category` field on `SyncFailure`, carrying one of
+  `:quota`, `:no_data`, `:transient`, or `:permanent`. A provider rejecting a
+  request because the hourly quota is spent is now distinguishable from a
+  request that failed on its own merits, so a caller can treat the gap a later
+  cycle will collect differently from something worth alerting on. Only a
+  status the thrower committed to earns a category; message wording never does,
+  matching the reasoning behind `is_no_data_error`. Four-argument
+  `SyncFailure` construction still works and infers `:transient` or
+  `:permanent` from `retryable`.
+- `postgres_migration_readiness`, a read-only report of whether a database is
+  ready to migrate. It takes no lock, opens no transaction, and creates
+  nothing, so it is safe against a live database at any time — including from a
+  monitoring check. `migrate_postgres!` answered the same question only by
+  attempting the work, which meant discovering a problem inside a maintenance
+  window rather than while planning one. The report carries `state`
+  (`:ready`, `:migration_required`, `:drift`, `:newer_schema`,
+  `:unknown_layout`, or `:invalid_ledger`), `ready`, `migratable`, the ledger
+  and target versions, and structured `drift`. Note that `postgres_schema_version`
+  cannot distinguish a fresh database from an unrecognised pre-ledger one —
+  both report `0` — while the readiness report separates them.
+
+### Fixed
+
+- A relative `.env` is now looked for in the caller's working directory before
+  the package's own directory. The package directory was the only root, which
+  is correct for a repository checkout and wrong for a `Pkg`-installed package,
+  where it resolves to `~/.julia/packages/<name>/<hash>/` — a directory `Pkg`
+  owns, re-hashes on every version change, and may garbage-collect. The missing
+  key error named that path as the place to put a credential; it now names a
+  location the operator controls, and mentions `env_path=`. Absolute paths are
+  unaffected, and a checkout that keeps its `.env` beside the package still
+  resolves through the retained fallback.
+- `PRODUCTION.md` no longer claims that every consumer foreign key blocks a
+  universe replacement. `replace_ticker_universe` supports exactly one by name,
+  `filtered_stocks_ticker_fkey`, recreating it with its `ON DELETE CASCADE`
+  inside the replacement transaction — so the document forbade a clause the
+  library itself writes. Other consumer foreign keys still fail closed.
+- A migration refused because the schema does not match the canonical manifest
+  now names each relation, column, and index at fault instead of only saying
+  that something differs. The message previously ended with an instruction to
+  repair by hand while withholding what to repair, so an operator had to
+  reconstruct it against undocumented internals. `_manifest_matches` is now
+  defined as the drift report being empty, so the predicate and the message
+  cannot disagree, and a long list is summarised rather than dumped.
+- The DuckDB `historical_data.fetched_at` migration now also repairs a column
+  that carries `NOT NULL` but no default. The guard was keyed on the two states
+  the original bug produced — absent, or present and nullable — so a database
+  repaired by hand, which is how the constraint gets applied without the
+  default, was skipped forever. It is now keyed on the invariant the canonical
+  DDL declares. The two repairs are issued independently: re-applying
+  `SET NOT NULL` to a column that already carries it aborts the DuckDB process
+  rather than raising.
+
+### Changed
+
+- `migrate_postgres!` defaults `statement_timeout_seconds` to 3600 and
+  `lock_timeout_seconds` to 30, both now named constants rather than literals
+  repeated across call sites. The former 300s statement timeout could not
+  complete migration 2, which rewrites every row of `historical_data` in one
+  transaction and measured 19m49s against 20,622,888 rows on the production
+  data plane. The lock timeout is unchanged in value and stays small: it bounds
+  contention with another writer, not the work itself.
+- An unrecognised `TIINGO_LOGGER` value now falls back to the console logger
+  and warns, naming the rejected value and the supported modes. It previously
+  installed a `NullLogger`, discarding every diagnostic the package emits —
+  silently, since the logger that would have carried the warning was the one
+  being discarded. Silence is still available, but only by asking for it with
+  the new `none` mode.
+
 ## [4.0.0] - 2026-08-19
 
 ### Added
@@ -174,7 +309,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.0.0...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.1...HEAD
+[4.2.1]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.1
+[4.2.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.0
+[4.1.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.1.0
 [4.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.0.0
 [3.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v3.0.0
 [2.0.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v2.0.0

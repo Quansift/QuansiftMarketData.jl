@@ -20,19 +20,41 @@ const NULL_LOGGER = LoggingExtras.NullLogger()
 
 build_console_logger() = ConsoleLogger(stderr, Logging.Info)
 
+const LOGGER_MODES = ("console", "tee", "file", "tee-file", "none")
+
+"""
+    _resolve_logger_mode(raw) -> (mode, rejected)
+
+Map a `TIINGO_LOGGER` value onto a supported mode. An unrecognised value falls
+back to `"console"` and is returned as `rejected` so the caller can name it in a
+warning; silencing the package is reachable only by asking for `"none"`, never
+by falling through.
+"""
+function _resolve_logger_mode(raw::AbstractString)
+    mode = lowercase(strip(String(raw)))
+    mode in LOGGER_MODES && return (mode, nothing)
+    return ("console", mode)
+end
+
 function __init__()
-    logger_type = lowercase(get(ENV, "TIINGO_LOGGER", "console"))
-    if logger_type == "console"
+    mode, rejected = _resolve_logger_mode(get(ENV, "TIINGO_LOGGER", "console"))
+    if mode == "console"
         global_logger(build_console_logger())
-    elseif logger_type == "tee"
+    elseif mode == "tee"
         global_logger(LoggingExtras.TeeLogger(NULL_LOGGER, build_console_logger()))
-    elseif logger_type == "file"
+    elseif mode == "file"
         DB.setup_logging()
-    elseif logger_type == "tee-file"
+    elseif mode == "tee-file"
         DB.setup_logging(tee_console=true)
     else
         global_logger(NULL_LOGGER)
     end
+    # Warn only after a logger exists, or the warning goes nowhere.
+    isnothing(rejected) || @warn(
+        "Unrecognised TIINGO_LOGGER; using console instead",
+        value = rejected,
+        supported = LOGGER_MODES,
+    )
 end
 
 # Include configuration module first
@@ -175,6 +197,7 @@ module API
 
     export get_api_key, get_ticker_data, fetch_api_data, load_env_file
     export ApiStatusError, NoDataError, is_no_data_error
+    export api_request_count, reset_api_request_count!
 end
 
 using .API
@@ -232,9 +255,13 @@ export get_fundamental_watermarks, sync_fundamentals!
 export create_or_replace_table, create_tables, create_indexes, optimize_database
 export POSTGRES_SCHEMA_VERSION, PostgresMigrationResult, PostgresMigrationError
 export postgres_schema_version, migrate_postgres!
+export postgres_migration_readiness, PostgresMigrationReadiness
+export PostgresManifestDrift
 # Export types and errors
 export DatabaseConnectionError, DatabaseQueryError, DuckDBConnection, PostgreSQLConnection
 export SyncFailure, HistoricalCollectionResult, FundamentalCollectionResult, SyncIncompleteError
+export is_quota_failure
 export ApiStatusError, NoDataError, is_no_data_error
+export api_request_count, reset_api_request_count!
 
 end # module QuansiftMarketData

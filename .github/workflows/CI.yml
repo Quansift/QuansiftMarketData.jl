@@ -43,18 +43,19 @@ jobs:
             fail-fast: false
             matrix:
                 version:
-                    - "1.9"
+                    - "1.10"
                     - "1.12"
                 os:
+                    # Linux only. Everything this package runs on is an Ubuntu
+                    # droplet, so a macOS job verified an OS production does not
+                    # use — and it was the only part of this public repository's
+                    # CI that GitHub bills, at $0.062/minute against $0 for
+                    # Linux: 435 minutes and $1.67 in August 2026 alone.
+                    # Restore it only if a macOS deployment target appears.
                     - ubuntu-latest
-                    - macos-latest
-                exclude:
-                    - version: "1.9"
-                      os: macos-latest
-                # arch is auto-detected by julia-actions/setup-julia based on
-                # the runner OS (ubuntu-latest -> x64, macos-latest -> aarch64).
-                # Hardcoding `x64` broke macos-latest after GitHub migrated the
-                # default macOS runner to Apple Silicon.
+                # arch is auto-detected by julia-actions/setup-julia from the
+                # runner OS. Do not hardcode it; that broke when GitHub moved
+                # the default macOS runner to Apple Silicon.
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:
@@ -63,11 +64,21 @@ jobs:
               with:
                   version: ${{ matrix.version }}
                   # arch omitted; setup-julia auto-detects the runner architecture.
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Resolve dependencies for the active Julia version
               run: |
                   julia --project=. -e '
                     import Pkg
+                    # julia-actions/cache keys the depot by Julia version, so the
+                    # first run on a new version restores nothing and the depot has
+                    # no registry. Pkg.resolve does not fetch one, and fails with
+                    # "expected package CSV to be registered". The job then never
+                    # succeeds, so the cache is never saved and the next run repeats
+                    # it. Raising the floor to 1.10 hit exactly this; any future
+                    # version bump would too.
+                    if isempty(Pkg.Registry.reachable_registries())
+                        Pkg.Registry.add("General")
+                    end
                     manifest_path = joinpath(dirname(Base.active_project()), "Manifest.toml")
                     if VERSION < v"1.12" && isfile(manifest_path)
                         rm(manifest_path)
@@ -128,7 +139,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Install and resolve dependencies
               run: |
                   julia --project=. -e 'import Pkg; Pkg.instantiate(); Pkg.precompile()'
@@ -163,7 +174,7 @@ jobs:
             - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3
               with:
                   version: "1.12"
-            - uses: julia-actions/cache@b7788abd52452d5bc033d69796e110d9906af4ab # v3.2.0
+            - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
             - name: Instantiate benchmark environment
               run: >-
                   julia --project=benchmark -e

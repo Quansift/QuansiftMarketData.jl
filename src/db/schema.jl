@@ -175,30 +175,48 @@ module Schema
         end
 
         historical_columns = DBInterface.execute(conn, """
-            SELECT is_nullable
+            SELECT is_nullable, column_default
             FROM information_schema.columns
             WHERE table_schema = 'main'
               AND table_name = 'historical_data'
               AND column_name = 'fetched_at'
         """) |> DataFrame
         column_missing = isempty(historical_columns)
-        # A database left half-migrated by an earlier failed attempt has the
-        # column but not the constraint, so key the migration on the invariant
-        # rather than on the column's absence.
-        column_nullable = column_missing || uppercase(
+        # Key the migration on the invariant the canonical DDL declares, not on
+        # the states a past failure happened to produce. A half-migrated
+        # database has the column but not the constraint; a hand-repaired one
+        # has the constraint but not the default. Both must converge here, or
+        # create_tables cannot claim to make a database match its own DDL.
+        needs_not_null = column_missing || uppercase(
             String(only(historical_columns.is_nullable)),
         ) != "NO"
-        if column_nullable
-            # DuckDB refuses to alter a table while catalog entries depend on
-            # it, so the secondary indexes have to come off first. Their DDL is
-            # read back from the catalog instead of hardcoded, so an index this
-            # build does not know about is still restored exactly.
-            historical_indexes = DBInterface.execute(conn, """
-                SELECT index_name, sql
-                FROM duckdb_indexes()
-                WHERE schema_name = 'main'
-                  AND table_name = 'historical_data'
-            """) |> DataFrame
+        needs_default = column_missing || !occursin(
+            "make_timestamp_ms",
+            lowercase(coalesce(only(historical_columns.column_default), "")),
+        )
+        # DuckDB refuses to alter a table while catalog entries depend on it, so
+        # the secondary indexes have to come off before either repair. Their DDL
+        # is read back from the catalog instead of hardcoded, so an index this
+        # build does not know about is still restored exactly.
+        read_historical_indexes() = DBInterface.execute(conn, """
+            SELECT index_name, sql
+            FROM duckdb_indexes()
+            WHERE schema_name = 'main'
+              AND table_name = 'historical_data'
+        """) |> DataFrame
+        drop_historical_indexes!(indexes) = for index_name in indexes.index_name
+            DBInterface.execute(
+                conn,
+                "DROP INDEX $(validate_identifier(String(index_name)))",
+            )
+        end
+        restore_historical_indexes!(indexes) = for index_sql in indexes.sql
+            DBInterface.execute(conn, String(index_sql))
+        end
+
+        if needs_not_null
+            # This branch rewrites data, so it stays atomic.
+            historical_indexes = read_historical_indexes()
             if column_missing
                 DBInterface.execute(conn, """
                     ALTER TABLE historical_data
@@ -215,12 +233,7 @@ module Schema
             """)
             DBInterface.execute(conn, "BEGIN TRANSACTION")
             try
-                for index_name in historical_indexes.index_name
-                    DBInterface.execute(
-                        conn,
-                        "DROP INDEX $(validate_identifier(String(index_name)))",
-                    )
-                end
+                drop_historical_indexes!(historical_indexes)
                 DBInterface.execute(conn, """
                     ALTER TABLE historical_data
                     ALTER COLUMN fetched_at SET NOT NULL
@@ -230,9 +243,7 @@ module Schema
                     ALTER COLUMN fetched_at SET DEFAULT
                         make_timestamp_ms(epoch_ms(current_timestamp))
                 """)
-                for index_sql in historical_indexes.sql
-                    DBInterface.execute(conn, String(index_sql))
-                end
+                restore_historical_indexes!(historical_indexes)
                 DBInterface.execute(conn, "COMMIT")
             catch
                 try
@@ -240,6 +251,26 @@ module Schema
                 catch
                 end
                 rethrow()
+            end
+            DBInterface.execute(conn, "CHECKPOINT")
+        elseif needs_default
+            # Reachable only by hand repair: the constraint applied, the default
+            # not. Nothing here rewrites data, so the repair compensates instead
+            # of rolling back — DuckDB 1.5.2 aborts the process at COMMIT when a
+            # transaction carries only DROP INDEX, SET DEFAULT, and CREATE INDEX,
+            # and re-issuing SET NOT NULL to avoid that aborts it too.
+            # ponytail: compensating restore, not a rollback; revisit if a
+            # DuckDB release makes the transactional form survive COMMIT.
+            historical_indexes = read_historical_indexes()
+            try
+                drop_historical_indexes!(historical_indexes)
+                DBInterface.execute(conn, """
+                    ALTER TABLE historical_data
+                    ALTER COLUMN fetched_at SET DEFAULT
+                        make_timestamp_ms(epoch_ms(current_timestamp))
+                """)
+            finally
+                restore_historical_indexes!(historical_indexes)
             end
             DBInterface.execute(conn, "CHECKPOINT")
         end
@@ -471,4 +502,6 @@ module Schema
     export quote_postgres_identifier, qualified_postgres_identifier
     export POSTGRES_SCHEMA_VERSION, PostgresMigrationResult, PostgresMigrationError
     export postgres_schema_version, migrate_postgres!
+    export postgres_migration_readiness, PostgresMigrationReadiness
+    export PostgresManifestDrift
 end

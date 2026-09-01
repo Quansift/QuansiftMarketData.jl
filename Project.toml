@@ -1,7 +1,7 @@
 name = "QuansiftMarketData"
 uuid = "1316d3df-ea13-4eef-8810-037e2b70086f"
 authors = ["Kojiroh <kojiroh.homma@gmail.com> and contributors"]
-version = "4.0.0"
+version = "4.2.1"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
@@ -61,4 +61,4 @@ LoggingExtras = "1"
 Tables = "1"
 TimeSeries = "0.24, 0.25"
 ZipFile = "0.10"
-julia = "1.9"
+julia = "1.10"

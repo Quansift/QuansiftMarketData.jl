@@ -10,8 +10,60 @@ using ..Config
 
 const ENV_LOAD_ATTEMPTED = Ref(false)
 
-function resolve_env_path(env_file::String)::String
-    return isabspath(env_file) ? env_file : joinpath(dirname(@__DIR__), env_file)
+"""
+Tiingo HTTP requests issued since the last reset.
+
+Tiingo meters hourly *requests*, not tickers, and the two diverge exactly where
+nobody can see: a date range longer than the chunk size becomes several
+requests, and a retryable failure becomes several more. A phase that fetched
+8,013 tickers may have spent well over 8,013 requests, and until this counter
+existed there was no way to know by how much — the only estimate in the system
+was an unmeasured `tickers * 5` upper bound.
+
+Counted here rather than at a collection loop because this is where a request is
+actually issued, so chunking and retries are included without any caller having
+to remember them.
+
+Atomic because a future caller may fetch concurrently; the cost is negligible
+against an HTTP round trip and the alternative is a counter that silently
+undercounts the day someone parallelises.
+"""
+const API_REQUEST_COUNT = Threads.Atomic{Int}(0)
+
+"""Requests issued since the last `reset_api_request_count!`."""
+api_request_count()::Int = API_REQUEST_COUNT[]
+
+"""Zero the request counter, so one phase can be measured on its own."""
+function reset_api_request_count!()::Nothing
+    API_REQUEST_COUNT[] = 0
+    return nothing
+end
+
+"""
+Where a relative `.env` is looked for, in order: the directory the caller is
+running from, then the package's own directory.
+
+The package directory used to be the only root. For a repository checkout that
+is the project root and the right answer; for a `Pkg`-installed package it is
+`~/.julia/packages/<name>/<hash>/`, a directory `Pkg` owns, re-hashes on every
+version change, and may garbage-collect. Naming that as the place to keep an
+API key is advice nobody should follow, so the caller is consulted first. The
+package directory stays as a fallback so an existing checkout keeps working.
+"""
+_env_search_roots() = (pwd(), dirname(@__DIR__))
+
+function resolve_env_path(
+    env_file::String;
+    search_roots=_env_search_roots(),
+)::String
+    isabspath(env_file) && return env_file
+    for root in search_roots
+        candidate = joinpath(root, env_file)
+        isfile(candidate) && return candidate
+    end
+    # Nothing on disk. Name the caller's directory, because that is where the
+    # operator should create the file.
+    return joinpath(first(search_roots), env_file)
 end
 
 """
@@ -51,7 +103,9 @@ function get_api_key(; env_path::Union{String,Nothing}=nothing, reload_env::Bool
     if isempty(api_key)
         error("""
             $(Config.API.API_KEY_NAME) not found in environment variables.
-            Set it in your shell environment or in: $resolved_env_path
+            Set it in your shell environment, or create $resolved_env_path
+            containing $(Config.API.API_KEY_NAME)=your-key. Pass env_path= to
+            read a specific file instead.
         """)
     end
 
@@ -315,6 +369,7 @@ function fetch_api_data(
     safe_url = _redact_api_error(url)
 
     for attempt in 1:max_retries
+        Threads.atomic_add!(API_REQUEST_COUNT, 1)
         @info "API request attempt $attempt for URL: $safe_url"
         response = nothing
         response_buffer = _BoundedResponseBuffer(max_response_bytes)

@@ -1,3 +1,21 @@
+---
+title: Production operations
+type: task
+source_of_truth:
+  - src/db/migrations.jl
+  - src/db/schema.jl
+  - src/db/postgres.jl
+  - src/db/parquet.jl
+  - src/sync.jl
+  - src/fundamental_sync.jl
+  - scripts/
+  - deploy/README.md
+  - .github/workflows/CI.yml
+external_authority:
+  - Tiingo plan terms
+last_verified: 2026-08-20
+---
+
 # Production integration checklist
 
 QuansiftMarketData is a library, not the Quansift production scheduler. It owns
@@ -71,10 +89,21 @@ Before releasing or consuming a QuansiftMarketData build:
    PostgreSQL ticker-universe tables are exact, replaceable snapshots. The
    canonical schema intentionally does not make full-history price or
    Fundamentals tables children of those snapshots, so delisting a ticker from
-   the latest universe never deletes its historical rows. Consumer-added
-   foreign keys targeting a universe table are outside this contract: an exact
-   replacement fails and rolls back atomically while the foreign key exists.
-   Do not add `CASCADE` to work around that failure.
+   the latest universe never deletes its historical rows.
+
+   One consumer foreign key is supported by name: `filtered_stocks_ticker_fkey`
+   on `public.filtered_stocks`, referencing `us_tickers_filtered (ticker)`.
+   `replace_ticker_universe` recognises it only when it matches an exact
+   fingerprint, then drops it, reloads both snapshots, and recreates it
+   verbatim — including its `ON DELETE CASCADE` — inside the replacement
+   transaction, verifying the fingerprint again before committing. That cascade
+   belongs to the library, not to an operator working around a failure.
+
+   Every other consumer foreign key targeting a universe table is outside this
+   contract. An exact replacement fails and rolls back atomically while such a
+   key exists, and adding `CASCADE` to work around that failure is not
+   supported: it would let a universe replacement delete consumer rows the
+   library never inspected.
 
    For downloaded ticker metadata, the validated CSV is the canonical
    downstream artifact and the retained ZIP is ancillary input. Each is
@@ -117,11 +146,20 @@ both in the operator's deletion inventory.
 ```julia
 pg = connect_postgres(ENV["OHLCV_PG_CONNECTION"])
 try
+    # Preflight. Read-only: takes no lock, opens no transaction, and creates
+    # nothing — unlike migrate_postgres!, which creates the ledger as a side
+    # effect and so cannot be used as a dry run. Do this before opening a
+    # maintenance window, not inside one.
+    readiness = postgres_migration_readiness(pg)
+    readiness.migratable || error("not migratable: $(readiness.state)")
+    isempty(readiness.drift) || error("schema drift: $(readiness.drift)")
+
     current = postgres_schema_version(pg)
     result = migrate_postgres!(
         pg;
         target_version=POSTGRES_SCHEMA_VERSION,
         lock_timeout_seconds=30,
+        statement_timeout_seconds=3600,
     )
     @info "PostgreSQL migration complete" current result
 finally
@@ -133,6 +171,16 @@ end
 in another transaction. It begins one transaction, sets a transaction-local
 lock timeout, and acquires PostgreSQL advisory lock `(1414089038, 1)`. A lock
 timeout, validation error, or cancellation rolls the transaction back.
+
+Size `statement_timeout_seconds` against your own `historical_data`, not
+against the default. Migration 2 rewrites every row of that table inside the
+one transaction: on a 20,622,888-row, 4179 MB table it took 19m49s, and the
+whole migration is cancelled and rolled back if the timeout expires first.
+Because the rewrite is one transaction, PostgreSQL holds every replaced row
+version until it commits, so the table needs roughly twice its size in free
+space plus room for the write-ahead log — budget around 10 GB free for a 4 GB
+table. Confirm both before opening a maintenance window; a rehearsal against a
+restored copy is the only way to know the real numbers for your host.
 `InterruptException` remains a cancellation signal and is rethrown.
 
 The ledger is `public.tiingojulia_schema_migrations`. Ledger versions must be
@@ -154,7 +202,7 @@ The independent `benchmark/` project exercises current sink-neutral
 normalization and persistence APIs with seeded synthetic data. It never calls
 Tiingo or requires a Tiingo secret. Run `micro`, `load`, and `soak` only with
 finite environment bounds documented in
-[`docs/src/PERFORMANCE.md`](docs/src/PERFORMANCE.md).
+[`docs/src/PERFORMANCE.md`](../src/PERFORMANCE.md).
 
 Timing, allocation, and resident-memory observations are report-only. A run
 fails only for correctness, idempotency, cleanup, configuration bounds, or
@@ -260,7 +308,7 @@ docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm \
 The compose and systemd files under `deploy/` are retained as integration-smoke
 examples for existing users. Enabling their timer would merely schedule the
 bounded smoke; it would not create the canonical Quansift production workflow.
-See [`deploy/README.md`](deploy/README.md) for their exact scope.
+See [`deploy/README.md`](../../deploy/README.md) for their exact scope.
 
 ## Consumer integration requirements
 

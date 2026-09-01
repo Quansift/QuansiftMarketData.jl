@@ -631,26 +631,363 @@ function manifest_subset(manifest::PostgresDatabaseManifest, names)
     return PostgresDatabaseManifest(selected)
 end
 
+"""
+    PostgresManifestDrift
+
+One way a deployed relation differs from the canonical manifest. `component` is
+`:relation`, `:column`, or `:index`, and `subject` names the column, index key,
+or relation property at fault. Enough to act on without reading the source,
+which is the whole point: an operator told only that a schema "does not match"
+has to reconstruct this by hand.
+"""
+struct PostgresManifestDrift
+    relation::String
+    component::Symbol
+    subject::String
+    expected::String
+    actual::String
+end
+
+"""
+How many drift findings a migration error spells out before summarising the
+rest. A wholly unrecognised database can differ in dozens of ways, and an error
+message that long stops being read.
+"""
+const _MAX_REPORTED_DRIFT = 12
+
+function Base.show(io::IO, drift::PostgresManifestDrift)
+    print(io, drift.relation)
+    drift.component === :relation || print(io, ".", drift.subject)
+    print(io, ": expected ", drift.expected, ", found ", drift.actual)
+    return nothing
+end
+
+_describe_index_key(key) =
+    "(" * join(key[3], ", ") * ")" *
+    (key[2] ? " primary" : key[1] ? " unique" : "")
+
+_describe_nullability(nullable) = nullable ? "nullable" : "NOT NULL"
+_describe_default(has_default) = has_default ? "a default" : "no default"
+
+"""
+Describe only the attributes in which two column manifests differ, as an
+`(expected, actual)` pair. Rendering the whole struct buries the one word that
+matters in five that do not.
+"""
+function _describe_column_difference(actual, expected)
+    expected_parts = String[]
+    actual_parts = String[]
+    function note!(same, expected_text, actual_text)
+        same && return nothing
+        push!(expected_parts, expected_text)
+        push!(actual_parts, actual_text)
+        return nothing
+    end
+    note!(
+        expected.data_type == actual.data_type,
+        String(Symbol(expected.data_type)),
+        String(Symbol(actual.data_type)),
+    )
+    note!(
+        expected.nullable == actual.nullable,
+        _describe_nullability(expected.nullable),
+        _describe_nullability(actual.nullable),
+    )
+    note!(
+        expected.generated == actual.generated,
+        "generated $(expected.generated)",
+        "generated $(actual.generated)",
+    )
+    note!(
+        expected.identity == actual.identity,
+        "identity $(expected.identity)",
+        "identity $(actual.identity)",
+    )
+    note!(
+        expected.has_default == actual.has_default,
+        _describe_default(expected.has_default),
+        _describe_default(actual.has_default),
+    )
+    isempty(expected_parts) && return (repr(expected), repr(actual))
+    return (join(expected_parts, ", "), join(actual_parts, ", "))
+end
+
+function _column_drift!(
+    findings::Vector{PostgresManifestDrift},
+    relation::AbstractString,
+    actual::Vector{PostgresColumnManifest},
+    expected::Vector{PostgresColumnManifest},
+)
+    by_name = Dict(column.name => column for column in actual)
+    for column in expected
+        found = get(by_name, column.name, nothing)
+        if isnothing(found)
+            push!(findings, PostgresManifestDrift(
+                relation, :column, column.name, "present", "absent",
+            ))
+        elseif found != column
+            expected_text, actual_text = _describe_column_difference(found, column)
+            push!(findings, PostgresManifestDrift(
+                relation, :column, column.name, expected_text, actual_text,
+            ))
+        end
+    end
+    expected_names = Set(column.name for column in expected)
+    for column in actual
+        column.name in expected_names || push!(findings, PostgresManifestDrift(
+            relation, :column, column.name, "absent", "present",
+        ))
+    end
+    # Column order is part of the canonical layout, but only worth reporting
+    # once the individual columns already agree.
+    isempty(findings) && actual != expected && push!(findings, PostgresManifestDrift(
+        relation,
+        :relation,
+        "column order",
+        join((column.name for column in expected), ", "),
+        join((column.name for column in actual), ", "),
+    ))
+    return findings
+end
+
+function _index_drift!(
+    findings::Vector{PostgresManifestDrift},
+    relation::AbstractString,
+    actual::Vector{PostgresIndexManifest},
+    expected::Vector{PostgresIndexManifest},
+    exact_indexes::Bool,
+)
+    for index in actual
+        key = _describe_index_key(semantic_index_key(index))
+        (index.partial || index.expression) && push!(findings, PostgresManifestDrift(
+            relation, :index, key, "a plain index", "a partial or expression index",
+        ))
+        (index.valid && index.ready) || push!(findings, PostgresManifestDrift(
+            relation, :index, key, "valid and ready", "not usable",
+        ))
+        index.access_method == :btree || push!(findings, PostgresManifestDrift(
+            relation, :index, key, "btree", String(index.access_method),
+        ))
+        index.default_opclasses || push!(findings, PostgresManifestDrift(
+            relation, :index, key, "default opclasses", "non-default opclasses",
+        ))
+        index.collations_match_columns || push!(findings, PostgresManifestDrift(
+            relation, :index, key, "column collations", "an overridden collation",
+        ))
+    end
+    actual_keys = Set(semantic_index_key.(actual))
+    expected_keys = Set(semantic_index_key.(expected))
+    for key in sort!(collect(setdiff(expected_keys, actual_keys)))
+        push!(findings, PostgresManifestDrift(
+            relation, :index, _describe_index_key(key), "present", "absent",
+        ))
+    end
+    if exact_indexes
+        for key in sort!(collect(setdiff(actual_keys, expected_keys)))
+            push!(findings, PostgresManifestDrift(
+                relation, :index, _describe_index_key(key), "absent", "present",
+            ))
+        end
+    end
+    return findings
+end
+
+"""
+    _relation_drift(actual, expected; exact_indexes=false)
+
+Every way `actual` departs from `expected`, in the order an operator would
+repair them. Empty means the relation conforms.
+"""
+function _relation_drift(
+    actual::PostgresRelationManifest,
+    expected::PostgresRelationManifest;
+    exact_indexes::Bool=false,
+)
+    findings = PostgresManifestDrift[]
+    name = expected.name
+    actual.relation_kind == expected.relation_kind || push!(findings,
+        PostgresManifestDrift(
+            name, :relation, "relation kind",
+            String(expected.relation_kind), String(actual.relation_kind),
+        ))
+    actual.persistence == expected.persistence || push!(findings,
+        PostgresManifestDrift(
+            name, :relation, "persistence",
+            String(expected.persistence), String(actual.persistence),
+        ))
+    actual.owner_matches_current_role || push!(findings, PostgresManifestDrift(
+        name, :relation, "owner", "the current role", "another role",
+    ))
+    actual.row_security && push!(findings, PostgresManifestDrift(
+        name, :relation, "row security", "disabled", "enabled",
+    ))
+    actual.force_row_security && push!(findings, PostgresManifestDrift(
+        name, :relation, "forced row security", "disabled", "enabled",
+    ))
+    actual.has_unexpected_triggers && push!(findings, PostgresManifestDrift(
+        name, :relation, "triggers", "none", "an unexpected trigger",
+    ))
+    _column_drift!(findings, name, actual.columns, expected.columns)
+    _index_drift!(findings, name, actual.indexes, expected.indexes, exact_indexes)
+    return findings
+end
+
+"""
+    _manifest_drift(actual, expected; exact_indexes=false)
+
+Every way a deployed catalog departs from a canonical manifest. `_manifest_matches`
+is defined as this being empty, so the predicate and the report cannot disagree.
+"""
+function _manifest_drift(
+    actual::PostgresDatabaseManifest,
+    expected::PostgresDatabaseManifest;
+    exact_indexes::Bool=false,
+)
+    findings = PostgresManifestDrift[]
+    for name in sort!(collect(keys(expected.relations)))
+        if haskey(actual.relations, name)
+            append!(findings, _relation_drift(
+                actual.relations[name],
+                expected.relations[name];
+                exact_indexes,
+            ))
+        else
+            push!(findings, PostgresManifestDrift(
+                name, :relation, "relation", "present", "absent",
+            ))
+        end
+    end
+    for name in sort!(collect(keys(actual.relations)))
+        haskey(expected.relations, name) || push!(findings, PostgresManifestDrift(
+            name, :relation, "relation", "absent", "present",
+        ))
+    end
+    return findings
+end
+
 function _relation_matches(
     actual::PostgresRelationManifest,
     expected::PostgresRelationManifest;
     exact_indexes::Bool=false,
 )
-    actual.relation_kind == expected.relation_kind || return false
-    actual.persistence == expected.persistence || return false
-    actual.owner_matches_current_role || return false
-    !actual.row_security || return false
-    !actual.force_row_security || return false
-    !actual.has_unexpected_triggers || return false
-    actual.columns == expected.columns || return false
-    any(index -> index.partial || index.expression, actual.indexes) && return false
-    all(index -> index.valid && index.ready, actual.indexes) || return false
-    all(index -> index.access_method == :btree, actual.indexes) || return false
-    all(index -> index.default_opclasses, actual.indexes) || return false
-    all(index -> index.collations_match_columns, actual.indexes) || return false
-    actual_keys = Set(semantic_index_key.(actual.indexes))
-    expected_keys = Set(semantic_index_key.(expected.indexes))
-    return exact_indexes ? actual_keys == expected_keys : expected_keys ⊆ actual_keys
+    return isempty(_relation_drift(actual, expected; exact_indexes))
+end
+
+"""
+Classify a database from its ledger version and its drift.
+
+Drift outranks a pending migration: migrating a database that does not match
+the manifest for the version it claims is what the fail-closed check exists to
+prevent. A schema newer than this build outranks both, because an older build
+cannot know what a newer manifest should look like and its drift findings would
+be noise.
+"""
+function _readiness_state(
+    from_version::Integer,
+    target_version::Integer,
+    drift::Vector{PostgresManifestDrift},
+)::Symbol
+    from_version > target_version && return :newer_schema
+    isempty(drift) || return :drift
+    return from_version == target_version ? :ready : :migration_required
+end
+
+"""
+    PostgresMigrationReadiness
+
+What a database would do if a migration were attempted, without attempting one.
+`drift` names each way the catalog departs from the manifest for the version the
+ledger claims; `state` is one of `:ready`, `:migration_required`, `:drift`,
+`:newer_schema`, `:unknown_layout`, or `:invalid_ledger`.
+"""
+struct PostgresMigrationReadiness
+    state::Symbol
+    from_version::Int
+    target_version::Int
+    drift::Vector{PostgresManifestDrift}
+    detail::String
+end
+
+PostgresMigrationReadiness(state, from_version, target_version, drift) =
+    PostgresMigrationReadiness(state, from_version, target_version, drift, "")
+
+"""Whether the database already carries the requested version and conforms."""
+Base.getproperty(readiness::PostgresMigrationReadiness, name::Symbol) =
+    name === :ready ? getfield(readiness, :state) === :ready :
+    name === :migratable ? getfield(readiness, :state) in (:ready, :migration_required) :
+    getfield(readiness, name)
+
+Base.propertynames(::PostgresMigrationReadiness) = (
+    :state, :ready, :migratable, :from_version, :target_version, :drift, :detail,
+)
+
+function Base.show(io::IO, readiness::PostgresMigrationReadiness)
+    print(
+        io,
+        "PostgresMigrationReadiness(", readiness.state,
+        ", from=", readiness.from_version,
+        ", target=", readiness.target_version,
+        ", drift=", length(readiness.drift), ")",
+    )
+    return nothing
+end
+
+"""
+    postgres_migration_readiness(conn; target_version=POSTGRES_SCHEMA_VERSION)
+
+Report whether `conn` is ready to migrate, without migrating. Takes no lock,
+opens no transaction, and creates nothing — safe to run against a live database
+at any time, including from a monitoring check.
+
+`migrate_postgres!` answers the same question only by attempting the work, which
+means discovering a problem inside a maintenance window rather than while
+planning one.
+"""
+function postgres_migration_readiness(
+    conn::LibPQ.Connection;
+    target_version::Integer=POSTGRES_SCHEMA_VERSION,
+)::PostgresMigrationReadiness
+    empty_drift = PostgresManifestDrift[]
+    from_version = try
+        postgres_schema_version(conn)
+    catch error
+        error isa InterruptException && rethrow()
+        return PostgresMigrationReadiness(
+            :invalid_ledger, -1, Int(target_version), empty_drift,
+            sprint(showerror, error),
+        )
+    end
+    manifest = inspect_postgres_manifest(conn)
+    if from_version == 0
+        catalog_entry = try
+            classify_preledger_manifest(manifest)
+        catch error
+            error isa InterruptException && rethrow()
+            return PostgresMigrationReadiness(
+                :unknown_layout, 0, Int(target_version), empty_drift,
+                sprint(showerror, error),
+            )
+        end
+        return PostgresMigrationReadiness(
+            :migration_required, 0, Int(target_version), empty_drift,
+            "pre-ledger catalog classified as $catalog_entry",
+        )
+    end
+    if from_version > target_version
+        return PostgresMigrationReadiness(
+            :newer_schema, from_version, Int(target_version), empty_drift,
+            "the database was migrated by a newer build than this one",
+        )
+    end
+    expected = from_version == 1 ? POSTGRES_V1_TARGET_MANIFEST :
+        from_version == 2 ? POSTGRES_V2_TARGET_MANIFEST : POSTGRES_TARGET_MANIFEST
+    drift = _manifest_drift(manifest, expected)
+    return PostgresMigrationReadiness(
+        _readiness_state(from_version, target_version, drift),
+        from_version,
+        Int(target_version),
+        drift,
+    )
 end
 
 function _manifest_matches(
@@ -658,15 +995,7 @@ function _manifest_matches(
     expected::PostgresDatabaseManifest;
     exact_indexes::Bool=false,
 )
-    keys(actual.relations) == keys(expected.relations) || return false
-    return all(
-        name -> _relation_matches(
-            actual.relations[name],
-            expected.relations[name];
-            exact_indexes,
-        ),
-        keys(expected.relations),
-    )
+    return isempty(_manifest_drift(actual, expected; exact_indexes))
 end
 
 function _is_released_v1_subset(manifest::PostgresDatabaseManifest)
@@ -767,10 +1096,33 @@ bootstrap_phase_order() = [
     :commit,
 ]
 
+"""
+Seconds a single migration statement may run before PostgreSQL cancels it.
+
+Migration 2 rewrites every row of `historical_data` inside one transaction. On
+the production data plane that took 19m49s against 20,622,888 rows, so the
+former 300s default could not complete a migration this package ships. Sized
+with headroom over that measurement rather than to it — a busier server is
+slower, and the cost of overshooting is a longer wait while the cost of
+undershooting is a cancelled maintenance window. Callers with a smaller
+database should pass a smaller value.
+"""
+const DEFAULT_STATEMENT_TIMEOUT_SECONDS = 3600
+
+"""
+Seconds to wait for the locks a migration needs.
+
+Deliberately small, and unrelated to `DEFAULT_STATEMENT_TIMEOUT_SECONDS`: it
+bounds contention with another writer, not the work itself. Waiting a long time
+for a lock means someone else is using the database, which is a reason to stop
+rather than to be patient.
+"""
+const DEFAULT_LOCK_TIMEOUT_SECONDS = 30
+
 function validate_migration_options(
     target_version::Integer,
     lock_timeout_seconds::Integer,
-    statement_timeout_seconds::Integer=300,
+    statement_timeout_seconds::Integer=DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )
     1 <= target_version <= POSTGRES_SCHEMA_VERSION || throw(ArgumentError(
         "target_version must be between 1 and $POSTGRES_SCHEMA_VERSION",
@@ -1563,13 +1915,36 @@ function _validate_target_manifest(
     else
         POSTGRES_TARGET_MANIFEST
     end
+    return _validate_target_manifest_against(manifest, expected, version)
+end
+
+"""
+Throw unless `manifest` conforms to `expected`, naming what differs. Split from
+`_validate_target_manifest` so the message can be exercised against a synthetic
+manifest rather than only against a live catalog.
+"""
+function _validate_target_manifest_against(
+    manifest::PostgresDatabaseManifest,
+    expected::PostgresDatabaseManifest,
+    version::Integer,
+)
     migration_name = POSTGRES_MIGRATIONS[Int(version)].name
-    _manifest_matches(manifest, expected) || throw(PostgresMigrationError(
+    drift = _manifest_drift(manifest, expected)
+    isempty(drift) && return nothing
+    # Name what to repair. The instruction to repair by hand is useless without
+    # it, and reconstructing this from the catalog is an hour of work against
+    # undocumented internals.
+    shown = min(length(drift), _MAX_REPORTED_DRIFT)
+    detail = join(("\n  " * sprint(show, finding) for finding in drift[1:shown]))
+    elided = length(drift) > shown ?
+        "\n  ... and $(length(drift) - shown) more" : ""
+    throw(PostgresMigrationError(
         Int(version),
         migration_name,
-        "PostgreSQL schema does not match the canonical target manifest; take a backup before manual repair",
+        "PostgreSQL schema does not match the canonical target manifest for " *
+        "version $(Int(version)); take a backup before manual repair:" *
+        detail * elided,
     ))
-    return nothing
 end
 
 function _insert_migration!(conn, migration::PostgresMigration)
@@ -1609,8 +1984,8 @@ end
 function migrate_postgres!(
     conn::LibPQ.Connection;
     target_version::Integer=POSTGRES_SCHEMA_VERSION,
-    lock_timeout_seconds::Integer=30,
-    statement_timeout_seconds::Integer=300,
+    lock_timeout_seconds::Integer=DEFAULT_LOCK_TIMEOUT_SECONDS,
+    statement_timeout_seconds::Integer=DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )::PostgresMigrationResult
     validate_migration_options(
         target_version,

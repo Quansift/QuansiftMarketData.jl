@@ -10,7 +10,31 @@ struct SyncFailure
     stage::Symbol
     message::String
     retryable::Bool
+    category::Symbol
 end
+
+"""
+Classify a failure that arrives without a category of its own. `retryable` is
+the only signal such a caller committed to, so it decides between the two
+categories that make no further claim.
+"""
+SyncFailure(entity, stage, message, retryable::Bool) = SyncFailure(
+    entity,
+    stage,
+    message,
+    retryable,
+    retryable ? :transient : :permanent,
+)
+
+"""
+    is_quota_failure(failure::SyncFailure)::Bool
+
+Whether a failure means the provider's request quota was spent, as opposed to
+the request having failed on its own merits. A later cycle collects what a
+quota-exhausted run missed, so this is the difference between an expected gap
+and something worth alerting on.
+"""
+is_quota_failure(failure::SyncFailure)::Bool = failure.category === :quota
 
 """
     HistoricalCollectionResult
@@ -107,12 +131,23 @@ function _sync_failure(
             occursin("rate limit", normalized) ||
             occursin(r"\b(?:429|5\d\d)\b", normalized)
     end
-    return SyncFailure(
-        String(entity),
-        stage,
-        message,
-        stage == :write ? false : something(retryable, inferred_retryable),
-    )
+    final_retryable = stage == :write ? false :
+        something(retryable, inferred_retryable)
+    # Only a status the thrower committed to earns a category. Wording is not a
+    # fact, for the same reason is_no_data_error refuses to read messages.
+    category = if !final_retryable && !(error isa API.NoDataError) &&
+                  !(error isa API.ApiStatusError)
+        :permanent
+    elseif API.is_no_data_error(error)
+        :no_data
+    elseif error isa API.ApiStatusError && error.status == 429
+        final_retryable ? :quota : :permanent
+    elseif final_retryable
+        :transient
+    else
+        :permanent
+    end
+    return SyncFailure(String(entity), stage, message, final_retryable, category)
 end
 
 function _finish_collection(result, strict::Bool)

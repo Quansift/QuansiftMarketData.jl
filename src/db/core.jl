@@ -181,11 +181,25 @@ module Core
     Safely close a DuckDB database connection.
     """
     function close_duckdb(conn::DuckDBConnection)
+        # Whether a close failure may be raised depends on whether the caller is
+        # already unwinding. Most call sites close inside a `finally`; throwing
+        # there would replace the original exception with the cleanup one, and
+        # the failure the operator needs is the one that would be discarded.
+        # `current_exceptions()` distinguishes the two: it is non-empty in a
+        # `finally` reached by unwinding and empty in one reached normally. It
+        # is read before the close so it reports the caller's state rather than
+        # this function's own catch.
+        #
+        # Swallowing unconditionally, which is what this did, made a failed
+        # close invisible: callers print a success line immediately after and
+        # the wrapper reads the exit code as the verdict.
+        unwinding = !isempty(current_exceptions())
         try
             DBInterface.close!(conn)
             @info "DuckDB connection closed successfully"
         catch e
-            @warn "Error closing DuckDB connection" exception=e
+            unwinding || rethrow()
+            @error "Error closing DuckDB connection" exception=(e, catch_backtrace())
         end
     end
 

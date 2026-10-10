@@ -334,11 +334,26 @@ end
     @test normalized.enterprise_value[2] == 3.1e12
     @test normalized.pe_ratio[1] == 25.0
     @test ismissing(normalized.pe_ratio[2])
-    @test ismissing(normalized.available_at[1])
+    @test normalized.available_at[1] == DateTime(2024, 2, 1, 5)
     @test normalized.available_at[2] == DateTime(2024, 2, 2, 14, 30)
     @test normalized.fetched_at == fill(fetched_at, 2)
     @test ismissing(normalized.source_revision[1])
     @test normalized.source_revision[2] == "revision-2"
+end
+
+@testset "Daily metrics without availability use next-day 05:00 UTC" begin
+    payload = [(date = "2024-01-15",), (date = "2024-07-15",)]
+    normalized = normalize_fundamental_daily_metrics(payload, "perm-pit")
+    @test normalized.available_at == [
+        DateTime(2024, 1, 16, 5),
+        DateTime(2024, 7, 16, 5),
+    ]
+
+    explicit = normalize_fundamental_daily_metrics(
+        [(date = "2024-07-15", available_at = "2024-07-16T04:00:00Z")],
+        "perm-pit",
+    )
+    @test explicit.available_at == [DateTime(2024, 7, 16, 4)]
 end
 
 @testset "Fundamentals normalization cancellation preserves identity" begin
@@ -427,7 +442,7 @@ end
         @test stored_security.perma_ticker == ["perm-aapl"]
         @test stored_metrics.perma_ticker == ["perm-aapl"]
         @test stored_metrics.metric_date == [as_of]
-        @test ismissing(stored_metrics.available_at[1])
+        @test stored_metrics.available_at[1] == DateTime(as_of + Day(1)) + Hour(5)
         @test stored_metrics.fetched_at == [fetched_at]
 
         repeated = sync_fundamentals!(

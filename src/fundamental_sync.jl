@@ -272,10 +272,21 @@ function normalize_security_observations(
 end
 
 """
+    default_daily_metric_available_at(metric_date)
+
+2026-10-10: Daily market cap is fixed by that session's close and knowable by
+next midnight ET. Use a conservative fixed 05:00 UTC, including during DST.
+Later restatements of shares outstanding leave a small residual look-ahead,
+accepted until restatements are stored append-only.
+"""
+default_daily_metric_available_at(metric_date::Date) =
+    DateTime(metric_date + Day(1)) + Hour(5)
+
+"""
     normalize_fundamental_daily_metrics(payload, perma_ticker; fetched_at=Dates.now(Dates.UTC))
 
-Normalize a Tiingo Daily Metrics payload. Historical `available_at` is kept
-missing unless the individual payload row explicitly supplies `availableAt`.
+Normalize a Tiingo Daily Metrics payload. Preserve explicit `availableAt` or
+`available_at`; otherwise derive availability with `default_daily_metric_available_at`.
 """
 function normalize_fundamental_daily_metrics(
     payload,
@@ -290,13 +301,10 @@ function normalize_fundamental_daily_metrics(
 
     result = _canonical_daily_metrics_frame()
     for row in eachrow(source)
+        metric_date = _required_payload_date(row, (:date, :metricDate, :metric_date), "date")
         push!(result, (
             perma_ticker = normalized_perma_ticker,
-            metric_date = _required_payload_date(
-                row,
-                (:date, :metricDate, :metric_date),
-                "date",
-            ),
+            metric_date = metric_date,
             market_cap = _nullable_payload_float(
                 _payload_value(row, (:marketCap, :market_cap)),
                 "marketCap",
@@ -312,9 +320,12 @@ function normalize_fundamental_daily_metrics(
                 _payload_value(row, (:peRatio, :pe_ratio)),
                 "peRatio",
             ),
-            available_at = _nullable_payload_datetime(
-                _payload_value(row, (:availableAt, :available_at)),
-                "availableAt",
+            available_at = coalesce(
+                _nullable_payload_datetime(
+                    _payload_value(row, (:availableAt, :available_at)),
+                    "availableAt",
+                ),
+                default_daily_metric_available_at(metric_date),
             ),
             fetched_at = fetched_at,
             source_revision = _nullable_payload_string(

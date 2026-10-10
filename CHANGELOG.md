@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Daily Metrics without explicit availability now derive `available_at` as
+  05:00 UTC on the next day, preserving explicit provider timestamps and
+  preventing missing availability from bypassing point-in-time filtering.
+
 ## [4.2.3] - 2026-09-07
 
 ### Fixed

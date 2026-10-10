@@ -9,7 +9,7 @@ source_of_truth:
   - docs/architecture/80-production-operations.md
 external_authority:
   - Tiingo plan terms and API documentation
-  - quansift_scheduler cron configuration
+  - the consuming scheduler's configuration
 last_verified: 2026-08-20
 ---
 
@@ -43,11 +43,11 @@ The universe does not fit in one hour:
 | ETF | 4,246 | 42% |
 | Combined | 12,259 | **123%** |
 
-So the scheduler places each export in its **own clock hour** — stock at 17:35,
-ETF at 18:00 — where each fits comfortably. A late cycle repeats both at 19:00
-and 20:00. That second pass serves two purposes: it collects anything the early
-pass missed, and it captures Tiingo's late revisions, which matter especially
-for ETFs.
+So a scheduler should place each export in its **own clock hour**, where each
+fits comfortably, and repeat both in a later cycle, again one export per hour.
+That second pass serves two purposes: it collects anything the early pass
+missed, and it captures Tiingo's late revisions, which matter especially for
+ETFs.
 
 ### The failure this prevents
 

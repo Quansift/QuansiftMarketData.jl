@@ -22,19 +22,22 @@ QuansiftMarketData is a library, not the Quansift production scheduler. It owns
 Tiingo collection, response validation, `DataFrame` normalization, and reusable
 PostgreSQL, Parquet, and DuckDB persistence primitives.
 
-In Quansift production:
+In a typical production deployment:
 
-- the library checkout remains `/opt/tiingojulia`, exposed to consumers as
-  `TIINGO_PROJECT_ROOT=/opt/tiingojulia`;
+- consumers that need a library checkout locate it through
+  `TIINGO_PROJECT_ROOT=/path/to/QuansiftMarketData` (the code that runs comes
+  from the Pkg cache; see
+  [60-deployment-topology](60-deployment-topology.md));
 - system PostgreSQL is the authoritative relational store;
 - Parquet is the full-history interchange/archive format;
 - DuckDB is optional local analysis or compatibility state, not a required
   production source of record; and
-- `quansift_scheduler` owns schedules, cross-stage retries, success gating,
-  DigitalOcean Spaces, DigitalOcean Managed PostgreSQL, notifications, and
-  QuantScreener/TATSU sequencing.
+- a downstream scheduler owns schedules, cross-stage retries, success gating,
+  object-storage publication, any downstream serving database, notifications,
+  and sequencing of downstream consumers.
 
-Do not put Spaces or Managed PostgreSQL credentials in QuansiftMarketData env files.
+Do not put object-storage or downstream-database credentials in
+QuansiftMarketData env files.
 
 ## Provider account and data-retention gate
 

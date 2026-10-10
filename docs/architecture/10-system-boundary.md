@@ -16,9 +16,10 @@ QuansiftMarketData is a **library**. It collects from Tiingo, normalises what
 comes back, and persists it through primitives its caller chooses. It does not
 decide when to run, what to publish, or who to tell when something breaks.
 
-Those decisions belong to `quansift_scheduler`, a separate repository. The
-split is not cosmetic: it is why this package has no cron, no notification
-channel, and no knowledge of DigitalOcean.
+Those decisions belong to the calling application — in practice, a
+downstream scheduler that lives outside this repository. The split is not
+cosmetic: it is why this package has no cron, no notification channel, and no
+knowledge of any hosting or object-storage provider.
 
 ## What this package owns
 
@@ -37,9 +38,9 @@ channel, and no knowledge of DigitalOcean.
 
 - Cron and stage sequencing, including the early/late cycle structure.
 - Cross-stage retries and success gating.
-- DigitalOcean Spaces, and rolling three-year publication to DigitalOcean
-  Managed PostgreSQL.
-- Notifications, and QuantScreener/TATSU sequencing.
+- Object-storage publication, and any windowed publication to a downstream
+  serving database.
+- Notifications, and sequencing of downstream consumers.
 
 A consequence worth stating plainly: **the library never decides that a
 production run succeeded.** It reports what happened — including a structured
@@ -66,8 +67,8 @@ reader never sees a partial file.
 
 **DuckDB is optional local state.** It is analysis or compatibility state, not
 a production source of record. This package imposes **no retention period** on
-DuckDB. The rolling three-year rule belongs exclusively to Managed PostgreSQL
-publication and must not be restated as a DuckDB requirement — a
+DuckDB. Any rolling retention window belongs to the downstream publication
+that imposes it and must not be restated as a DuckDB requirement — a
 misattribution that has been made before.
 
 ## Removed in 4.0.0

@@ -7,8 +7,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# Point this at the repo checkout on the droplet (or symlink the checkout here).
-WorkingDirectory=/opt/tiingojulia
+# Point this at the repo checkout on the host (or symlink the checkout here).
+WorkingDirectory=/opt/quansiftmarketdata
 EnvironmentFile=-/etc/default/tiingojulia-pipeline
 ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml pull pipeline
 ExecStart=/usr/bin/docker compose -f deploy/compose/docker-compose.pipeline.yml run --rm pipeline

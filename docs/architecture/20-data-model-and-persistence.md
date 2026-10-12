@@ -32,7 +32,7 @@ took down both exports for five days.
 
 `us_tickers` is the raw feed. The same symbol legitimately appears under
 several exchanges and asset types, so **duplicate tickers are its normal
-state**, not corruption. Measured on the production data plane on 2026-08-19: 108,342 rows,
+state**, not corruption. Measured on a production database on 2026-08-19: 108,342 rows,
 106,068 distinct tickers, 2,274 duplicated. That figure is an observation of a
 running system, not a property of this code — re-measure rather than cite it. `us_tickers_filtered` is nearly unique but not
 entirely.

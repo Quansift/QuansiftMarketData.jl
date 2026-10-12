@@ -26,7 +26,7 @@ constraint costs days, repeatedly, to whoever meets it next.
 | What does a collector promise its caller? | [30-collection-contracts](30-collection-contracts.md) |
 | How does the PostgreSQL schema move forward safely? | [40-postgresql-migrations](40-postgresql-migrations.md) |
 | What may the provider refuse, and what may we keep? | [50-provider-and-retention-constraints](50-provider-and-retention-constraints.md) |
-| How does code get from a commit to the data plane? | [60-deployment-topology](60-deployment-topology.md) |
+| How does a consumer pick up a release? | [60-deployment-topology](60-deployment-topology.md) |
 | What happens when something goes wrong? | [70-failure-semantics](70-failure-semantics.md) |
 | How do I run a migration, a canary, a recovery? | [80-production-operations](80-production-operations.md) |
 

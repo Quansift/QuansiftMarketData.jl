@@ -46,8 +46,8 @@ jobs:
                     - "1.10"
                     - "1.12"
                 os:
-                    # Linux only. Everything this package runs on is an Ubuntu
-                    # droplet, so a macOS job verified an OS production does not
+                    # Linux only. Everything this package runs on is Linux,
+                    # so a macOS job verified an OS production does not
                     # use — and it was the only part of this public repository's
                     # CI that GitHub bills, at $0.062/minute against $0 for
                     # Linux: 435 minutes and $1.67 in August 2026 alone.

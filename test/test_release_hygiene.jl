@@ -712,7 +712,6 @@ supported_asset_types = ["Stock"]
             "TIINGO_RELEASE_REF",
             "TIINGO_RELEASE_TAG",
             "TIINGO_PROJECT_ROOT",
-            "/opt/tiingojulia",
         )
             @test occursin(preserved, deployment)
         end

@@ -1,7 +1,7 @@
 name: Publish image
 
-# Builds the production image and pushes it to GHCR so droplets can pull
-# (instead of building Julia/precompile on a memory-constrained droplet).
+# Builds the production image and pushes it to GHCR so hosts can pull it
+# (instead of building Julia/precompile on a memory-constrained host).
 # Tags: branch name (e.g. `staging`, `main`), `sha-<short>`, stable semantic
 # version on exact `vX.Y.Z` git tags, and `latest` on main.
 on:

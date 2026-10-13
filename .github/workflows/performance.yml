@@ -39,7 +39,7 @@ jobs:
               run: julia --project=benchmark benchmark/run.jl micro
             - name: Upload metadata-only micro result
               if: always()
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: benchmark-micro-${{ github.run_id }}
                   path: benchmark/micro-result.json
@@ -78,7 +78,7 @@ jobs:
               run: julia --project=benchmark benchmark/run.jl micro
             - name: Upload metadata-only Julia floor result
               if: always()
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: benchmark-micro-julia-1.10-${{ github.run_id }}
                   path: benchmark/micro-result-julia-1.10.json
@@ -142,7 +142,7 @@ jobs:
               run: julia --project=benchmark benchmark/run.jl load
             - name: Upload metadata-only PostgreSQL result
               if: always()
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: benchmark-postgres-load-${{ github.run_id }}
                   path: benchmark/postgres-load-result.json
@@ -174,7 +174,7 @@ jobs:
               run: julia --project=benchmark benchmark/run.jl soak
             - name: Upload metadata-only local soak result
               if: always()
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: benchmark-local-soak-${{ github.run_id }}
                   path: benchmark/local-soak-result.json

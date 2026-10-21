@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.4] - 2026-10-20
+
 ### Fixed
 
 - Daily Metrics without explicit availability now derive `available_at` as
@@ -343,7 +345,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.3...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.4...HEAD
+[4.2.4]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.4
 [4.2.3]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.3
 [4.2.2]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.2
 [4.2.1]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.1

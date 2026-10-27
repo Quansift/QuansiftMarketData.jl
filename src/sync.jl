@@ -139,6 +139,13 @@ function _filtered_ticker_universe(universe::DataFrame)::DataFrame
             !ismissing(row.end_date) && row.end_date >= active_cutoff &&
             !occursin("/", row.ticker)
     end
+    # `us_tickers_filtered` is unique on ticker, but Tiingo can list one ticker more
+    # than once (a long-running entry plus a short-lived one, or two exchanges), and
+    # several rows can share the cutoff date. Keep one per ticker: latest end date,
+    # then longest history, then exchange name, so the choice never depends on row
+    # order in the download.
+    sort!(filtered, [:ticker, order(:end_date, rev = true), :start_date, :exchange])
+    unique!(filtered, :ticker)
     sort!(filtered, [:ticker, :exchange])
     return filtered
 end

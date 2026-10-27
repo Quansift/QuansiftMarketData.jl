@@ -7,8 +7,8 @@ message: >-
 type: software
 repository-code: https://github.com/Quansift/QuansiftMarketData.jl
 license: MIT
-version: 4.2.4
-date-released: 2026-10-20
+version: 4.2.5
+date-released: 2026-10-27
 authors:
   - given-names: Kojiroh
     email: kojiroh.homma@gmail.com

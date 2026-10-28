@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.5] - 2026-10-27
+
+### Fixed
+
+- `collect_ticker_universe` returned several rows for one ticker in `filtered`
+  when Tiingo listed it more than once with the same end date, and
+  `replace_ticker_universe` then failed on the unique `ticker` index
+  (`tiingojulia_us_tickers_filtered_ticker_bridge`), aborting the whole stock
+  export. `filtered` now keeps one row per ticker: latest end date, then longest
+  history, then exchange name.
+
 ## [4.2.4] - 2026-10-20
 
 ### Fixed
@@ -345,7 +356,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.4...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.5...HEAD
+[4.2.5]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.5
 [4.2.4]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.4
 [4.2.3]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.3
 [4.2.2]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.2

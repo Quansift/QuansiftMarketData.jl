@@ -79,6 +79,42 @@ end
     end
 end
 
+@testset "Filtered ticker universe keeps one row per ticker" begin
+    # us_tickers_filtered is unique on ticker. On 2026-10-27 Tiingo listed MSGK twice
+    # as NYSE stocks (a long-running entry and a short-lived one) and, before the
+    # day's end-date rolled forward, both ended on the active cutoff date.
+    source = DataFrame(
+        ticker = ["MSGK", "MSGK", "AAPL", "XYZ", "XYZ"],
+        exchange = ["NYSE", "NYSE", "NYSE", "NYSE", "NASDAQ"],
+        assetType = fill("Stock", 5),
+        priceCurrency = fill("USD", 5),
+        startDate = ["2026-10-21", "2015-10-01", "1980-12-12", "2020-01-01", "2020-01-01"],
+        endDate = ["2026-10-26", "2026-10-26", "2026-10-26", "2026-10-26", "2026-10-26"],
+    )
+
+    filtered = collect_ticker_universe(source).filtered
+
+    @test allunique(filtered.ticker)
+    @test filtered.ticker == ["AAPL", "MSGK", "XYZ"]
+    # Longest history wins when the end dates tie, and the choice is deterministic.
+    @test filtered[filtered.ticker .== "MSGK", :start_date] == [Date(2015, 10, 1)]
+    @test filtered[filtered.ticker .== "XYZ", :exchange] == ["NASDAQ"]
+    @test collect_ticker_universe(source[end:-1:1, :]).filtered == filtered
+
+    # A later end date beats an earlier start date.
+    later = DataFrame(
+        ticker = ["ABC", "ABC", "NYSEREF"],
+        exchange = fill("NYSE", 3),
+        assetType = fill("Stock", 3),
+        priceCurrency = fill("USD", 3),
+        startDate = ["2000-01-01", "2026-10-21", "2000-01-01"],
+        endDate = ["2026-10-26", "2026-10-27", "2026-10-27"],
+    )
+    kept = collect_ticker_universe(later).filtered
+    @test kept.ticker == ["ABC", "NYSEREF"]
+    @test kept[kept.ticker .== "ABC", :start_date] == [Date(2026, 10, 21)]
+end
+
 @testset "Historical collection is sink neutral for stocks and ETFs" begin
     tickers = DataFrame(
         ticker = ["AAPL", "SPY", "CURRENT", "EMPTY"],

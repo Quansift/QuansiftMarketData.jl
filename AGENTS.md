@@ -147,13 +147,13 @@ Save results exceeding 20 lines to `.Codex/docs/` and return only a summary to t
 - QuansiftMarketData owns Tiingo ticker-universe, EOD, and Daily Metrics collection;
   canonical `DataFrame` normalization; and PostgreSQL, verified atomic Parquet,
   and optional DuckDB persistence primitives.
-- `quansift_scheduler` owns cron, stage orchestration, DigitalOcean Spaces,
-  rolling three-year Managed PostgreSQL publication, and QuantScreener/TATSU
-  sequencing.
+- The consuming application (a downstream scheduler outside this repository)
+  owns cron, stage orchestration, object-storage publication, any windowed
+  downstream database publication, and sequencing of downstream consumers.
 - DuckDB is optional internal analysis state. This repository does not impose a
   DuckDB retention period or use DuckDB as the production full-history source.
-  The rolling three-year rule belongs exclusively to Managed PostgreSQL
-  publication and must not be restated as a DuckDB requirement.
+  Any rolling retention window belongs to the downstream publication that
+  imposes it and must not be restated as a DuckDB requirement.
 - The DuckDB-first full-history path was **removed in 4.0.0**, not merely
   deprecated: `export_to_postgres`, `update_historical`,
   `update_historical_parallel`, `update_historical_sequential`,

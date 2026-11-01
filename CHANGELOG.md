@@ -11,6 +11,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.5] - 2026-10-27
+
+### Fixed
+
+- `collect_ticker_universe` returned several rows for one ticker in `filtered`
+  when Tiingo listed it more than once with the same end date, and
+  `replace_ticker_universe` then failed on the unique `ticker` index
+  (`tiingojulia_us_tickers_filtered_ticker_bridge`), aborting the whole stock
+  export. `filtered` now keeps one row per ticker: latest end date, then longest
+  history, then exchange name.
+
+## [4.2.4] - 2026-10-20
+
+### Fixed
+
+- Daily Metrics without explicit availability now derive `available_at` as
+  05:00 UTC on the next day, preserving explicit provider timestamps and
+  preventing missing availability from bypassing point-in-time filtering.
+
+## [4.2.3] - 2026-09-07
+
+### Fixed
+
+- The DuckDB EOD upsert failed on the same JSON `null` that 4.2.2 fixed for
+  PostgreSQL. `execute_upsert_set_based` handed the raw vendor frame to
+  `DuckDB.register_data_frame`, which has no logical type for `Nothing`, so
+  the weekly reconcile's second write failed with
+  `Binder Error: ... create_logical_type(::Type{Nothing})` after the
+  PostgreSQL write had succeeded. `nothing` is now replaced with `missing`
+  before the frame is registered, and an all-null column is given a concrete
+  element type so DuckDB can bind it and the existing `COALESCE` defaults
+  apply (#683).
+
+## [4.2.2] - 2026-09-07
+
+### Fixed
+
+- PostgreSQL upserts sent a JSON `null` as the literal text `"nothing"`.
+  Tiingo returns `volume: null` for some rows (FLMI in the 2026-09-06 weekly
+  reconcile); JSON3 decodes that as `nothing`, `get_ticker_data` returns the
+  raw frame, and LibPQ stringifies `nothing` rather than mapping it to SQL
+  NULL, so the staging insert failed with
+  `invalid input syntax for type bigint: "nothing"`. `select_upsert_columns`,
+  the single path every PostgreSQL upsert takes, now replaces `nothing` with
+  `missing`, so the value reaches the server as NULL and the existing
+  `COALESCE` defaults apply (#681).
+
 ## [4.2.1] - 2026-08-22
 
 ### Fixed
@@ -136,8 +183,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lock_timeout_seconds` to 30, both now named constants rather than literals
   repeated across call sites. The former 300s statement timeout could not
   complete migration 2, which rewrites every row of `historical_data` in one
-  transaction and measured 19m49s against 20,622,888 rows on the production
-  data plane. The lock timeout is unchanged in value and stays small: it bounds
+  transaction and measured 19m49s against 20,622,888 rows on a production
+  database. The lock timeout is unchanged in value and stays small: it bounds
   contention with another writer, not the work itself.
 - An unrecognised `TIINGO_LOGGER` value now falls back to the console logger
   and warns, naming the rejected value and the supported modes. It previously
@@ -249,9 +296,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relational store and Parquet is the full-history interchange/archive format. DuckDB is
   optional local analysis state and is no longer a production full-history source of
   record. This repository imposes no DuckDB retention period.
-- Cross-system orchestration — DigitalOcean Spaces publication, rolling three-year
-  DigitalOcean Managed PostgreSQL publication, and QuantScreener/TATSU sequencing — is
-  owned by `quansift_scheduler`, not Tiingo.
+- Cross-system orchestration — object-storage publication, windowed downstream
+  database publication, and downstream consumer sequencing — is owned by the
+  consuming scheduler, not Tiingo.
 - Prefer the `OHLCV_DUCKDB_PATH` and `OHLCV_PG_CONNECTION` environment variables.
 - DuckDB historical upsert is now set-based.
 - PostgreSQL `create_tables` now delegates to the versioned migration runner;
@@ -309,7 +356,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parallel update no longer assumes a `ticker` column exists in API-returned DataFrames.
 - `get_api_key` error output no longer leaks environment variable names.
 
-[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.1...HEAD
+[unreleased]: https://github.com/Quansift/QuansiftMarketData.jl/compare/v4.2.5...HEAD
+[4.2.5]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.5
+[4.2.4]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.4
+[4.2.3]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.3
+[4.2.2]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.2
 [4.2.1]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.1
 [4.2.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.2.0
 [4.1.0]: https://github.com/Quansift/QuansiftMarketData.jl/releases/tag/v4.1.0

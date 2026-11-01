@@ -28,21 +28,21 @@ QuansiftMarketData owns:
 - verified atomic local Parquet writes with explicit overwrite behavior.
 
 QuansiftMarketData does not own cron or systemd scheduling, cross-stage retries,
-object-store publication, Managed PostgreSQL deployment, notifications, or
-QuantScreener/TATSU sequencing.
+object-store publication, downstream database deployment, notifications, or
+sequencing of downstream consumers.
 
 ## Storage topology
 
-Where its provider agreement permits retention, the Quansift production
-workflow selects system PostgreSQL as its authoritative relational store and
-Parquet as its full-history interchange/archive format:
+Where the provider agreement permits retention, a typical production workflow
+selects PostgreSQL as its authoritative relational store and Parquet as its
+full-history interchange/archive format:
 
 1. QuansiftMarketData collects Tiingo EOD prices and Fundamentals, normalizes them into
-   `DataFrame`s, and upserts them into the system PostgreSQL source of record.
-2. `quansift_scheduler` exports full history from system PostgreSQL as Parquet and
-   publishes it to DigitalOcean Spaces.
-3. `quansift_scheduler` publishes a rolling three-year window to DigitalOcean
-   Managed PostgreSQL for downstream hosted workloads.
+   `DataFrame`s, and upserts them into the PostgreSQL source of record.
+2. A downstream scheduler exports full history from PostgreSQL as Parquet and
+   publishes it to object storage.
+3. The same scheduler may publish a bounded window to a separate serving
+   database for downstream workloads.
 
 DuckDB remains available for local analysis and backward compatibility. It is not a
 required production source of record and not a third full-history archive; this

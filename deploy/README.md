@@ -5,9 +5,9 @@ one-shot container and retain legacy systemd/launchd wrappers for existing
 users. They validate Tiingo in a real runtime; they are not the canonical
 Quansift production scheduler.
 
-`quansift_scheduler` owns production scheduling, cross-stage retries,
-DigitalOcean Spaces publication, DigitalOcean Managed PostgreSQL loading,
-notifications, and QuantScreener/TATSU sequencing.
+A downstream scheduler owns production scheduling, cross-stage retries,
+object-storage publication, downstream database loading, notifications, and
+sequencing of downstream consumers.
 
 The smoke writes live Tiingo Data to persistent DuckDB and does not publish it
 to PostgreSQL. Use it only when the current account terms or a separate written
@@ -28,7 +28,7 @@ The bounded smoke can:
 - validate the typed collection result before reporting success.
 
 It does not run a full production ingest, publish Parquet to an object store,
-load Managed PostgreSQL, or run downstream analysis.
+load a downstream serving database, or run downstream analysis.
 
 ## Host-side smoke
 
@@ -113,7 +113,7 @@ The following files remain for backward compatibility:
 They schedule the same bounded smoke, not a production data pipeline. Do not
 enable them as the Quansift production scheduler. Existing users may retain
 them for periodic integration monitoring, but production workflow changes
-belong in `quansift_scheduler`.
+belong in the consuming scheduler.
 
 Consumers should validate externally supplied EOD payloads through
 `normalize_eod_prices` before persistence. The sink-neutral

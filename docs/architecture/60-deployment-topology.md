@@ -6,23 +6,24 @@ source_of_truth:
   - CHANGELOG.md
   - Project.toml
 external_authority:
-  - quansift_scheduler Project.toml and Manifest.toml
+  - the consuming project's Project.toml and Manifest.toml
 last_verified: 2026-08-23
 ---
 
 # Deployment topology
 
-How a commit becomes running code on the data plane. This is the least
+How a commit becomes running code in a consuming project. This is the least
 intuitive part of the system and the one that cost the most time to work out,
 because the obvious answer is wrong.
 
-> **The obvious answer is wrong.** `/opt/tiingojulia` is a checkout of this
-> repository on the data-plane host. **The pipeline does not use it.** Deploying
-> there changes nothing about what runs.
+> **The obvious answer is wrong.** A git checkout of this repository sitting
+> on the same host as a consuming pipeline is **not** what that pipeline runs.
+> Deploying to such a checkout changes nothing about what runs.
 
 ## What actually runs
 
-`quansift_scheduler` declares this package in its own `Project.toml`:
+A consuming project (for example, a downstream scheduler) declares this
+package in its own `Project.toml`:
 
 ```toml
 [sources]
@@ -37,10 +38,10 @@ whenever the pinned revision does.
 So the chain is:
 
 ```text
-commit on main  →  tag  →  scheduler [sources] rev  →  Pkg cache  →  pipeline
+commit on main  →  tag  →  consumer [sources] rev  →  Pkg cache  →  pipeline
 ```
 
-`/opt/tiingojulia` appears nowhere in it.
+No on-host checkout of this repository appears anywhere in it.
 
 ## Shipping a change
 
@@ -50,10 +51,10 @@ commit on main  →  tag  →  scheduler [sources] rev  →  Pkg cache  →  pip
    PostgreSQL 17 integration suite, docs and link checks, a benchmark smoke, and
    an image build, then records a commit status on that SHA.
 3. Tag the verified commit and push the tag.
-4. Update the scheduler's pin **to the tag**:
+4. Update the consuming project's pin **to the tag**:
 
    ```bash
-   cd /path/to/quansift_scheduler
+   cd /path/to/consuming-project
    julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl.git", rev="v4.2.1")'
    julia --project=. -e 'using QuansiftMarketData; println(pathof(QuansiftMarketData))'
    julia --project=. -e 'using QuansiftMarketData; println(pkgversion(QuansiftMarketData))'
@@ -68,7 +69,8 @@ commit on main  →  tag  →  scheduler [sources] rev  →  Pkg cache  →  pip
    rather than remembered. The 4.1.0 to 4.2.1 deployment moved it from `I3BmL`
    to `XpnH1`, matching trees `243d2f67` and `d96f8678`.
 
-5. Commit the scheduler's `Project.toml` **and** `Manifest.toml`, and push.
+5. Commit the consuming project's `Project.toml` **and** `Manifest.toml`, and
+   push.
    Uncommitted, the next clone or reset silently reverts to the previous pin.
 
 `Pkg.update` is a no-op against a pinned revision — a fixed rev has exactly one
@@ -76,24 +78,24 @@ allowed version. It must be `Pkg.add` with an explicit `rev`.
 
 ## Pin to a tag, not a bare SHA
 
-The scheduler once pinned a bare SHA. Combined with an unreleased version
+A consumer once pinned a bare SHA. Combined with an unreleased version
 number, this produced a failure that took hours to diagnose: four different
 commits all reported `pkgversion` **4.0.0**, so the version could not
 distinguish them.
 
 | Commit | What it was |
 | --- | --- |
-| `dc7b935` | pinned by the scheduler; pre-fix |
+| `dc7b935` | pinned by the consumer; pre-fix |
 | `ff9f8ae` | `production` tip before a rollback |
 | `9138ac0` | `production` tip after promoting the fix |
 | `c98e494` | `main`, later tagged `v4.0.0` |
 
 During the incident a fix was merged, promoted to `production`, and deployed to
-`/opt/tiingojulia` while the pipeline kept running the old pinned revision —
+an on-host checkout while the pipeline kept running the old pinned revision —
 with no signal that anything was stale, because every candidate called itself
 4.0.0.
 
-A tag names one tree, and the scheduler's `Project.toml` shows which. **Pin
+A tag names one tree, and the consumer's `Project.toml` shows which. **Pin
 tags.**
 
 ## Determining what is actually loaded
@@ -126,6 +128,6 @@ the new tag.
 
 ## What would make this page wrong
 
-- The scheduler changing how it declares this dependency.
+- Consumers changing how they declare this dependency.
 - The release workflow changing what it verifies or attests.
-- `/opt/tiingojulia` becoming load-bearing.
+- An on-host checkout becoming load-bearing.

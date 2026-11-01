@@ -5053,28 +5053,16 @@
         <path data-edge-from="managed_postgres" data-edge-to="consumers" data-edge-label="SQL" data-edge-key="9" data-composition-points="1282.5,492;1282.5,600" d="M 1282.5 492 L 1282.5 600" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
         <!-- Components -->
-        <g id="node-scheduler" data-node-id="scheduler" data-node-label="quansift_scheduler" tabindex="0" role="button" aria-label="Focus quansift_scheduler, cron + stages, Scheduler-owned control plane" aria-pressed="false" data-node-kind="backend" data-node-sublabel="cron + stages" data-node-tag="separate repo" data-node-context="Scheduler-owned control plane">
-          <title>quansift_scheduler · cron + stages · Scheduler-owned control plane · separate repo</title>
-          <rect x="30" y="80" width="140" height="62" rx="6" class="c-mask"/>
-          <rect x="30" y="80" width="140" height="62" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(36 86) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="100" y="109" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">quansift_scheduler</text>
-        <text data-detail="context" x="100" y="125" class="t-muted" font-size="9" text-anchor="middle">cron + stages</text>
-        <text data-detail="fine" x="100" y="134" class="t-backend" font-size="7" text-anchor="middle">separate repo</text>
-        </g>
-
-        <g id="node-tiingo" data-node-id="tiingo" data-node-label="Tiingo API" tabindex="0" role="button" aria-label="Focus Tiingo API, EOD + fundamentals, Untrusted provider boundary" aria-pressed="false" data-node-kind="external" data-node-sublabel="EOD + fundamentals" data-node-context="Untrusted provider boundary">
-          <title>Tiingo API · EOD + fundamentals · Untrusted provider boundary</title>
-          <rect x="30" y="290" width="140" height="62" rx="6" class="c-mask"/>
-          <rect x="30" y="290" width="140" height="62" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(36 296) scale(0.6875)">
+        <g id="node-scheduler" data-node-id="scheduler" data-node-label="Downstream scheduler" tabindex="0" role="button" aria-label="Focus Downstream scheduler, cron + stage orchestration, Scheduler-owned control plane" aria-pressed="false" data-node-kind="external" data-node-sublabel="cron + stage orchestration" data-node-context="Scheduler-owned control plane">
+          <title>Downstream scheduler · cron + stage orchestration · Scheduler-owned control plane</title>
+          <rect x="30" y="250" width="160" height="66" rx="6" class="c-mask"/>
+          <rect x="30" y="250" width="160" height="66" rx="6" class="c-external" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(36 256) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="100" y="319" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Tiingo API</text>
-        <text data-detail="context" x="100" y="335" class="t-muted" font-size="9" text-anchor="middle">EOD + fundamentals</text>
+          <text data-node-label="" data-detail-anchor="" x="110" y="281" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Downstream scheduler</text>
+        <text data-detail="context" x="110" y="297" class="t-muted" font-size="9" text-anchor="middle">cron + stage orchestration</text>
         </g>
 
         <g id="node-runtime_config" data-node-id="runtime_config" data-node-label="Config + Secrets" tabindex="0" role="button" aria-label="Focus Config + Secrets, API key + sink config, QuansiftMarketData library process" aria-pressed="false" data-node-kind="security" data-node-sublabel="API key + sink config" data-node-context="QuansiftMarketData library process">
@@ -5484,9 +5472,9 @@
           <h3>Ownership + Deployment</h3>
         </div>
         <ul>
-          <li>&bull; Library: collection, normalization, PostgreSQL, Parquet, DuckDB primitives</li>
-          <li>&bull; Scheduler: cron, split retries, Spaces, rolling three-year Managed PostgreSQL</li>
-          <li>&bull; Production loads the Pkg cache pinned by the scheduler rev v4.2.1, never /opt/tiingojulia</li>
+          <li>&bull; A downstream scheduler owns cron, cross-stage policy, publication, and downstream sequencing</li>
+          <li>&bull; PostgreSQL is authoritative; Parquet is verified and reader-atomic; DuckDB is optional local state</li>
+          <li>&bull; Provider retention approval and PostgreSQL-to-Parquet extension installation are operator/build-time gates</li>
         </ul>
       </div>
     </div>

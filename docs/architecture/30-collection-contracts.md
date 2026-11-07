@@ -1,13 +1,27 @@
 ---
+type: Architecture Concept
 title: Collection contracts
-type: concept
-source_of_truth:
-  - src/sync.jl
-  - src/fundamental_sync.jl
-  - src/results.jl
-  - src/api.jl
-  - src/db/operations.jl
-  - src/db/postgres.jl
+description: What each collector promises its caller, and the result types that carry those promises.
+tags: [collection, contracts, api]
+sources:
+  - id: src-sync-jl
+    resource: ../../src/sync.jl
+    title: src/sync.jl
+  - id: src-fundamental-sync-jl
+    resource: ../../src/fundamental_sync.jl
+    title: src/fundamental_sync.jl
+  - id: src-results-jl
+    resource: ../../src/results.jl
+    title: src/results.jl
+  - id: src-api-jl
+    resource: ../../src/api.jl
+    title: src/api.jl
+  - id: src-db-operations-jl
+    resource: ../../src/db/operations.jl
+    title: src/db/operations.jl
+  - id: src-db-postgres-jl
+    resource: ../../src/db/postgres.jl
+    title: src/db/postgres.jl
 last_verified: 2026-08-20
 ---
 

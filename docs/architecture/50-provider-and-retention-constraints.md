@@ -1,15 +1,30 @@
 ---
+type: Reference
 title: Provider and retention constraints
-type: reference
-source_of_truth:
-  - src/api.jl
-  - src/results.jl
-  - config.toml
-  - scripts/live_canary.jl
-  - docs/architecture/80-production-operations.md
-external_authority:
-  - Tiingo plan terms and API documentation
-  - the consuming scheduler's configuration
+description: What the data provider may refuse and what may be retained or redistributed.
+tags: [provider, tiingo, retention]
+sources:
+  - id: src-api-jl
+    resource: ../../src/api.jl
+    title: src/api.jl
+  - id: src-results-jl
+    resource: ../../src/results.jl
+    title: src/results.jl
+  - id: config-toml
+    resource: ../../config.toml
+    title: config.toml
+  - id: scripts-live-canary-jl
+    resource: ../../scripts/live_canary.jl
+    title: scripts/live_canary.jl
+  - id: docs-architecture-80-production-operations-md
+    resource: ./80-production-operations.md
+    title: docs/architecture/80-production-operations.md
+  - id: tiingo-plan-terms-and-api-documentation
+    resource: Tiingo plan terms and API documentation
+    title: External authority (not in this repository)
+  - id: the-consuming-scheduler-s-configuration
+    resource: the consuming scheduler's configuration
+    title: External authority (not in this repository)
 last_verified: 2026-08-20
 ---
 

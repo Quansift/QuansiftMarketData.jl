@@ -1,12 +1,21 @@
 ---
+type: Architecture Concept
 title: Deployment topology
-type: concept
-source_of_truth:
-  - .github/workflows/release-preflight.yml
-  - CHANGELOG.md
-  - Project.toml
-external_authority:
-  - the consuming project's Project.toml and Manifest.toml
+description: How a consumer picks up a release: tags, preflight and the consumer's own pin.
+tags: [deployment, release, consumers]
+sources:
+  - id: github-workflows-release-preflight-yml
+    resource: ../../.github/workflows/release-preflight.yml
+    title: .github/workflows/release-preflight.yml
+  - id: changelog-md
+    resource: ../../CHANGELOG.md
+    title: CHANGELOG.md
+  - id: project-toml
+    resource: ../../Project.toml
+    title: Project.toml
+  - id: the-consuming-project-s-project-toml-and
+    resource: the consuming project's Project.toml and Manifest.toml
+    title: External authority (not in this repository)
 last_verified: 2026-08-23
 ---
 

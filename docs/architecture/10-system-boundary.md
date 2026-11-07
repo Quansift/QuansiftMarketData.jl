@@ -1,12 +1,24 @@
 ---
+type: Architecture Concept
 title: System boundary
-type: concept
-source_of_truth:
-  - AGENTS.md
-  - src/QuansiftMarketData.jl
-  - scripts/live_canary.jl
-  - scripts/staging_smoke_test.jl
-  - deploy/README.md
+description: Ownership boundary between QuansiftMarketData and the consuming scheduler.
+tags: [boundary, ownership, scheduler]
+sources:
+  - id: agents-md
+    resource: ../../AGENTS.md
+    title: AGENTS.md
+  - id: src-quansiftmarketdata-jl
+    resource: ../../src/QuansiftMarketData.jl
+    title: src/QuansiftMarketData.jl
+  - id: scripts-live-canary-jl
+    resource: ../../scripts/live_canary.jl
+    title: scripts/live_canary.jl
+  - id: scripts-staging-smoke-test-jl
+    resource: ../../scripts/staging_smoke_test.jl
+    title: scripts/staging_smoke_test.jl
+  - id: deploy-readme-md
+    resource: ../../deploy/README.md
+    title: deploy/README.md
 last_verified: 2026-08-20
 ---
 

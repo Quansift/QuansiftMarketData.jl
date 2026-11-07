@@ -1,12 +1,24 @@
 ---
+type: Architecture Concept
 title: Data model and persistence
-type: concept
-source_of_truth:
-  - src/db/migrations.jl
-  - src/db/schema.jl
-  - src/db/operations.jl
-  - src/db/postgres.jl
-  - src/db/parquet.jl
+description: Shape of the data and where it lives: PostgreSQL, verified Parquet and optional DuckDB.
+tags: [data-model, postgresql, parquet, duckdb]
+sources:
+  - id: src-db-migrations-jl
+    resource: ../../src/db/migrations.jl
+    title: src/db/migrations.jl
+  - id: src-db-schema-jl
+    resource: ../../src/db/schema.jl
+    title: src/db/schema.jl
+  - id: src-db-operations-jl
+    resource: ../../src/db/operations.jl
+    title: src/db/operations.jl
+  - id: src-db-postgres-jl
+    resource: ../../src/db/postgres.jl
+    title: src/db/postgres.jl
+  - id: src-db-parquet-jl
+    resource: ../../src/db/parquet.jl
+    title: src/db/parquet.jl
 last_verified: 2026-08-20
 ---
 

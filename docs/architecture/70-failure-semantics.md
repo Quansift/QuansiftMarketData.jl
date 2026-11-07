@@ -1,17 +1,39 @@
 ---
+type: Architecture Concept
 title: Failure semantics
-type: concept
-source_of_truth:
-  - src/results.jl
-  - src/api.jl
-  - src/sync.jl
-  - src/fundamental_sync.jl
-  - src/db/migrations.jl
-  - src/db/schema.jl
-  - src/db/operations.jl
-  - src/db/postgres.jl
-  - src/db/parquet.jl
-  - src/QuansiftMarketData.jl
+description: What happens when something goes wrong: error types, partial failure and recovery.
+tags: [failure, errors, recovery]
+sources:
+  - id: src-results-jl
+    resource: ../../src/results.jl
+    title: src/results.jl
+  - id: src-api-jl
+    resource: ../../src/api.jl
+    title: src/api.jl
+  - id: src-sync-jl
+    resource: ../../src/sync.jl
+    title: src/sync.jl
+  - id: src-fundamental-sync-jl
+    resource: ../../src/fundamental_sync.jl
+    title: src/fundamental_sync.jl
+  - id: src-db-migrations-jl
+    resource: ../../src/db/migrations.jl
+    title: src/db/migrations.jl
+  - id: src-db-schema-jl
+    resource: ../../src/db/schema.jl
+    title: src/db/schema.jl
+  - id: src-db-operations-jl
+    resource: ../../src/db/operations.jl
+    title: src/db/operations.jl
+  - id: src-db-postgres-jl
+    resource: ../../src/db/postgres.jl
+    title: src/db/postgres.jl
+  - id: src-db-parquet-jl
+    resource: ../../src/db/parquet.jl
+    title: src/db/parquet.jl
+  - id: src-quansiftmarketdata-jl
+    resource: ../../src/QuansiftMarketData.jl
+    title: src/QuansiftMarketData.jl
 last_verified: 2026-08-20
 ---
 

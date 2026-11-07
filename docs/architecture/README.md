@@ -1,12 +1,16 @@
 ---
-title: Architecture documentation
-type: reference
-source_of_truth:
-  - docs/architecture/
-last_verified: 2026-08-20
+type: Reference
+title: "Architecture documentation: conventions"
+description: Why these pages exist, the Open Knowledge Format page layout they follow, and the rules for changing them.
+tags: [documentation, conventions, okf]
+sources:
+  - id: okf-spec
+    resource: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
+    title: Open Knowledge Format (OKF) v0.2
+last_verified: 2026-11-07
 ---
 
-# Architecture documentation
+# Architecture documentation: conventions
 
 How QuansiftMarketData actually works: what it owns, what it persists, what it
 promises, and what happens when a promise cannot be kept.
@@ -17,53 +21,65 @@ in a scheduler in another repository, or in a provider's rate limit nobody had
 written down. A defect is found and fixed in an afternoon. An undocumented
 constraint costs days, repeatedly, to whoever meets it next.
 
-## Which document answers which question
-
-| Question | Document |
-| --- | --- |
-| Who owns this — this package, or the scheduler? | [10-system-boundary](10-system-boundary.md) |
-| What shape is the data, and where does it live? | [20-data-model-and-persistence](20-data-model-and-persistence.md) |
-| What does a collector promise its caller? | [30-collection-contracts](30-collection-contracts.md) |
-| How does the PostgreSQL schema move forward safely? | [40-postgresql-migrations](40-postgresql-migrations.md) |
-| What may the provider refuse, and what may we keep? | [50-provider-and-retention-constraints](50-provider-and-retention-constraints.md) |
-| How does a consumer pick up a release? | [60-deployment-topology](60-deployment-topology.md) |
-| What happens when something goes wrong? | [70-failure-semantics](70-failure-semantics.md) |
-| How do I run a migration, a canary, a recovery? | [80-production-operations](80-production-operations.md) |
-
+Start from the [index](index.md); it lists every page with a one-line summary.
 Security policy is [`SECURITY.md`](../../SECURITY.md) at the repository root,
 where GitHub surfaces it in the repository sidebar. It is not duplicated here.
 
-## Page conventions
+## Format
 
-Every page carries front matter:
+This directory is an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+(OKF) v0.2 bundle: Markdown files with YAML front matter, no tooling required.
+[`index.md`](index.md) and [`log.md`](log.md) are reserved names (the directory
+listing and the dated change history); every other `.md` file is a concept page.
 
 ```yaml
 ---
+type: Architecture Concept   # REQUIRED. Architecture Concept | Playbook | Reference
 title: PostgreSQL migrations
-type: concept          # concept | task | reference
-source_of_truth:
-  - src/db/migrations.jl
-last_verified: 2026-08-20
+description: One sentence, used by the index and by search snippets.
+tags: [postgresql, migrations]
+sources:
+  - id: migrations-jl
+    resource: ../../src/db/migrations.jl
+    title: src/db/migrations.jl
+  - id: tiingo-terms
+    resource: Tiingo plan terms and API documentation   # outside this repository
+last_verified: 2026-08-20     # extension key, see below
 ---
 ```
 
-`type` says what the page is for, and the three are not interchangeable:
+`type` says what the page is for, and the three values are not interchangeable:
 
-- **concept** explains why the system is shaped the way it is. Read to
-  understand, not to act.
-- **task** is a procedure with a beginning and an end. Read while doing.
-- **reference** is looked up, not read through.
+- **Architecture Concept** explains why the system is shaped the way it is.
+  Read to understand, not to act.
+- **Playbook** is a procedure with a beginning and an end. Read while doing.
+- **Reference** is looked up, not read through.
 
-`source_of_truth` is the point of this format. It names the files the page was
-derived from, so "is this document still true?" has a mechanical answer: if a
-listed file changed since `last_verified`, the page is suspect until someone
-checks it. A page whose claims cannot be traced to a file does not belong
-here — it belongs in an issue, a commit message, or a decision record.
+`sources` is the point of this format. A `resource` that is a path names a file
+the page was derived from, so "is this document still true?" has a mechanical
+answer: if a listed file changed since `last_verified`, the page is suspect
+until someone checks it. A `resource` that is plain text instead of a path
+names an authority outside this repository, such as a provider's terms or a
+consumer's configuration; it cannot be followed, and the page must say where
+the authority actually lives. A page whose claims cannot be traced to a source
+does not belong here — it belongs in an issue, a commit message, or a decision
+record.
+
+`last_verified` is not an OKF field. OKF's `verified` records who or what
+confirmed a page and requires an actor (`human:<id>` or `process:<id>`), which
+these pages have never recorded, so no `verified` is claimed. `last_verified`
+stays as an extension key, which consumers must preserve. If a person or a
+nightly check starts confirming pages, add `verified` with that actor.
+
+Links between pages are relative (`./20-data-model-and-persistence.md`), not
+bundle-absolute (`/20-...`): the link-check step in `Lint.yml` runs lychee
+without `--root-dir`, so a bundle-root link is not resolved against this
+directory.
 
 ## Rules for changing these documents
 
 **Derive from the code, not from memory.** Every factual claim should be
-checkable against a file named in `source_of_truth`. Where a claim comes from
+checkable against a file named in `sources`. Where a claim comes from
 outside this repository — a provider's limit, a scheduler's configuration — say
 so explicitly and name where the authority actually lives. Do not launder
 external knowledge into a citation of this codebase.

@@ -1,18 +1,39 @@
 ---
+type: Playbook
 title: Production operations
-type: task
-source_of_truth:
-  - src/db/migrations.jl
-  - src/db/schema.jl
-  - src/db/postgres.jl
-  - src/db/parquet.jl
-  - src/sync.jl
-  - src/fundamental_sync.jl
-  - scripts/
-  - deploy/README.md
-  - .github/workflows/CI.yml
-external_authority:
-  - Tiingo plan terms
+description: Procedures for running a migration, a canary and a recovery in production.
+tags: [operations, runbook, canary, recovery]
+sources:
+  - id: src-db-migrations-jl
+    resource: ../../src/db/migrations.jl
+    title: src/db/migrations.jl
+  - id: src-db-schema-jl
+    resource: ../../src/db/schema.jl
+    title: src/db/schema.jl
+  - id: src-db-postgres-jl
+    resource: ../../src/db/postgres.jl
+    title: src/db/postgres.jl
+  - id: src-db-parquet-jl
+    resource: ../../src/db/parquet.jl
+    title: src/db/parquet.jl
+  - id: src-sync-jl
+    resource: ../../src/sync.jl
+    title: src/sync.jl
+  - id: src-fundamental-sync-jl
+    resource: ../../src/fundamental_sync.jl
+    title: src/fundamental_sync.jl
+  - id: scripts
+    resource: ../../scripts/
+    title: scripts/
+  - id: deploy-readme-md
+    resource: ../../deploy/README.md
+    title: deploy/README.md
+  - id: github-workflows-ci-yml
+    resource: ../../.github/workflows/CI.yml
+    title: .github/workflows/CI.yml
+  - id: tiingo-plan-terms
+    resource: Tiingo plan terms
+    title: External authority (not in this repository)
 last_verified: 2026-08-20
 ---
 
@@ -51,7 +72,7 @@ downgraded to Starter or Trial.
 
 Starter and Trial Plan users must not use these persistent paths under the
 current Tiingo Terms. See the canonical
-[data terms and project identity](README.md#data-terms-and-project-identity)
+[provider and retention constraints](50-provider-and-retention-constraints.md)
 summary before using any storage or live integration example. The user's
 current plan, applicable Supplemental Terms, and any separate written agreement
 govern.

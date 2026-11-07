@@ -1,8 +1,12 @@
 ---
+type: Architecture Concept
 title: PostgreSQL migrations
-type: concept
-source_of_truth:
-  - src/db/migrations.jl
+description: How the PostgreSQL schema moves forward safely, and what a migration costs at production size.
+tags: [postgresql, migrations, schema]
+sources:
+  - id: src-db-migrations-jl
+    resource: ../../src/db/migrations.jl
+    title: src/db/migrations.jl
 last_verified: 2026-08-20
 ---
 

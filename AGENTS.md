@@ -75,13 +75,13 @@ Top priorities are "conversation quality" and "context conservation".
 ## 1) Mission
 
 - Organize, prioritize, and build consensus on user requests
-- Delegate to appropriate agents (Codex / Opus Subagents)
+- Delegate to appropriate agents (Codex / Claude subagents)
 - Integrate results, make decisions, and present next actions
 
 ## 2) Non-Goals (things Codex should NOT do directly)
 
 - Large-scale implementation (guideline: implementations exceeding 10 LOC)
-- Large-scale investigation (cross-codebase analysis, web research) → delegate to Opus subagents
+- Large-scale investigation (cross-codebase analysis, web research) → delegate to subagents
 - Sequential reading of lengthy logs / large numbers of files
 
 The above must always be delegated.
@@ -89,7 +89,7 @@ The above must always be delegated.
 ## 3) Routing Policy
 
 - **Design, planning, complex implementation** → Codex via `general-purpose`
-- **External research, broad analysis** → `general-purpose` subagent (Opus)
+- **External research, broad analysis** → `general-purpose` subagent
 - **Multimodal input (PDF, images, etc.)** → Codex handles directly (Opus 4.7+ has strong multimodal capabilities); delegate large-scale analysis to the `general-purpose` subagent
 - **Error root cause analysis** → `codex-debugger`
 - **Minor fixes (single file, small changes)** → Codex handles directly

@@ -22,7 +22,7 @@ sources:
   - id: src-db-postgres-jl
     resource: ../../src/db/postgres.jl
     title: src/db/postgres.jl
-last_verified: 2026-08-20
+last_verified: 2026-11-21
 ---
 
 # Collection contracts
@@ -75,7 +75,10 @@ tickers are expected** — see
 slash in the symbol, and an end date at or after an active cutoff. The cutoff
 is derived from the data rather than configured — the maximum end date among
 NYSE-listed stocks — so a stale feed narrows the universe instead of silently
-admitting delisted symbols.
+admitting delisted symbols. `filtered` holds exactly one row per ticker, because
+the table is unique on `ticker` while Tiingo can list one ticker more than once.
+The kept row is chosen deterministically: latest end date, then longest history,
+then exchange name, never download row order.
 
 `replace_ticker_universe` publishes both snapshots atomically. They are exact
 replacements: a symbol absent from the new feed disappears from the universe
@@ -116,6 +119,12 @@ than an overwrite — the table records state over time, not current state.
 
 Watermarks via `get_fundamental_watermarks` let a sync resume rather than
 refetch.
+
+`normalize_fundamental_daily_metrics` preserves a provider-supplied
+`availableAt` or `available_at`. When the payload has none, availability is
+derived as 05:00 UTC on the day after the metric date (also during DST), so a
+missing timestamp cannot bypass point-in-time filtering. Later restatements of
+shares outstanding leave a small accepted look-ahead.
 
 ## Errors are typed, not matched
 

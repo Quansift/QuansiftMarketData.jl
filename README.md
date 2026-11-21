@@ -9,6 +9,8 @@ and ETF prices and Fundamentals data. It normalizes API responses into
 `DataFrame`s and provides optional PostgreSQL, Parquet, and DuckDB persistence
 primitives.
 
+## Data terms and project identity
+
 > [!IMPORTANT]
 > QuansiftMarketData is an unofficial, community-maintained project. It is not
 > affiliated with, endorsed by, or sponsored by Tiingo, Inc. This project does
@@ -29,6 +31,23 @@ primitives.
 - Supports sink-independent historical and Fundamentals collection.
 - Provides optional PostgreSQL upserts, atomic Parquet writes, and local
   DuckDB storage.
+
+## How it is put together
+
+```text
+Tiingo API  ->  HTTP + validation  ->  canonical DataFrames  ->  caller-chosen sink
+                                                                  |- PostgreSQL (upsert_*, migrate_postgres!)
+                                                                  |- Parquet    (write_parquet, atomic + verified)
+                                                                  `- DuckDB     (optional local analysis)
+```
+
+Collectors are sink-neutral. `collect_ticker_universe` returns the `all` and
+`filtered` frames; `collect_historical` and `collect_fundamentals` return typed
+results and hand rows to a caller-supplied writer. This package does not schedule runs, publish
+to object storage, or sequence downstream consumers; the application that
+consumes it does. Diagrams: [runtime architecture](docs/architecture/quansift-runtime-architecture.html)
+and [system structure and flow](docs/system-flow.html) (Japanese). Both are
+standalone HTML files; open them locally in a browser.
 
 ## Getting started
 
@@ -106,11 +125,18 @@ are in the [full documentation](https://quansift.github.io/QuansiftMarketData.jl
 - Fundamentals: `get_fundamental_meta`, `get_daily_fundamental`,
   `collect_fundamentals`
 - Persistence: `upsert_*`, `replace_ticker_universe`, `write_parquet`
+- PostgreSQL schema: `migrate_postgres!`, `postgres_migration_readiness`,
+  `postgres_schema_version`
+- Legacy DuckDB Fundamentals sync: `sync_fundamentals!`,
+  `get_fundamental_watermarks`
+- Split recovery: `find_split_refresh_targets` (reports targets only; the
+  caller refetches)
 
 ## Documentation and contributing
 
 - [Documentation](https://quansift.github.io/QuansiftMarketData.jl/dev)
 - [Contributing guide](docs/src/90-contributing.md)
+- [Architecture documentation](docs/architecture/index.md)
 - [Production operations](docs/architecture/80-production-operations.md)
 - [Changelog](CHANGELOG.md)
 - [Citation](CITATION.cff)

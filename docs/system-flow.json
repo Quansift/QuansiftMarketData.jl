@@ -381,6 +381,7 @@
         "PostgreSQL schema migration uses an advisory lock and one transaction; failure rolls back both schema changes and the ledger update.",
         "The canonical migration ledger tiingojulia_schema_migrations records the applied schema version; POSTGRES_SCHEMA_VERSION is 3.",
         "A ledger version equal to POSTGRES_SCHEMA_VERSION is necessary but not sufficient: postgres_migration_readiness also compares the live relations against the target manifest, because a ledger row can be ahead of the columns it claims.",
+        "Daily Metrics without an explicit availableAt derive available_at as 05:00 UTC on the day after the metric date (4.2.4); collect_ticker_universe keeps one filtered row per ticker: latest end date, then longest history, then exchange name (4.2.5); api_request_count counts the Tiingo requests actually issued.",
         "SyncFailure carries a category; is_quota_failure separates a provider quota rejection from a data problem, so a run that merely ran out of hourly quota is not read as a collection defect."
     ],
     "removed_entry_points": {

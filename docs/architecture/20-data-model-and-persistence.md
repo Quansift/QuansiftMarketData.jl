@@ -19,7 +19,7 @@ sources:
   - id: src-db-parquet-jl
     resource: ../../src/db/parquet.jl
     title: src/db/parquet.jl
-last_verified: 2026-08-20
+last_verified: 2026-11-21
 ---
 
 # Data model and persistence
@@ -56,6 +56,14 @@ something neither the producer nor the sink believes.
 The one exception is a consumer-added foreign key. See
 [80-production-operations](80-production-operations.md) for the single
 supported case.
+
+## JSON null becomes SQL NULL
+
+Tiingo JSON `null` decodes to `nothing`, which neither sink can store. Both
+upsert paths map `nothing` to `missing` before writing: PostgreSQL would
+otherwise send the literal text `"nothing"`, and DuckDB has no logical type for
+`Nothing`. In the DuckDB EOD upsert, a column that is entirely null is given a
+concrete `Int64` element type so DuckDB can type it.
 
 ## Provenance: `fetched_at`
 

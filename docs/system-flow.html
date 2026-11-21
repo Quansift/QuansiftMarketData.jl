@@ -347,6 +347,7 @@
         <li><div><strong>Archive &amp; publish</strong><br>Parquetを検証・atomic writeし、schedulerがobject storageへ全履歴を公開。</div></li>
         <li><div><strong>Serve downstream</strong><br>必要に応じてdownstream serving databaseへ期間限定のdatasetを公開し、downstream consumerを順序制御。</div></li>
       </ol>
+      <p class="footer-note"><code>collect_ticker_universe</code>の<code>filtered</code>は1 tickerにつき1行（最新end date、最長history、exchange名の順で選択。4.2.5）。実際に発行したTiingo request数は<code>api_request_count()</code>で計測し、<code>reset_api_request_count!()</code>でphaseごとに0へ戻せます。</p>
       <p class="footer-note">Rolling retention windowはそれを課すdownstream publicationだけに適用。account termsが保持を許可する場合、System PostgreSQLとoff-host Parquetは全履歴を保持します。</p>
     </section>
 
@@ -354,7 +355,7 @@
       <h2 id="fundamentals-title">4. Fundamentals Flow</h2>
       <ol class="step-list">
         <li><div>Tiingo APIからFundamentals metadataとDaily Metricsを取得・検証。</div></li>
-        <li><div><code>collect_fundamentals</code>がsecurity observationsとfundamental daily metricsへ正規化。</div></li>
+        <li><div><code>collect_fundamentals</code>がsecurity observationsとfundamental daily metricsへ正規化。Daily Metricsに<code>availableAt</code>がなければ、metric dateの翌日05:00 UTCを<code>available_at</code>として導出（4.2.4）。</div></li>
         <li><div>System PostgreSQLの2つのcanonical tableへ冪等upsert。</div></li>
         <li><div>必要に応じてDuckDB analysis replicaまたはverified Parquet artifactへ独立に書き込み。</div></li>
       </ol>

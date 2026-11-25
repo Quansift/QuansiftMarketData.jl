@@ -155,7 +155,7 @@ Release validation has three intentionally different modes.
   `vX.Y.Z` tag receives release behavior; prerelease, build, malformed, and
   unrelated tags are not treated as releases.
 
-The live Tiingo canary is not part of any of these gates. Its scheduled/manual
+The live Tiingo canary is not part of any of these gates. Its manual
 result is advisory and may be affected by credentials, quota, upstream status,
 or symbol availability. Performance timing, allocation, and RSS measurements
 are also report-only; benchmark correctness, cleanup, bounds, and timeout

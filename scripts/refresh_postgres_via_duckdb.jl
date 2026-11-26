@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 #
 # Validate a PostgreSQL-backed historical snapshot through a local DuckDB refresh.
-# Production publication belongs to quansift_scheduler.
+# Production publication belongs to the downstream scheduler.
 #
 # Environment variables:
 #   OHLCV_DUCKDB_PATH      DuckDB file path       (default: data/tiingo_local.duckdb)
@@ -127,7 +127,7 @@ end
 
 Copy persisted source tables from PostgreSQL into an empty DuckDB. Historical
 data is required; fundamentals tables are optional during their first
-deployment. Publication after validation belongs to quansift_scheduler.
+deployment. Publication after validation belongs to the downstream scheduler.
 """
 function hydrate_from_postgres!(
     conn::DBInterface.Connection,
@@ -307,7 +307,7 @@ function main()
     pg_conn_str = get(ENV, "OHLCV_PG_CONNECTION", DEFAULT_PG_CONN_STR)
     do_export = lowercase(get(ENV, "DO_EXPORT", "false")) == "true"
     do_export && error(
-        "DO_EXPORT is unsupported in QuansiftMarketData v4; publish through quansift_scheduler",
+        "DO_EXPORT is unsupported in QuansiftMarketData v4; publish through the downstream scheduler",
     )
     @info "Config" duckdb_path do_export
 

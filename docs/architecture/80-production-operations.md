@@ -277,7 +277,7 @@ after the calculation or operation completes and, in all events, before the
 process, job, or user session ends, and ensure captured output does not retain
 Tiingo Data.
 
-The scheduled/manual `live-canary.yml` workflow is advisory operational
+The manual `live-canary.yml` workflow is advisory operational
 evidence. Missing credentials, quota exhaustion, unavailable symbols, or a
 Tiingo outage may make that run fail, but it is never a PR, release-preflight,
 Registrator, or package-release gate. Hermetic fake-fetcher tests enforce the

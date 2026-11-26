@@ -10,10 +10,10 @@ Optional:
   OHLCV_PG_CONNECTION=postgresql://...
   FUNDAMENTALS_HISTORY_YEARS=3
   FUNDAMENTALS_AS_OF=YYYY-MM-DD
-  FUNDAMENTALS_EXPORT=false  # publication moved to quansift_scheduler in v4
+  FUNDAMENTALS_EXPORT=false  # publication moved to the downstream scheduler in v4
 
 The local DuckDB is intentionally retained after partial failures. This script
-does not publish; quansift_scheduler owns PostgreSQL publication in version 4.
+does not publish; the downstream scheduler owns PostgreSQL publication in version 4.
 """
 
 ENV["TIINGO_LOGGER"] = get(ENV, "TIINGO_LOGGER", "console")
@@ -104,7 +104,7 @@ function main()
     history_years > 0 || error("FUNDAMENTALS_HISTORY_YEARS must be positive")
     do_export = lowercase(get(ENV, "FUNDAMENTALS_EXPORT", "false")) == "true"
     do_export && error(
-        "FUNDAMENTALS_EXPORT is unsupported in QuansiftMarketData v4; publish through quansift_scheduler",
+        "FUNDAMENTALS_EXPORT is unsupported in QuansiftMarketData v4; publish through the downstream scheduler",
     )
     as_of = configured_backfill_as_of()
     observed_at = now(UTC)

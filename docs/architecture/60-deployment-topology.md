@@ -36,7 +36,7 @@ package in its own `Project.toml`:
 
 ```toml
 [sources]
-QuansiftMarketData = {rev = "v4.2.1", url = "https://github.com/Quansift/QuansiftMarketData.jl.git"}
+QuansiftMarketData = {rev = "v4.2.5", url = "https://github.com/Quansift/QuansiftMarketData.jl.git"}
 ```
 
 `Pkg` fetches that revision from GitHub into
@@ -64,7 +64,7 @@ No on-host checkout of this repository appears anywhere in it.
 
    ```bash
    cd /path/to/consuming-project
-   julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl.git", rev="v4.2.1")'
+   julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/Quansift/QuansiftMarketData.jl.git", rev="v4.2.5")'
    julia --project=. -e 'using QuansiftMarketData; println(pathof(QuansiftMarketData))'
    julia --project=. -e 'using QuansiftMarketData; println(pkgversion(QuansiftMarketData))'
    ```

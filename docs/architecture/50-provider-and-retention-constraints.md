@@ -25,7 +25,7 @@ sources:
   - id: the-consuming-scheduler-s-configuration
     resource: the consuming scheduler's configuration
     title: External authority (not in this repository)
-last_verified: 2026-08-20
+last_verified: 2026-11-21
 ---
 
 # Provider and retention constraints
@@ -63,6 +63,16 @@ fits comfortably, and repeat both in a later cycle, again one export per hour.
 That second pass serves two purposes: it collects anything the early pass
 missed, and it captures Tiingo's late revisions, which matter especially for
 ETFs.
+
+### Measuring spend
+
+`api_request_count()` returns the number of Tiingo requests issued since the
+last `reset_api_request_count!()`. The counter is incremented where a request is
+actually sent, so chunking and retries are included without any caller having
+to remember them, and it is atomic so a future concurrent caller cannot
+undercount. Reset it between phases to measure each one on its own. It replaces
+the earlier unmeasured `tickers * 5` upper bound as the way to see how much of
+the hourly quota a run used.
 
 ### The failure this prevents
 

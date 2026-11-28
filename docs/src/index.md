@@ -51,10 +51,11 @@ state to their own analysis needs and applicable account terms.
 
 ## Collection and persistence API
 
-Collection is sink-neutral. `collect_ticker_universe`, `collect_historical`, and
-`collect_fundamentals` return typed results (`HistoricalCollectionResult`,
-`FundamentalCollectionResult`) and accept a caller-supplied writer, so the choice of
-backend belongs to the application rather than to this package.
+Collection is sink-neutral. `collect_ticker_universe` returns the `all` and `filtered`
+frames; `collect_historical` and `collect_fundamentals` return typed results
+(`HistoricalCollectionResult`, `FundamentalCollectionResult`) and accept a
+caller-supplied writer. Either way the choice of backend belongs to the
+application rather than to this package.
 
 Persistence primitives are technically independent and can be combined where
 the applicable account terms or a separate written agreement permit them:

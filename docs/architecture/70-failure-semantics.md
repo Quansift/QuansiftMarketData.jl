@@ -31,10 +31,13 @@ sources:
   - id: src-db-parquet-jl
     resource: ../../src/db/parquet.jl
     title: src/db/parquet.jl
+  - id: src-db-core-jl
+    resource: ../../src/db/core.jl
+    title: src/db/core.jl
   - id: src-quansiftmarketdata-jl
     resource: ../../src/QuansiftMarketData.jl
     title: src/QuansiftMarketData.jl
-last_verified: 2026-08-20
+last_verified: 2026-11-21
 ---
 
 # Failure semantics
@@ -159,6 +162,16 @@ The operator response is not to retry:
 
 Retrying the dead connection produces failures that look like data problems and
 are not.
+
+## A DuckDB close failure is raised
+
+`close_duckdb` raises when closing the connection fails, unless the caller is
+already unwinding from another exception (detected with `current_exceptions()`).
+In that case it logs the close failure with `@error` and lets the original
+exception propagate, because throwing from a `finally` would replace the
+failure the operator needs with the cleanup one. Earlier versions logged a
+warning and returned, which made a failed close invisible: callers printed a
+success line immediately afterwards.
 
 ## What the caller must decide
 
